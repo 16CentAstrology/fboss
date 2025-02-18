@@ -8,13 +8,12 @@
  *
  */
 
+#include "fboss/agent/HwAsicTable.h"
 #include "fboss/agent/SwitchStats.h"
-#include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
-#include "fboss/agent/hw/test/HwLinkStateToggler.h"
 #include "fboss/agent/hw/test/HwTestEcmpUtils.h"
 #include "fboss/agent/hw/test/HwTestPortUtils.h"
-#include "fboss/agent/state/Port.h"
+
 #include "fboss/agent/test/EcmpSetupHelper.h"
 #include "fboss/lib/FunctionCallTimeReporter.h"
 
@@ -32,15 +31,18 @@ BENCHMARK(HwEcmpGroupShrink) {
   folly::BenchmarkSuspender suspender;
   constexpr int kEcmpWidth = 4;
   AgentEnsembleSwitchConfigFn initialConfigFn =
-      [](HwSwitch* hwSwitch, const std::vector<PortID>& ports) {
-        return utility::onePortPerInterfaceConfig(hwSwitch, ports);
+      [](const AgentEnsemble& ensemble) {
+        return utility::onePortPerInterfaceConfig(
+            ensemble.getSw(), ensemble.masterLogicalPortIds());
       };
-  auto ensemble = createAgentEnsemble(initialConfigFn);
-  auto hwSwitch = ensemble->getHw();
-  auto ports = ensemble->masterLogicalPortIds();
+  auto ensemble =
+      createAgentEnsemble(initialConfigFn, false /*disableLinkStateToggler*/);
+  // TODO(zecheng): Deprecate agent access to HwSwitch
+  auto hwSwitch = ensemble->getHwSwitch();
   auto ecmpHelper = utility::EcmpSetupAnyNPorts6(ensemble->getSw()->getState());
-  ensemble->applyNewState(
-      ecmpHelper.resolveNextHops(ensemble->getSw()->getState(), kEcmpWidth));
+  ensemble->applyNewState([&](const std::shared_ptr<SwitchState>& in) {
+    return ecmpHelper.resolveNextHops(in, kEcmpWidth);
+  });
   ecmpHelper.programRoutes(
       std::make_unique<SwSwitchRouteUpdateWrapper>(
           ensemble->getSw(), ensemble->getSw()->getRib()),
@@ -50,8 +52,7 @@ BENCHMARK(HwEcmpGroupShrink) {
       kEcmpWidth,
       getEcmpSizeInHw(hwSwitch, prefix, ecmpHelper.getRouterId(), kEcmpWidth));
   // Warm up the stats cache
-  SwitchStats dummy{};
-  ensemble->getHw()->updateStats(&dummy);
+  ensemble->getSw()->updateStats();
 
   // Toggle loopback mode via direct SDK calls rathe than going through
   // applyState interface. We want to start the clock ASAP post the link toggle,

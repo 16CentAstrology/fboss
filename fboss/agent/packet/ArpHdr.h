@@ -23,6 +23,7 @@
 #include <folly/IPAddressV4.h>
 #include <folly/MacAddress.h>
 #include <folly/io/Cursor.h>
+#include <ostream>
 #include "fboss/agent/packet/HdrParseError.h"
 
 namespace facebook::fboss {
@@ -119,9 +120,12 @@ struct ArpHdr {
   /*
    * ARP Header size
    */
-  static uint32_t size() {
+  static constexpr uint32_t size() {
     return 28;
   }
+
+  void serialize(folly::io::RWPrivateCursor* rwCursor) const;
+  std::string toString() const;
 
  public:
   /*
@@ -163,14 +167,38 @@ struct ArpHdr {
 };
 
 inline bool operator==(const ArpHdr& lhs, const ArpHdr& rhs) {
-  return lhs.htype == rhs.htype && lhs.ptype == rhs.ptype &&
-      lhs.hlen == rhs.hlen && lhs.plen == rhs.plen && lhs.oper == rhs.oper &&
-      lhs.sha == rhs.sha && lhs.spa == rhs.spa && lhs.tha == rhs.tha &&
-      lhs.tpa == rhs.tpa;
+  return std::tie(
+             lhs.htype,
+             lhs.ptype,
+             lhs.hlen,
+             lhs.plen,
+             lhs.oper,
+             lhs.sha,
+             lhs.spa,
+             lhs.tha,
+             lhs.tpa) ==
+      std::tie(
+             rhs.htype,
+             rhs.ptype,
+             rhs.hlen,
+             lhs.plen,
+             rhs.oper,
+             rhs.sha,
+             rhs.spa,
+             rhs.tha,
+             rhs.tpa);
 }
 
 inline bool operator!=(const ArpHdr& lhs, const ArpHdr& rhs) {
   return !operator==(lhs, rhs);
 }
 
+inline void toAppend(const ArpHdr& arpHdr, folly::fbstring* result) {
+  result->append(arpHdr.toString());
+}
+
+inline std::ostream& operator<<(std::ostream& os, const ArpHdr& arpHdr) {
+  os << arpHdr.toString();
+  return os;
+}
 } // namespace facebook::fboss

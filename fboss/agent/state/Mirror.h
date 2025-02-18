@@ -13,6 +13,7 @@
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/AclEntry.h"
 #include "fboss/agent/state/NodeBase.h"
+#include "fboss/agent/state/PortDescriptor.h"
 #include "fboss/agent/state/RouteNextHop.h"
 #include "fboss/agent/types.h"
 #include "folly/MacAddress.h"
@@ -43,9 +44,7 @@ struct MirrorTunnel {
   folly::MacAddress srcMac, dstMac;
   std::optional<TunnelUdpPorts> udpPorts;
   uint8_t ttl;
-  uint16_t greProtocol;
-  static constexpr auto kTTL = 255;
-  static constexpr auto kGreProto = 0x88be;
+  static constexpr auto kTTL = 127;
 
   MirrorTunnel(
       const folly::IPAddress& srcIp,
@@ -58,8 +57,7 @@ struct MirrorTunnel {
         srcMac(srcMac),
         dstMac(dstMac),
         udpPorts(std::nullopt),
-        ttl(ttl),
-        greProtocol(kGreProto) {}
+        ttl(ttl) {}
 
   MirrorTunnel(
       const folly::IPAddress& srcIp,
@@ -73,25 +71,22 @@ struct MirrorTunnel {
         srcMac(srcMac),
         dstMac(dstMac),
         udpPorts(sflowPorts),
-        ttl(ttl),
-        greProtocol(0) {}
+        ttl(ttl) {}
 
   bool operator==(const MirrorTunnel& rhs) const {
     return srcIp == rhs.srcIp && dstIp == rhs.dstIp && srcMac == rhs.srcMac &&
-        dstMac == rhs.dstMac && udpPorts == rhs.udpPorts && ttl == rhs.ttl &&
-        greProtocol == rhs.greProtocol;
+        dstMac == rhs.dstMac && udpPorts == rhs.udpPorts && ttl == rhs.ttl;
   }
 
   bool operator<(const MirrorTunnel& rhs) const {
-    return std::tie(srcIp, dstIp, srcMac, dstMac, udpPorts, ttl, greProtocol) <
+    return std::tie(srcIp, dstIp, srcMac, dstMac, udpPorts, ttl) <
         std::tie(
                rhs.srcIp,
                rhs.dstIp,
                rhs.srcMac,
                rhs.dstMac,
                rhs.udpPorts,
-               rhs.ttl,
-               rhs.greProtocol);
+               rhs.ttl);
   }
 
   state::MirrorTunnel toThrift() const {
@@ -130,10 +125,6 @@ struct MirrorTunnel {
         folly::MacAddress(*tunnel.dstMac()),
         *tunnel.ttl());
   }
-
-  folly::dynamic toFollyDynamic() const;
-
-  static MirrorTunnel fromFollyDynamic(const folly::dynamic& json);
 };
 
 USE_THRIFT_COW(Mirror);
@@ -143,16 +134,17 @@ class Mirror : public ThriftStructNode<Mirror, state::MirrorFields> {
   using BaseT = ThriftStructNode<Mirror, state::MirrorFields>;
   Mirror(
       std::string name,
-      std::optional<PortID> egressPort,
+      std::optional<PortDescriptor> egressPortDesc,
       std::optional<folly::IPAddress> destinationIp,
       std::optional<folly::IPAddress> srcIp = std::nullopt,
       std::optional<TunnelUdpPorts> udpPorts = std::nullopt,
       uint8_t dscp = cfg::switch_config_constants::DEFAULT_MIRROR_DSCP_,
-      bool truncate = false);
+      bool truncate = false,
+      std::optional<uint32_t> samplingRate = std::nullopt);
   enum Type { SPAN = 1, ERSPAN = 2, SFLOW = 3 };
   std::string getID() const;
-  std::optional<PortID> getEgressPort() const;
   std::optional<folly::IPAddress> getDestinationIp() const;
+  std::optional<PortID> getEgressPort() const;
   std::optional<folly::IPAddress> getSrcIp() const;
   std::optional<TunnelUdpPorts> getTunnelUdpPorts() const;
   std::optional<MirrorTunnel> getMirrorTunnel() const;
@@ -161,8 +153,15 @@ class Mirror : public ThriftStructNode<Mirror, state::MirrorFields> {
   void setTruncate(bool truncate);
   void setEgressPort(PortID egressPort);
   void setMirrorTunnel(const MirrorTunnel& tunnel);
+  void setSwitchId(SwitchID switchId);
+  void setDestinationMac(const folly::MacAddress& dstMac);
+  SwitchID getSwitchId() const;
+  void setMirrorName(const std::string& name);
   bool configHasEgressPort() const;
   bool isResolved() const;
+  void setEgressPortDesc(const PortDescriptor& egressPortDesc);
+  std::optional<PortDescriptor> getEgressPortDesc() const;
+  std::optional<uint32_t> getSamplingRate() const;
 
   Type type() const;
 

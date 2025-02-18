@@ -13,14 +13,10 @@
 #include "fboss/agent/hw/test/HwLinkStateDependentTest.h"
 #include "fboss/agent/hw/test/HwTestCoppUtils.h"
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
-#include "fboss/agent/hw/test/HwTestPortUtils.h"
-#include "fboss/agent/packet/EthHdr.h"
 #include "fboss/agent/test/ResourceLibUtil.h"
 #include "fboss/agent/test/TrunkUtils.h"
-#include "folly/Utility.h"
 
 #include <folly/IPAddress.h>
-#include <folly/container/Array.h>
 #include <thread>
 
 using namespace std::chrono_literals;
@@ -37,7 +33,7 @@ class HwPacketSendTest : public HwLinkStateDependentTest {
     auto cfg = utility::onePortPerInterfaceConfig(
         getHwSwitch(),
         masterLogicalPortIds(),
-        getAsic()->desiredLoopbackMode());
+        getAsic()->desiredLoopbackModes());
     return cfg;
   }
   HwSwitchEnsemble::Features featuresDesired() const override {
@@ -73,13 +69,16 @@ class HwPacketSendTest : public HwLinkStateDependentTest {
 class HwPacketSendReceiveTest : public HwLinkStateDependentTest {
  protected:
   cfg::SwitchConfig initialConfig() const override {
-    auto cfg = utility::oneL3IntfTwoPortConfig(
-        getHwSwitch(),
-        masterLogicalPortIds()[0],
-        masterLogicalPortIds().back(),
-        getAsic()->desiredLoopbackMode());
-    utility::setDefaultCpuTrafficPolicyConfig(cfg, getAsic());
-    utility::addCpuQueueConfig(cfg, getAsic());
+    auto cfg = utility::onePortPerInterfaceConfig(
+        getHwSwitch(), masterLogicalPortIds());
+    utility::setDefaultCpuTrafficPolicyConfig(
+        cfg,
+        getHwSwitchEnsemble()->getL3Asics(),
+        getHwSwitchEnsemble()->isSai());
+    utility::addCpuQueueConfig(
+        cfg,
+        getHwSwitchEnsemble()->getL3Asics(),
+        getHwSwitchEnsemble()->isSai());
     return cfg;
   }
   HwSwitchEnsemble::Features featuresDesired() const override {
@@ -111,12 +110,20 @@ class HwPacketSendReceiveLagTest : public HwPacketSendReceiveTest {
  protected:
   cfg::SwitchConfig initialConfig() const override {
     auto cfg = utility::oneL3IntfTwoPortConfig(
-        getHwSwitch(),
+        getHwSwitch()->getPlatform()->getPlatformMapping(),
+        getHwSwitch()->getPlatform()->getAsic(),
         masterLogicalPortIds()[0],
         masterLogicalPortIds()[1],
-        getAsic()->desiredLoopbackMode());
-    utility::setDefaultCpuTrafficPolicyConfig(cfg, getAsic());
-    utility::addCpuQueueConfig(cfg, getAsic());
+        getHwSwitch()->getPlatform()->supportsAddRemovePort(),
+        getAsic()->desiredLoopbackModes());
+    utility::setDefaultCpuTrafficPolicyConfig(
+        cfg,
+        getHwSwitchEnsemble()->getL3Asics(),
+        getHwSwitchEnsemble()->isSai());
+    utility::addCpuQueueConfig(
+        cfg,
+        getHwSwitchEnsemble()->getL3Asics(),
+        getHwSwitchEnsemble()->isSai());
     std::vector<int32_t> ports{
         masterLogicalPortIds()[0], masterLogicalPortIds()[1]};
     utility::addAggPort(kAggId, ports, &cfg, cfg::LacpPortRate::SLOW);
@@ -142,9 +149,19 @@ class HwPacketFloodTest : public HwLinkStateDependentTest {
   }
   cfg::SwitchConfig initialConfig() const override {
     auto cfg = utility::oneL3IntfNPortConfig(
-        getHwSwitch(), getLogicalPortIDs(), getAsic()->desiredLoopbackMode());
-    utility::setDefaultCpuTrafficPolicyConfig(cfg, getAsic());
-    utility::addCpuQueueConfig(cfg, getAsic());
+        getHwSwitch()->getPlatform()->getPlatformMapping(),
+        getHwSwitch()->getPlatform()->getAsic(),
+        getLogicalPortIDs(),
+        getHwSwitch()->getPlatform()->supportsAddRemovePort(),
+        getAsic()->desiredLoopbackModes());
+    utility::setDefaultCpuTrafficPolicyConfig(
+        cfg,
+        getHwSwitchEnsemble()->getL3Asics(),
+        getHwSwitchEnsemble()->isSai());
+    utility::addCpuQueueConfig(
+        cfg,
+        getHwSwitchEnsemble()->getL3Asics(),
+        getHwSwitchEnsemble()->isSai());
     return cfg;
   }
   HwSwitchEnsemble::Features featuresDesired() const override {
@@ -168,7 +185,8 @@ class HwPacketFloodTest : public HwLinkStateDependentTest {
           *portStatsBefore[portId].outBytes_()) {
         return false;
       }
-      if (getAsic()->getAsicType() != cfg::AsicType::ASIC_TYPE_EBRO) {
+      if (getAsic()->getAsicType() != cfg::AsicType::ASIC_TYPE_EBRO &&
+          getAsic()->getAsicType() != cfg::AsicType::ASIC_TYPE_YUBA) {
         if (packetsAfter <= packetsBefore) {
           return false;
         }
@@ -178,257 +196,11 @@ class HwPacketFloodTest : public HwLinkStateDependentTest {
   }
 };
 
-TEST_F(HwPacketSendTest, LldpToFrontPanelOutOfPort) {
-  auto setup = [=]() {};
-  auto verify = [=]() {
-    auto portStatsBefore =
-        getLatestPortStats(masterLogicalInterfacePortIds()[0]);
-    auto vlanId = utility::firstVlanID(initialConfig());
-    auto intfMac = utility::getFirstInterfaceMac(initialConfig());
-    auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO() + 1);
-    auto payLoadSize = 256;
-    auto txPacket = utility::makeEthTxPacket(
-        getHwSwitch(),
-        vlanId,
-        srcMac,
-        folly::MacAddress("01:80:c2:00:00:0e"),
-        facebook::fboss::ETHERTYPE::ETHERTYPE_LLDP,
-        std::vector<uint8_t>(payLoadSize, 0xff));
-    // vlan tag should be removed
-    auto pktLengthSent = EthHdr::SIZE + payLoadSize;
-    getHwSwitchEnsemble()->ensureSendPacketOutOfPort(
-        std::move(txPacket), masterLogicalInterfacePortIds()[0], std::nullopt);
-    auto portStatsAfter =
-        getLatestPortStats(masterLogicalInterfacePortIds()[0]);
-    XLOG(DBG2) << "Lldp Packet:"
-               << " before pkts:" << *portStatsBefore.outMulticastPkts_()
-               << ", after pkts:" << *portStatsAfter.outMulticastPkts_()
-               << ", before bytes:" << *portStatsBefore.outBytes_()
-               << ", after bytes:" << *portStatsAfter.outBytes_();
-    EXPECT_EQ(
-        pktLengthSent,
-        *portStatsAfter.outBytes_() - *portStatsBefore.outBytes_());
-    if (getAsic()->getAsicType() != cfg::AsicType::ASIC_TYPE_EBRO) {
-      EXPECT_EQ(
-          1,
-          *portStatsAfter.outMulticastPkts_() -
-              *portStatsBefore.outMulticastPkts_());
-    }
-  };
-  verifyAcrossWarmBoots(setup, verify);
-}
-
-TEST_F(HwPacketSendTest, LldpToFrontPanelWithBufClone) {
-  auto setup = [=]() {};
-  auto verify = [=]() {
-    auto portStatsBefore =
-        getLatestPortStats(masterLogicalInterfacePortIds()[0]);
-    auto vlanId = utility::firstVlanID(initialConfig());
-    auto intfMac = utility::getFirstInterfaceMac(initialConfig());
-    auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO() + 1);
-    auto payLoadSize = 256;
-    auto numPkts = 20;
-    std::vector<folly::IOBuf*> bufs;
-    for (int i = 0; i < numPkts; i++) {
-      auto txPacket = utility::makeEthTxPacket(
-          getHwSwitch(),
-          vlanId,
-          srcMac,
-          folly::MacAddress("01:80:c2:00:00:0e"),
-          facebook::fboss::ETHERTYPE::ETHERTYPE_LLDP,
-          std::vector<uint8_t>(payLoadSize, 0xff));
-      // emulate packet buf clone in PcapPkt, which should make
-      // freeTxBuf() get called after txPacket destructor
-      auto buf = new folly::IOBuf();
-      txPacket->buf()->cloneInto(*buf);
-      bufs.push_back(buf);
-      getHwSwitchEnsemble()->ensureSendPacketOutOfPort(
-          std::move(txPacket),
-          masterLogicalInterfacePortIds()[0],
-          std::nullopt);
-    }
-    for (auto buf : bufs) {
-      delete buf;
-    }
-    auto portStatsAfter =
-        getLatestPortStats(masterLogicalInterfacePortIds()[0]);
-    XLOG(DBG2) << "Lldp Packet:"
-               << " before pkts:" << *portStatsBefore.outMulticastPkts_()
-               << ", after pkts:" << *portStatsAfter.outMulticastPkts_()
-               << ", before bytes:" << *portStatsBefore.outBytes_()
-               << ", after bytes:" << *portStatsAfter.outBytes_();
-    auto pktLengthSent = (EthHdr::SIZE + payLoadSize) * numPkts;
-    EXPECT_EQ(
-        pktLengthSent,
-        *portStatsAfter.outBytes_() - *portStatsBefore.outBytes_());
-    if (getAsic()->getAsicType() != cfg::AsicType::ASIC_TYPE_EBRO) {
-      EXPECT_EQ(
-          numPkts,
-          *portStatsAfter.outMulticastPkts_() -
-              *portStatsBefore.outMulticastPkts_());
-    }
-  };
-  verifyAcrossWarmBoots(setup, verify);
-}
-
-TEST_F(HwPacketSendTest, ArpRequestToFrontPanelPortSwitched) {
-  auto setup = [=]() {};
-  auto verify = [=]() {
-    auto portStatsBefore =
-        getLatestPortStats(masterLogicalInterfacePortIds()[0]);
-    auto vlanId = utility::firstVlanID(initialConfig());
-    auto intfMac = utility::getFirstInterfaceMac(initialConfig());
-    auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO() + 1);
-    auto randomIP = folly::IPAddressV4("1.1.1.5");
-    auto txPacket = utility::makeARPTxPacket(
-        getHwSwitch(),
-        vlanId,
-        srcMac,
-        folly::MacAddress("ff:ff:ff:ff:ff:ff"),
-        folly::IPAddress("1.1.1.2"),
-        randomIP,
-        ARP_OPER::ARP_OPER_REQUEST,
-        std::nullopt);
-    getHwSwitchEnsemble()->ensureSendPacketSwitched(std::move(txPacket));
-    auto portStatsAfter =
-        getLatestPortStats(masterLogicalInterfacePortIds()[0]);
-    XLOG(DBG2) << "ARP Packet:"
-               << " before pkts:" << *portStatsBefore.outBroadcastPkts_()
-               << ", after pkts:" << *portStatsAfter.outBroadcastPkts_()
-               << ", before bytes:" << *portStatsBefore.outBytes_()
-               << ", after bytes:" << *portStatsAfter.outBytes_();
-    EXPECT_NE(0, *portStatsAfter.outBytes_() - *portStatsBefore.outBytes_());
-    if (getAsic()->getAsicType() != cfg::AsicType::ASIC_TYPE_EBRO) {
-      EXPECT_EQ(
-          1,
-          *portStatsAfter.outBroadcastPkts_() -
-              *portStatsBefore.outBroadcastPkts_());
-    }
-  };
-  verifyAcrossWarmBoots(setup, verify);
-}
-
-TEST_F(HwPacketSendTest, PortTxEnableTest) {
-  auto setup = [=]() {};
-  auto verify = [=]() {
-    constexpr auto kNumPacketsToSend{100};
-    auto vlanId = utility::firstVlanID(initialConfig());
-    auto intfMac = utility::getFirstInterfaceMac(initialConfig());
-    auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO() + 1);
-
-    auto sendTcpPkts = [=](int numPacketsToSend) {
-      int dscpVal = 0;
-      for (int i = 0; i < numPacketsToSend; i++) {
-        auto kECT1 = 0x01; // ECN capable transport ECT(1)
-        constexpr auto kPayLoadLen{200};
-        auto txPacket = utility::makeTCPTxPacket(
-            getHwSwitch(),
-            vlanId,
-            srcMac,
-            intfMac,
-            folly::IPAddressV6("2620:0:1cfe:face:b00c::3"),
-            folly::IPAddressV6("2620:0:1cfe:face:b00c::4"),
-            8001,
-            8000,
-            /*
-             * Trailing 2 bits are for ECN, we do not want drops in
-             * these queues due to WRED thresholds!
-             */
-            static_cast<uint8_t>(dscpVal << 2 | kECT1),
-            255,
-            std::vector<uint8_t>(kPayLoadLen, 0xff));
-        getHwSwitch()->sendPacketOutOfPortSync(
-            std::move(txPacket), masterLogicalInterfacePortIds()[0]);
-      }
-    };
-
-    auto getOutPacketDelta = [](auto& after, auto& before) {
-      return (
-          (*after.outMulticastPkts_() + *after.outBroadcastPkts_() +
-           *after.outUnicastPkts_()) -
-          (*before.outMulticastPkts_() + *before.outBroadcastPkts_() +
-           *before.outUnicastPkts_()));
-    };
-
-    // Disable TX on port
-    utility::setPortTxEnable(
-        getHwSwitch(), masterLogicalInterfacePortIds()[0], false);
-
-    auto portStatsT0 = getLatestPortStats(masterLogicalInterfacePortIds()[0]);
-    sendTcpPkts(kNumPacketsToSend);
-    // We don't know how many packets will get out, wait for atleast 1.
-    waitForTxDoneOnPort(masterLogicalInterfacePortIds()[0], 1, portStatsT0);
-
-    auto portStatsT1 = getLatestPortStats(masterLogicalInterfacePortIds()[0]);
-    /*
-     * Most platforms would allow some packets to be TXed even after TX
-     * disable is set. But after the initial set of packets TX, no further
-     * TX happens, verify the same.
-     */
-    sendTcpPkts(kNumPacketsToSend);
-    auto portStatsT2 = getLatestPortStats(masterLogicalInterfacePortIds()[0]);
-
-    // Enable TX on port, and wait for a while for packets to TX
-    utility::setPortTxEnable(
-        getHwSwitch(), masterLogicalInterfacePortIds()[0], true);
-    /*
-     * For most platforms where TX disable will not drop traffic, will have
-     * the out count increment. However, there are implementations like in
-     * native TH where the packets are just dropped and TH4 where there is
-     * no accounting for these packets at all. Below API would wait for out
-     * or drop counts to increment, if neither, return after a timeout.
-     */
-    waitForTxDoneOnPort(
-        masterLogicalInterfacePortIds()[0], kNumPacketsToSend * 2, portStatsT0);
-
-    auto portStatsT3 = getLatestPortStats(masterLogicalInterfacePortIds()[0]);
-    XLOG(DBG0) << "Expected number of packets to be TXed: "
-               << kNumPacketsToSend * 2;
-    XLOG(DBG0) << "Delta packets during test, T0:T1 -> "
-               << getOutPacketDelta(portStatsT1, portStatsT0) << ", T1:T2 -> "
-               << getOutPacketDelta(portStatsT2, portStatsT1) << ", T2:T3 -> "
-               << getOutPacketDelta(portStatsT3, portStatsT2);
-
-    // TX disable works if no TX is seen between T1 and T2
-    EXPECT_EQ(0, getOutPacketDelta(portStatsT2, portStatsT1));
-  };
-  verifyAcrossWarmBoots(setup, verify);
-}
-
-TEST_F(HwPacketSendReceiveTest, LldpPacketReceiveSrcPort) {
-  auto setup = [=]() {};
-  auto verify = [=]() {
-    if (!isSupported(HwAsic::Feature::PKTIO)) {
-      return;
-    }
-    auto vlanId = VlanID(*initialConfig().vlanPorts()[0].vlanID());
-    auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
-    auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO() + 1);
-    auto payLoadSize = 256;
-    auto expectedNumPktsReceived = 1;
-    for (auto port :
-         {masterLogicalPortIds()[0], masterLogicalPortIds().back()}) {
-      auto txPacket = utility::makeEthTxPacket(
-          getHwSwitch(),
-          vlanId,
-          srcMac,
-          folly::MacAddress("01:80:c2:00:00:0e"),
-          facebook::fboss::ETHERTYPE::ETHERTYPE_LLDP,
-          std::vector<uint8_t>(payLoadSize, 0xff));
-      getHwSwitchEnsemble()->ensureSendPacketOutOfPort(
-          std::move(txPacket), port, std::nullopt);
-      ASSERT_TRUE(verifyNumPktsReceived(expectedNumPktsReceived++));
-      EXPECT_EQ(port, PortID(getLastPktSrcPort()));
-    }
-  };
-  verifyAcrossWarmBoots(setup, verify);
-}
-
 TEST_F(HwPacketSendReceiveLagTest, LacpPacketReceiveSrcPort) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     applyNewState(utility::enableTrunkPorts(getProgrammedState()));
   };
-  auto verify = [=]() {
+  auto verify = [=, this]() {
     auto vlanId = VlanID(*initialConfig().vlanPorts()[0].vlanID());
     auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
     auto payLoadSize = 256;
@@ -470,7 +242,7 @@ TEST_F(HwPacketSendReceiveLagTest, LacpPacketReceiveSrcPort) {
 
 TEST_F(HwPacketFloodTest, ArpRequestFloodTest) {
   auto setup = [=]() {};
-  auto verify = [=]() {
+  auto verify = [=, this]() {
     auto portStatsBefore = getLatestPortStats(masterLogicalPortIds());
     auto vlanId = VlanID(*initialConfig().vlanPorts()[0].vlanID());
     auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
@@ -494,7 +266,7 @@ TEST_F(HwPacketFloodTest, ArpRequestFloodTest) {
 
 TEST_F(HwPacketFloodTest, NdpFloodTest) {
   auto setup = [=]() {};
-  auto verify = [=]() {
+  auto verify = [=, this]() {
     auto retries = 5;
     auto vlanId = VlanID(*initialConfig().vlanPorts()[0].vlanID());
     auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);

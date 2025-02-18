@@ -8,7 +8,6 @@
  *
  */
 #include "fboss/agent/hw/sai/api/NeighborApi.h"
-#include "fboss/agent/hw/sai/api/MplsApi.h"
 #include "fboss/agent/hw/sai/fake/FakeSai.h"
 
 #include <folly/IPAddress.h>
@@ -32,9 +31,10 @@ class NeighborApiTest : public ::testing::Test {
   }
   SaiNeighborTraits::CreateAttributes createAttrs(
       std::optional<sai_uint32_t> metadata = std::nullopt,
-      std::optional<sai_uint32_t> encapIndex = std::nullopt) const {
+      std::optional<sai_uint32_t> encapIndex = std::nullopt,
+      bool noHostRoute = false) const {
     bool isLocal = encapIndex == std::nullopt;
-    return {dstMac, metadata, encapIndex, isLocal};
+    return {dstMac, metadata, encapIndex, isLocal, noHostRoute};
   }
   std::shared_ptr<FakeSai> fs;
   std::unique_ptr<NeighborApi> neighborApi;
@@ -136,6 +136,18 @@ TEST_F(NeighborApiTest, createV6NeighborWithMetdataRemote) {
   EXPECT_FALSE(
       neighborApi->getAttribute(n, SaiNeighborTraits::Attributes::IsLocal()));
 }
+
+TEST_F(NeighborApiTest, createNeighborNoHostRoute) {
+  SaiNeighborTraits::Attributes::DstMac dstMacAttribute(dstMac);
+  SaiNeighborTraits::NeighborEntry n(0, 0, ip6);
+  FakeNeighborEntry fn = std::make_tuple(0, 0, ip6);
+  neighborApi->create<SaiNeighborTraits>(
+      n, createAttrs(std::nullopt, std::nullopt, true));
+  EXPECT_EQ(fs->neighborManager.get(fn).dstMac, dstMac);
+  EXPECT_TRUE(fs->neighborManager.get(fn).noHostRoute);
+  EXPECT_TRUE(fs->neighborManager.get(fn).isLocal);
+}
+
 TEST_F(NeighborApiTest, removeV4Neighbor) {
   SaiNeighborTraits::NeighborEntry n(0, 0, ip4);
   neighborApi->create<SaiNeighborTraits>(n, createAttrs());

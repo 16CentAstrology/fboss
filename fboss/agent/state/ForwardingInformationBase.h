@@ -48,12 +48,13 @@ class ForwardingInformationBase
           ForwardingInformationBase<AddressT>,
           ForwardingInformationBaseTraits<AddressT>> {
  public:
-  ForwardingInformationBase() {}
-  virtual ~ForwardingInformationBase() override {}
+  ForwardingInformationBase() = default;
+  virtual ~ForwardingInformationBase() override = default;
 
   using Base = ThriftMapNode<
       ForwardingInformationBase<AddressT>,
       ForwardingInformationBaseTraits<AddressT>>;
+  using Base::modify;
 
   std::shared_ptr<Route<AddressT>> exactMatch(
       const RoutePrefix<AddressT>& prefix) const;
@@ -66,7 +67,17 @@ class ForwardingInformationBase
       RouterID rid,
       std::shared_ptr<SwitchState>* state);
 
+  void disableTTLDecrement(const folly::IPAddress& addr) {
+    setDisableTTLDecrement(addr, true);
+  }
+
+  void enableTTLDecrement(const folly::IPAddress& addr) {
+    setDisableTTLDecrement(addr, false);
+  }
+
  private:
+  void setDisableTTLDecrement(const folly::IPAddress& addr, bool disable);
+
   // Inherit the constructors required for clone()
   using Base::Base;
   friend class CloneAllocator;

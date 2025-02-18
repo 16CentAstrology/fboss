@@ -9,6 +9,7 @@
  */
 
 #include "fboss/agent/hw/sai/switch/SaiHostifManager.h"
+#include "fboss/agent/VoqUtils.h"
 #include "fboss/agent/hw/sai/store/SaiStore.h"
 #include "fboss/agent/hw/sai/switch/ConcurrentIndices.h"
 #include "fboss/agent/hw/sai/switch/SaiManagerTable.h"
@@ -20,6 +21,16 @@
 #include "thrift/lib/cpp/util/EnumUtils.h"
 
 #include <chrono>
+
+extern "C" {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+#ifndef IS_OSS_BRCM_SAI
+#include <experimental/saihostifextensions.h>
+#else
+#include <saihostifextensions.h>
+#endif
+#endif
+}
 
 using namespace std::chrono;
 
@@ -33,19 +44,29 @@ SaiHostifManager::SaiHostifManager(
     : saiStore_(saiStore),
       managerTable_(managerTable),
       platform_(platform),
-      concurrentIndices_(concurrentIndices) {
+      concurrentIndices_(concurrentIndices),
+      cpuStats_(HwCpuFb303Stats(
+          {} /*queueId2Name*/,
+          platform->getMultiSwitchStatsPrefix())),
+      cpuSysPortStats_(HwSysPortFb303Stats(
+          "cpu.sysport",
+          {},
+          platform->getMultiSwitchStatsPrefix())) {
   if (platform_->getAsic()->isSupported(HwAsic::Feature::CPU_PORT)) {
     loadCpuPort();
   }
 }
 
 SaiHostifManager::~SaiHostifManager() {
-  if (globalDscpToTcQosMap_) {
+  if (qosPolicy_) {
     clearQosPolicy();
   }
+  // clear all user defined trap
+  auto& store = saiStore_->get<SaiHostifUserDefinedTrapTraits>();
+  store.release();
 }
 
-std::pair<sai_hostif_trap_type_t, sai_packet_action_t>
+std::pair<sai_int32_t, sai_packet_action_t>
 SaiHostifManager::packetReasonToHostifTrap(
     cfg::PacketRxReason reason,
     const SaiPlatform* platform) {
@@ -58,17 +79,29 @@ SaiHostifManager::packetReasonToHostifTrap(
    * will generate an ARP/NdP which has to be flooded to the vlan members.
    * IP2ME, BGP and BGPV6 are destined to the switch and hence configured as
    * TRAP. LLDP and DHCP is link local and hence configured as TRAP.
+   *
+   * On DNX platforms, use action trap for arp/ndp only, because
+   * 1) there is no vlan member in DNX user case
+   * 2) two copies of packet would be punt to CPU if the ARP/NDP pkt is
+   * destined to the switch itself
    */
+  sai_packet_action_t ndpAction;
+  if ((platform->getAsic()->getAsicType() ==
+       cfg::AsicType::ASIC_TYPE_JERICHO2) ||
+      (platform->getAsic()->getAsicType() ==
+       cfg::AsicType::ASIC_TYPE_JERICHO3)) {
+    ndpAction = SAI_PACKET_ACTION_TRAP;
+  } else {
+    ndpAction = SAI_PACKET_ACTION_COPY;
+  }
   switch (reason) {
     case cfg::PacketRxReason::ARP:
-      return std::make_pair(
-          SAI_HOSTIF_TRAP_TYPE_ARP_REQUEST, SAI_PACKET_ACTION_COPY);
+      return std::make_pair(SAI_HOSTIF_TRAP_TYPE_ARP_REQUEST, ndpAction);
     case cfg::PacketRxReason::ARP_RESPONSE:
-      return std::make_pair(
-          SAI_HOSTIF_TRAP_TYPE_ARP_RESPONSE, SAI_PACKET_ACTION_COPY);
+      return std::make_pair(SAI_HOSTIF_TRAP_TYPE_ARP_RESPONSE, ndpAction);
     case cfg::PacketRxReason::NDP:
       return std::make_pair(
-          SAI_HOSTIF_TRAP_TYPE_IPV6_NEIGHBOR_DISCOVERY, SAI_PACKET_ACTION_COPY);
+          SAI_HOSTIF_TRAP_TYPE_IPV6_NEIGHBOR_DISCOVERY, ndpAction);
     case cfg::PacketRxReason::CPU_IS_NHOP:
       return std::make_pair(SAI_HOSTIF_TRAP_TYPE_IP2ME, SAI_PACKET_ACTION_TRAP);
     case cfg::PacketRxReason::DHCP:
@@ -104,6 +137,13 @@ SaiHostifManager::packetReasonToHostifTrap(
     case cfg::PacketRxReason::SAMPLEPACKET:
       return std::make_pair(
           SAI_HOSTIF_TRAP_TYPE_SAMPLEPACKET, SAI_PACKET_ACTION_TRAP);
+    case cfg::PacketRxReason::EAPOL:
+      return std::make_pair(SAI_HOSTIF_TRAP_TYPE_EAPOL, SAI_PACKET_ACTION_TRAP);
+    case cfg::PacketRxReason::PORT_MTU_ERROR:
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+      return std::make_pair(
+          SAI_HOSTIF_TRAP_TYPE_PORT_MTU_ERROR, SAI_PACKET_ACTION_TRAP);
+#endif
     case cfg::PacketRxReason::MPLS_UNKNOWN_LABEL:
     case cfg::PacketRxReason::BPDU:
     case cfg::PacketRxReason::L3_SLOW_PATH:
@@ -120,17 +160,32 @@ SaiHostifManager::makeHostifTrapAttributes(
     HostifTrapGroupSaiId trapGroupId,
     uint16_t priority,
     const SaiPlatform* platform) {
-  sai_hostif_trap_type_t hostifTrapId;
+  sai_int32_t hostifTrapId;
   sai_packet_action_t hostifPacketAction;
   std::tie(hostifTrapId, hostifPacketAction) =
       packetReasonToHostifTrap(trapId, platform);
   SaiHostifTrapTraits::Attributes::PacketAction packetAction{
       hostifPacketAction};
   SaiHostifTrapTraits::Attributes::TrapType trapType{hostifTrapId};
-  SaiHostifTrapTraits::Attributes::TrapPriority trapPriority{priority};
-  SaiHostifTrapTraits::Attributes::TrapGroup trapGroup{trapGroupId};
+  std::optional<SaiHostifTrapTraits::Attributes::TrapPriority> trapPriority{};
+  std::optional<SaiHostifTrapTraits::Attributes::TrapGroup> trapGroup{};
+  if (hostifPacketAction == SAI_PACKET_ACTION_TRAP ||
+      hostifPacketAction == SAI_PACKET_ACTION_COPY) {
+    trapPriority = priority;
+    trapGroup = SaiHostifTrapTraits::Attributes::TrapGroup(trapGroupId);
+  }
   return SaiHostifTrapTraits::CreateAttributes{
       trapType, packetAction, trapPriority, trapGroup};
+}
+
+SaiHostifUserDefinedTrapTraits::CreateAttributes
+SaiHostifManager::makeHostifUserDefinedTrapAttributes(
+    HostifTrapGroupSaiId trapGroupId,
+    std::optional<uint16_t> priority,
+    std::optional<uint16_t> trapType) {
+  SaiHostifUserDefinedTrapTraits::Attributes::TrapGroup trapGroup{trapGroupId};
+  return SaiHostifUserDefinedTrapTraits::CreateAttributes{
+      trapGroupId, priority, trapType};
 }
 
 std::shared_ptr<SaiHostifTrapGroup> SaiHostifManager::ensureHostifTrapGroup(
@@ -139,6 +194,24 @@ std::shared_ptr<SaiHostifTrapGroup> SaiHostifManager::ensureHostifTrapGroup(
   SaiHostifTrapGroupTraits::AdapterHostKey k{queueId};
   SaiHostifTrapGroupTraits::CreateAttributes attributes{queueId, std::nullopt};
   return store.setObject(k, attributes);
+}
+
+std::shared_ptr<SaiHostifUserDefinedTrapHandle>
+SaiHostifManager::ensureHostifUserDefinedTrap(uint32_t queueId) {
+  XLOG(DBG2) << "ensure user defined trap for cpu queue " << queueId;
+  auto hostifTrapGroup = ensureHostifTrapGroup(queueId);
+  auto attributes = makeHostifUserDefinedTrapAttributes(
+      hostifTrapGroup->adapterKey(),
+      SaiHostifUserDefinedTrapTraits::Attributes::TrapPriority::defaultValue(),
+      SaiHostifUserDefinedTrapTraits::Attributes::TrapType::defaultValue());
+  SaiHostifUserDefinedTrapTraits::AdapterHostKey k =
+      GET_ATTR(HostifUserDefinedTrap, TrapGroup, attributes);
+  auto& store = saiStore_->get<SaiHostifUserDefinedTrapTraits>();
+  auto userDefinedTrap = store.setObject(k, attributes);
+  auto handle = std::make_shared<SaiHostifUserDefinedTrapHandle>();
+  handle->trapGroup = hostifTrapGroup;
+  handle->trap = userDefinedTrap;
+  return handle;
 }
 
 std::shared_ptr<SaiHostifTrapCounter> SaiHostifManager::createHostifTrapCounter(
@@ -239,7 +312,7 @@ void SaiHostifManager::processQosDelta(
   auto newQos = controlPlaneDelta.getNew()->getQosPolicy();
   if (oldQos != newQos) {
     if (newQos) {
-      setQosPolicy();
+      setCpuQosPolicy(newQos->cref());
     } else if (oldQos) {
       clearQosPolicy();
     }
@@ -310,6 +383,12 @@ void SaiHostifManager::processRxReasonToQueueDelta(
 
   for (auto index = 0; index < oldRxReasonToQueue->size(); index++) {
     const auto& oldRxReasonEntry = oldRxReasonToQueue->cref(index);
+    if (oldRxReasonEntry->cref<switch_config_tags::rxReason>()->toThrift() ==
+        cfg::PacketRxReason::UNMATCHED) {
+      // UNMATCHED was never added in the first place, so ignoring here
+      XLOG(WARN) << "ignoring UNMATCHED packet rx reason";
+      continue;
+    }
     auto newRxReasonEntry = std::find_if(
         newRxReasonToQueue->cbegin(),
         newRxReasonToQueue->cend(),
@@ -335,15 +414,68 @@ void SaiHostifManager::processQueueDelta(
   changeCpuQueue(oldQueues, newQueues);
 }
 
-void SaiHostifManager::processHostifDelta(
+void SaiHostifManager::processVoqDelta(
     const DeltaValue<ControlPlane>& controlPlaneDelta) {
+  const auto& newVoqs =
+      controlPlaneDelta.getNew()->cref<switch_state_tags::voqs>();
+  if (!platform_->getAsic()->isSupported(HwAsic::Feature::VOQ) &&
+      !newVoqs->empty()) {
+    throw FbossError(
+        "Got non-empty cpu voq state on platform not supporting VOQ");
+  }
+  if (newVoqs->empty() &&
+      platform_->getAsic()->isSupported(HwAsic::Feature::VOQ)) {
+    // TODO(daiweix): remove this if clause after populating cpu voq
+    // configs everywhere. For now, use the same voq config from egq
+    const auto& oldQueues =
+        controlPlaneDelta.getOld()->cref<switch_state_tags::queues>();
+    const auto& newQueues =
+        controlPlaneDelta.getNew()->cref<switch_state_tags::queues>();
+    changeCpuVoq(oldQueues, newQueues);
+  } else {
+    const auto& oldVoqs =
+        controlPlaneDelta.getOld()->cref<switch_state_tags::voqs>();
+    changeCpuVoq(oldVoqs, newVoqs);
+  }
+}
+
+void SaiHostifManager::processHostifDelta(
+    const ThriftMapDelta<MultiControlPlane>& multiSwitchControlPlaneDelta) {
+  DeltaFunctions::forEachChanged(
+      multiSwitchControlPlaneDelta,
+      [&](const std::shared_ptr<ControlPlane>& oldCPU,
+          const std::shared_ptr<ControlPlane>& newCPU) {
+        auto controlPlaneDelta = DeltaValue<ControlPlane>(oldCPU, newCPU);
+        processHostifEntryDelta(controlPlaneDelta);
+      });
+  DeltaFunctions::forEachAdded(
+      multiSwitchControlPlaneDelta,
+      [&](const std::shared_ptr<ControlPlane>& newCPU) {
+        auto controlPlaneDelta =
+            DeltaValue<ControlPlane>(std::make_shared<ControlPlane>(), newCPU);
+        processHostifEntryDelta(controlPlaneDelta);
+      });
+  DeltaFunctions::forEachRemoved(
+      multiSwitchControlPlaneDelta,
+      [&](const std::shared_ptr<ControlPlane>& oldCPU) {
+        auto controlPlaneDelta =
+            DeltaValue<ControlPlane>(oldCPU, std::make_shared<ControlPlane>());
+        processHostifEntryDelta(controlPlaneDelta);
+      });
+}
+
+void SaiHostifManager::processHostifEntryDelta(
+    const DeltaValue<ControlPlane>& controlPlaneDelta) {
+  if (*controlPlaneDelta.getOld() == *controlPlaneDelta.getNew()) {
+    return;
+  }
   // TODO: Can we have reason code to a queue mapping that does not have
   // corresponding sai queue oid for cpu port ?
   processRxReasonToQueueDelta(controlPlaneDelta);
   processQueueDelta(controlPlaneDelta);
+  processVoqDelta(controlPlaneDelta);
   processQosDelta(controlPlaneDelta);
 }
-
 SaiQueueHandle* SaiHostifManager::getQueueHandleImpl(
     const SaiQueueConfig& saiQueueConfig) const {
   auto itr = cpuPortHandle_->queues.find(saiQueueConfig);
@@ -366,6 +498,83 @@ SaiQueueHandle* SaiHostifManager::getQueueHandle(
   return getQueueHandleImpl(saiQueueConfig);
 }
 
+SaiQueueHandle* FOLLY_NULLABLE
+SaiHostifManager::getVoqHandleImpl(const SaiQueueConfig& saiQueueConfig) const {
+  auto itr = cpuPortHandle_->voqs.find(saiQueueConfig);
+  if (itr == cpuPortHandle_->voqs.end()) {
+    XLOG(FATAL) << "No cpu voq handle configured for " << saiQueueConfig.first;
+  }
+  if (!itr->second.get()) {
+    XLOG(FATAL) << "Invalid null SaiQueueHandle for cpu voq";
+  }
+  return itr->second.get();
+}
+
+const SaiQueueHandle* FOLLY_NULLABLE
+SaiHostifManager::getVoqHandle(const SaiQueueConfig& saiQueueConfig) const {
+  return getVoqHandleImpl(saiQueueConfig);
+}
+
+SaiQueueHandle* FOLLY_NULLABLE
+SaiHostifManager::getVoqHandle(const SaiQueueConfig& saiQueueConfig) {
+  return getVoqHandleImpl(saiQueueConfig);
+}
+
+void SaiHostifManager::changeCpuVoq(
+    const ControlPlane::PortQueues& oldVoqConfig,
+    const ControlPlane::PortQueues& newVoqConfig) {
+  cpuPortHandle_->configuredVoqs.clear();
+
+  auto maxCpuVoqs =
+      getLocalPortNumVoqs(cfg::PortType::CPU_PORT, cfg::Scope::LOCAL);
+  for (const auto& newPortVoq : std::as_const(*newVoqConfig)) {
+    // Voq create or update
+    if (newPortVoq->getID() > maxCpuVoqs) {
+      throw FbossError(
+          "Voq ID : ",
+          newPortVoq->getID(),
+          " exceeds max supported CPU queues: ",
+          maxCpuVoqs);
+    }
+    SaiQueueConfig saiVoqConfig =
+        std::make_pair(newPortVoq->getID(), newPortVoq->getStreamType());
+    auto portVoq = newPortVoq->clone();
+    auto voqHandle = getVoqHandle(saiVoqConfig);
+    if (newPortVoq->getMaxDynamicSharedBytes()) {
+      portVoq->setMaxDynamicSharedBytes(
+          *newPortVoq->getMaxDynamicSharedBytes());
+    }
+    CHECK_NOTNULL(voqHandle);
+    XLOG(DBG2) << "set maxDynamicSharedBytes "
+               << (portVoq->getMaxDynamicSharedBytes().has_value()
+                       ? folly::to<std::string>(static_cast<int>(
+                             portVoq->getMaxDynamicSharedBytes().value()))
+                       : "None")
+               << " for cpu voq " << portVoq->getID();
+    managerTable_->queueManager().changeQueue(voqHandle, *portVoq);
+    if (newPortVoq->getName().has_value()) {
+      auto voqName = *newPortVoq->getName();
+      cpuSysPortStats_.queueChanged(newPortVoq->getID(), voqName);
+      CHECK_NOTNULL(voqHandle);
+      XLOG(DBG2) << "add configured cpu voq " << newPortVoq->getID();
+      cpuPortHandle_->configuredVoqs.push_back(voqHandle);
+    }
+  }
+  for (const auto& oldPortVoq : std::as_const(*oldVoqConfig)) {
+    auto portVoqIter = std::find_if(
+        newVoqConfig->cbegin(),
+        newVoqConfig->cend(),
+        [&](const std::shared_ptr<PortQueue> portVoq) {
+          return portVoq->getID() == oldPortVoq->getID();
+        });
+    // Voq Remove
+    if (portVoqIter == newVoqConfig->cend()) {
+      cpuSysPortStats_.queueRemoved(oldPortVoq->getID());
+      XLOG(DBG2) << "remove configured cpu voq " << oldPortVoq->getID();
+    }
+  }
+}
+
 void SaiHostifManager::changeCpuQueue(
     const ControlPlane::PortQueues& oldQueueConfig,
     const ControlPlane::PortQueues& newQueueConfig) {
@@ -386,17 +595,22 @@ void SaiHostifManager::changeCpuQueue(
         std::make_pair(newPortQueue->getID(), newPortQueue->getStreamType());
     auto queueHandle = getQueueHandle(saiQueueConfig);
     auto portQueue = newPortQueue->clone();
-    portQueue->setReservedBytes(
-        newPortQueue->getReservedBytes()
-            ? *newPortQueue->getReservedBytes()
-            : asic->getDefaultReservedBytes(
-                  newPortQueue->getStreamType(), true /*cpu port*/));
-    portQueue->setScalingFactor(
-        newPortQueue->getScalingFactor()
-            ? *newPortQueue->getScalingFactor()
-            : asic->getDefaultScalingFactor(
-                  newPortQueue->getStreamType(), true /*cpu port*/));
-    managerTable_->queueManager().changeQueue(queueHandle, *portQueue);
+    if (auto reservedBytes = newPortQueue->getReservedBytes()) {
+      portQueue->setReservedBytes(*reservedBytes);
+    } else if (
+        auto defaultReservedBytes = asic->getDefaultReservedBytes(
+            newPortQueue->getStreamType(), cfg::PortType::CPU_PORT)) {
+      portQueue->setReservedBytes(*defaultReservedBytes);
+    }
+    if (auto scalingFactor = newPortQueue->getScalingFactor()) {
+      portQueue->setScalingFactor(*scalingFactor);
+    } else if (
+        auto defaultScalingFactor = asic->getDefaultScalingFactor(
+            newPortQueue->getStreamType(), true /*cpu port*/)) {
+      portQueue->setScalingFactor(*defaultScalingFactor);
+    }
+    managerTable_->queueManager().changeQueue(
+        queueHandle, *portQueue, nullptr /*swPort*/, cfg::PortType::CPU_PORT);
     if (newPortQueue->getName().has_value()) {
       auto queueName = *newPortQueue->getName();
       cpuStats_.queueChanged(newPortQueue->getID(), queueName);
@@ -442,13 +656,49 @@ void SaiHostifManager::loadCpuPortQueues() {
       managerTable_->queueManager().loadQueues(queueSaiIds);
 }
 
+void SaiHostifManager::loadCpuSystemPortVoqs() {
+  std::vector<sai_object_id_t> voqList;
+  voqList.resize(1);
+  SaiSystemPortTraits::Attributes::QosVoqList voqListAttribute{voqList};
+  auto voqSaiIdList = SaiApiTable::getInstance()->systemPortApi().getAttribute(
+      cpuPortHandle_->cpuSystemPortId.value(), voqListAttribute);
+  if (voqSaiIdList.size() == 0) {
+    throw FbossError("no voqs exist for cpu port ");
+  }
+  std::vector<QueueSaiId> voqSaiIds;
+  voqSaiIds.reserve(voqSaiIdList.size());
+  std::transform(
+      voqSaiIdList.begin(),
+      voqSaiIdList.end(),
+      std::back_inserter(voqSaiIds),
+      [](sai_object_id_t voqId) -> QueueSaiId { return QueueSaiId(voqId); });
+  cpuPortHandle_->voqs = managerTable_->queueManager().loadQueues(voqSaiIds);
+}
+
 void SaiHostifManager::loadCpuPort() {
   cpuPortHandle_ = std::make_unique<SaiCpuPortHandle>();
   cpuPortHandle_->cpuPortId = managerTable_->switchManager().getCpuPort();
+  XLOG(DBG5) << "Got cpu sai port ID " << cpuPortHandle_->cpuPortId;
+  const auto& portApi = SaiApiTable::getInstance()->portApi();
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::VOQ)) {
+    auto attr = SaiPortTraits::Attributes::SystemPort{};
+    cpuPortHandle_->cpuSystemPortId =
+        portApi.getAttribute(cpuPortHandle_->cpuPortId, attr);
+    XLOG(DBG5) << "Got cpu sai system port ID "
+               << cpuPortHandle_->cpuSystemPortId.value();
+  }
   loadCpuPortQueues();
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::VOQ)) {
+    loadCpuSystemPortVoqs();
+  }
 }
 
 void SaiHostifManager::updateStats(bool updateWatermarks) {
+  if (updateWatermarks &&
+      !platform_->getAsic()->isSupported(
+          HwAsic::Feature::CPU_QUEUE_WATERMARK_STATS)) {
+    throw FbossError("Watermarks are not supported on CPU queues");
+  }
   auto now = duration_cast<seconds>(system_clock::now().time_since_epoch());
   HwPortStats cpuQueueStats;
   managerTable_->queueManager().updateStats(
@@ -460,6 +710,13 @@ void SaiHostifManager::updateStats(bool updateWatermarks) {
           queueId2Name.first,
           cpuQueueStats.queueWatermarkBytes_()->at(queueId2Name.first));
     }
+  }
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::VOQ)) {
+    const auto& prevPortStats = cpuSysPortStats_.portStats();
+    HwSysPortStats curPortStats{prevPortStats};
+    managerTable_->queueManager().updateStats(
+        cpuPortHandle_->configuredVoqs, curPortStats, updateWatermarks, true);
+    cpuSysPortStats_.updateStats(curPortStats, now);
   }
 }
 
@@ -473,7 +730,8 @@ uint32_t SaiHostifManager::getMaxCpuQueues() const {
   auto asic = platform_->getAsic();
   auto cpuQueueTypes = asic->getQueueStreamTypes(cfg::PortType::CPU_PORT);
   CHECK_EQ(cpuQueueTypes.size(), 1);
-  return asic->getDefaultNumPortQueues(*cpuQueueTypes.begin(), true /*cpu*/);
+  return asic->getDefaultNumPortQueues(
+      *cpuQueueTypes.begin(), cfg::PortType::CPU_PORT);
 }
 
 QueueConfig SaiHostifManager::getQueueSettings() const {
@@ -493,6 +751,26 @@ QueueConfig SaiHostifManager::getQueueSettings() const {
         return portQueue->getID() < maxCpuQueues;
       });
   return filteredQueueConfig;
+}
+
+QueueConfig SaiHostifManager::getVoqSettings() const {
+  if (!cpuPortHandle_) {
+    return QueueConfig{};
+  }
+  auto voqConfig =
+      managerTable_->queueManager().getQueueSettings(cpuPortHandle_->voqs);
+  auto maxCpuVoqs =
+      getLocalPortNumVoqs(cfg::PortType::CPU_PORT, cfg::Scope::LOCAL);
+  QueueConfig filteredVoqConfig;
+  // Prepare voq config only upto max CPU voqs
+  std::copy_if(
+      voqConfig.begin(),
+      voqConfig.end(),
+      std::back_inserter(filteredVoqConfig),
+      [maxCpuVoqs](const auto& portVoq) {
+        return portVoq->getID() < maxCpuVoqs;
+      });
+  return filteredVoqConfig;
 }
 
 SaiHostifTrapHandle* SaiHostifManager::getHostifTrapHandleImpl(
@@ -517,64 +795,97 @@ SaiHostifTrapHandle* SaiHostifManager::getHostifTrapHandle(
   return getHostifTrapHandleImpl(rxReason);
 }
 
-void SaiHostifManager::setQosPolicy() {
-  auto& qosMapManager = managerTable_->qosMapManager();
-  XLOG(DBG2) << "Set cpu qos map";
-  // We allow only a single QoS policy right now, so
-  // pick that up.
-  auto qosMapHandle = qosMapManager.getQosMap();
-  globalDscpToTcQosMap_ = qosMapHandle->dscpToTcMap;
-  globalTcToQueueQosMap_ = qosMapHandle->tcToQueueMap;
-
-  /*
-   * TODO(skhare)
-   *
-   * DSCP to Queue and Queue to TC mapping is a per port config. When FBOSS
-   * sets it on a particular port, the expectation is that this configuration
-   * will take effect for packets ingress on that port.
-   *
-   * However, when FBOSS applies this configuration on the CPU port, a bug in
-   * BRCM-SAI means that the configuration is applied for packets *egress* to
-   * CPU port. The fix is involved and may not be available immediately. Thus,
-   * as a workaround, skip setting this configuration the CPU port:
-   *
-   *  - By default, BRCM SAI maps TC 0 through 9 to Queue 0 through 9
-   *    respectively.
-   *  - OpenR ACL has action to set TC to 9, so in conjunction with the default
-   *    TC to Queue mapping, it could steer OpenR packets to the right queue
-   *    (high priority queue 9).
-   *  - Packets ingress from CPU port continue to follow Olympic model since
-   *    CPU port shares the cos map configuration on other front panel port
-   *    (BRCM ASIC behavior).
-   *
-   * Once the longer term fix is available to BRCM-SAI, this diff will be
-   * reverted.
-   */
-  auto tcToQueueAdapterKey = (platform_->getAsic()->getAsicVendor() ==
-                              HwAsic::AsicVendor::ASIC_VENDOR_BCM)
-      ? SAI_NULL_OBJECT_ID
-      : globalTcToQueueQosMap_->adapterKey();
-  setCpuQosPolicy(
-      globalDscpToTcQosMap_->adapterKey(), QosMapSaiId(tcToQueueAdapterKey));
-}
-
-void SaiHostifManager::clearQosPolicy() {
-  setCpuQosPolicy(
-      QosMapSaiId(SAI_NULL_OBJECT_ID), QosMapSaiId(SAI_NULL_OBJECT_ID));
-  globalDscpToTcQosMap_.reset();
-  globalTcToQueueQosMap_.reset();
+void SaiHostifManager::qosPolicyUpdated(const std::string& qosPolicy) {
+  if (qosPolicy_ == qosPolicy) {
+    // On J3 platforms, different qos policies are applied to frontpanel
+    // ports and cpu port. So, set new qos policy only when the qos policy
+    // applied to cpu is updated.
+    setCpuQosPolicy(qosPolicy_);
+  }
 }
 
 void SaiHostifManager::setCpuQosPolicy(
+    const std::optional<std::string>& qosPolicy) {
+  auto& qosMapManager = managerTable_->qosMapManager();
+  XLOG(DBG2) << "Set cpu qos map " << (qosPolicy ? qosPolicy.value() : "null");
+  // We allow only a single QoS policy right now, so
+  // pick that up.
+  auto qosMapHandle = qosMapManager.getQosMap(qosPolicy);
+  if (!qosMapHandle) {
+    throw FbossError("empty qos map handle for cpu port");
+  }
+  setCpuPortQosPolicy(
+      qosMapHandle->dscpToTcMap->adapterKey(),
+      qosMapHandle->tcToQueueMap->adapterKey());
+  if (qosMapHandle->tcToVoqMap) {
+    setCpuSystemPortQosPolicy(qosMapHandle->tcToVoqMap->adapterKey());
+  }
+  // update qos map shared pointers at last to keep
+  // new qos map objects and release unused ones
+  dscpToTcQosMap_ = qosMapHandle->dscpToTcMap;
+  tcToQueueQosMap_ = qosMapHandle->tcToQueueMap;
+  tcToVoqMap_ = qosMapHandle->tcToVoqMap;
+  qosPolicy_ = qosMapHandle->name;
+}
+
+void SaiHostifManager::clearQosPolicy() {
+  setCpuPortQosPolicy(
+      QosMapSaiId(SAI_NULL_OBJECT_ID), QosMapSaiId(SAI_NULL_OBJECT_ID));
+  if (tcToVoqMap_) {
+    setCpuSystemPortQosPolicy(QosMapSaiId(SAI_NULL_OBJECT_ID));
+  }
+  dscpToTcQosMap_.reset();
+  tcToQueueQosMap_.reset();
+  tcToVoqMap_.reset();
+  qosPolicy_.reset();
+}
+
+//
+// XGS:
+//  - Setting tcToQueueMap to non SAI_NULL_OBJECT_ID fails.
+//  - Instead, we need to clear (SAI_NULL_OBJECT_ID) and set tcToQueueMap.
+//  - CS00012322624 to debug.
+void SaiHostifManager::setCpuPortQosPolicy(
     QosMapSaiId dscpToTc,
     QosMapSaiId tcToQueue) {
   auto& portApi = SaiApiTable::getInstance()->portApi();
-  portApi.setAttribute(
-      cpuPortHandle_->cpuPortId,
-      SaiPortTraits::Attributes::QosDscpToTcMap{dscpToTc});
-  portApi.setAttribute(
-      cpuPortHandle_->cpuPortId,
-      SaiPortTraits::Attributes::QosTcToQueueMap{tcToQueue});
+  auto oldDscpToTc = portApi.getAttribute(
+      cpuPortHandle_->cpuPortId, SaiPortTraits::Attributes::QosDscpToTcMap{});
+  auto oldTcToQueue = portApi.getAttribute(
+      cpuPortHandle_->cpuPortId, SaiPortTraits::Attributes::QosTcToQueueMap{});
+  if (oldDscpToTc != dscpToTc) {
+    portApi.setAttribute(
+        cpuPortHandle_->cpuPortId,
+        SaiPortTraits::Attributes::QosDscpToTcMap{
+            QosMapSaiId(SAI_NULL_OBJECT_ID)});
+    portApi.setAttribute(
+        cpuPortHandle_->cpuPortId,
+        SaiPortTraits::Attributes::QosDscpToTcMap{dscpToTc});
+  }
+  if (oldTcToQueue != tcToQueue) {
+    portApi.setAttribute(
+        cpuPortHandle_->cpuPortId,
+        SaiPortTraits::Attributes::QosTcToQueueMap{
+            QosMapSaiId(SAI_NULL_OBJECT_ID)});
+    portApi.setAttribute(
+        cpuPortHandle_->cpuPortId,
+        SaiPortTraits::Attributes::QosTcToQueueMap{tcToQueue});
+  }
+}
+
+void SaiHostifManager::setCpuSystemPortQosPolicy(QosMapSaiId tcToQueue) {
+  if (!cpuPortHandle_->cpuSystemPortId) {
+    return;
+  }
+  auto& systemPortApi = SaiApiTable::getInstance()->systemPortApi();
+  auto oldTcToQueue = systemPortApi.getAttribute(
+      cpuPortHandle_->cpuSystemPortId.value(),
+      SaiSystemPortTraits::Attributes::QosTcToQueueMap{});
+  if (oldTcToQueue != tcToQueue) {
+    systemPortApi.setAttribute(
+        cpuPortHandle_->cpuSystemPortId.value(),
+        SaiSystemPortTraits::Attributes::QosTcToQueueMap{tcToQueue});
+  }
 }
 
 } // namespace facebook::fboss

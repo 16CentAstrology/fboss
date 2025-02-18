@@ -11,13 +11,17 @@
 #include "fboss/agent/hw/sai/switch/SaiSwitchManager.h"
 
 #include "fboss/agent/FbossError.h"
+#include "fboss/agent/hw/HwSwitchFb303Stats.h"
 #include "fboss/agent/hw/sai/api/AdapterKeySerializers.h"
 #include "fboss/agent/hw/sai/api/SaiApiTable.h"
 #include "fboss/agent/hw/sai/api/SwitchApi.h"
 #include "fboss/agent/hw/sai/api/Types.h"
 #include "fboss/agent/hw/sai/switch/SaiAclTableGroupManager.h"
+#include "fboss/agent/hw/sai/switch/SaiBufferManager.h"
 #include "fboss/agent/hw/sai/switch/SaiManagerTable.h"
+#include "fboss/agent/hw/sai/switch/SaiUdfManager.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
+#include "fboss/agent/hw/switch_asics/Jericho3Asic.h"
 #include "fboss/agent/platforms/sai/SaiPlatform.h"
 #include "fboss/agent/state/DeltaFunctions.h"
 #include "fboss/agent/state/LoadBalancer.h"
@@ -30,11 +34,6 @@
 extern "C" {
 #include <sai.h>
 }
-
-DEFINE_uint32(
-    counter_refresh_interval,
-    1,
-    "Counter refresh interval in seconds. Set it to 0 to fetch stats from HW");
 
 DEFINE_bool(
     skip_setting_src_mac,
@@ -61,6 +60,114 @@ sai_hash_algorithm_t toSaiHashAlgo(cfg::HashingAlgorithm algo) {
       throw FbossError("Unsupported hash algorithm :", algo);
   }
 }
+
+bool isJerichoAsic(cfg::AsicType asicType) {
+  return asicType == cfg::AsicType::ASIC_TYPE_JERICHO2 ||
+      asicType == cfg::AsicType::ASIC_TYPE_JERICHO3;
+}
+
+void fillHwSwitchDropStats(
+    const folly::F14FastMap<sai_stat_id_t, uint64_t>& counterId2Value,
+    HwSwitchDropStats& hwSwitchDropStats,
+    cfg::AsicType asicType) {
+  auto fillAsicSpecificCounter = [](auto counterId,
+                                    auto val,
+                                    auto asicType,
+                                    auto& dropStats) {
+    if (!isJerichoAsic(asicType)) {
+      throw FbossError("Configured drop reason stats only supported for J2/J3");
+    }
+    switch (counterId) {
+      /*
+       * SAI_SWITCH_STAT_OUT_CONFIGURED_DROP_REASONS_0_DROPPED_PKTS -
+       * FDR cell drops
+       * SAI_SWITCH_STAT_OUT_CONFIGURED_DROP_REASONS_1_DROPPED_PKTS -
+       * Reassembly drops due to corrupted cells
+       * SAI_SWITCH_STAT_OUT_CONFIGURED_DROP_REASONS_2_DROPPED_PKTS -
+       * Reassembly drops due to missing cells
+       */
+      case SAI_SWITCH_STAT_OUT_CONFIGURED_DROP_REASONS_0_DROPPED_PKTS:
+        dropStats.fdrCellDrops() = val;
+        break;
+      case SAI_SWITCH_STAT_OUT_CONFIGURED_DROP_REASONS_1_DROPPED_PKTS:
+        dropStats.corruptedCellPacketIntegrityDrops() = val;
+        break;
+      case SAI_SWITCH_STAT_OUT_CONFIGURED_DROP_REASONS_2_DROPPED_PKTS:
+        dropStats.missingCellPacketIntegrityDrops() = val;
+        break;
+      /*
+       * From CS00012306170
+       * SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_0_DROPPED_PKTS - VOQ
+       * resource exhaustion drops
+       * SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_1_DROPPED_PKTS - Global
+       * resource exhaustion drops
+       * SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_2_DROPPED_PKTS - SRAM
+       * resource exhaustion drops
+       * SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_3_DROPPED_PKTS - VSQ
+       * resource exhaustion drops
+       * SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_4_DROPPED_PKTS - Drop
+       * precedence drops
+       * SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_5_DROPPED_PKTS - Queue
+       * resolution drops
+       * SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_6_DROPPED_PKTS - Ingress PP
+       * VOQ drops due to PP reject bit
+       */
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_0_DROPPED_PKTS:
+        dropStats.voqResourceExhaustionDrops() = val;
+        break;
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_1_DROPPED_PKTS:
+        dropStats.globalResourceExhaustionDrops() = val;
+        break;
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_2_DROPPED_PKTS:
+        dropStats.sramResourceExhaustionDrops() = val;
+        break;
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_3_DROPPED_PKTS:
+        dropStats.vsqResourceExhaustionDrops() = val;
+        break;
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_4_DROPPED_PKTS:
+        dropStats.dropPrecedenceDrops() = val;
+        break;
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_5_DROPPED_PKTS:
+        dropStats.queueResolutionDrops() = val;
+        break;
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_6_DROPPED_PKTS:
+        dropStats.ingressPacketPipelineRejectDrops() = val;
+        break;
+      default:
+        throw FbossError("Unexpected configured counter id: ", counterId);
+    }
+  };
+  for (auto counterIdAndValue : counterId2Value) {
+    auto [counterId, value] = counterIdAndValue;
+    switch (counterId) {
+      case SAI_SWITCH_STAT_REACHABILITY_DROP:
+        hwSwitchDropStats.globalReachabilityDrops() = value;
+        break;
+      case SAI_SWITCH_STAT_GLOBAL_DROP:
+        hwSwitchDropStats.globalDrops() = value;
+        break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+      case SAI_SWITCH_STAT_PACKET_INTEGRITY_DROP:
+        hwSwitchDropStats.packetIntegrityDrops() = value;
+        break;
+#endif
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_0_DROPPED_PKTS:
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_1_DROPPED_PKTS:
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_2_DROPPED_PKTS:
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_3_DROPPED_PKTS:
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_4_DROPPED_PKTS:
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_5_DROPPED_PKTS:
+      case SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_6_DROPPED_PKTS:
+      case SAI_SWITCH_STAT_OUT_CONFIGURED_DROP_REASONS_0_DROPPED_PKTS:
+      case SAI_SWITCH_STAT_OUT_CONFIGURED_DROP_REASONS_1_DROPPED_PKTS:
+      case SAI_SWITCH_STAT_OUT_CONFIGURED_DROP_REASONS_2_DROPPED_PKTS:
+        fillAsicSpecificCounter(counterId, value, asicType, hwSwitchDropStats);
+        break;
+      default:
+        throw FbossError("Got unexpected switch counter id: ", counterId);
+    }
+  }
+}
 } // namespace
 
 namespace facebook::fboss {
@@ -78,19 +185,34 @@ SaiSwitchManager::SaiSwitchManager(
     // init attribute (warm boot path)
     auto& switchApi = SaiApiTable::getInstance()->switchApi();
     auto newSwitchId = switchApi.create<SaiSwitchTraits>(
-        platform->getSwitchAttributes(true, switchType, switchId), swId);
+        platform->getSwitchAttributes(true, switchType, switchId, bootType),
+        swId);
     // Load all switch attributes
     switch_ = std::make_unique<SaiSwitchObj>(newSwitchId);
-    if (!FLAGS_skip_setting_src_mac) {
-      switch_->setOptionalAttribute(
-          SaiSwitchTraits::Attributes::SrcMac{platform->getLocalMac()});
+    if (switchType != cfg::SwitchType::FABRIC) {
+      if (!FLAGS_skip_setting_src_mac) {
+        switch_->setOptionalAttribute(
+            SaiSwitchTraits::Attributes::SrcMac{platform->getLocalMac()});
+      }
+      switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::MacAgingTime{
+          platform->getDefaultMacAgingTime()});
     }
-    switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::MacAgingTime{
-        platform->getDefaultMacAgingTime()});
+    if (switchType == cfg::SwitchType::VOQ) {
+#if defined(BRCM_SAI_SDK_DNX) && defined(BRCM_SAI_SDK_GTE_11_0)
+      // We learnt of the need to set a non-default max switch id on J3 only
+      // later. And we incorporated it in create switch attributes.
+      // However, BRCM-SAI does not look at create switch attributes on
+      // warm boot. So, to cater to the systems which will only
+      // WB to this change, set the attribute post WB. It should
+      // be a no-op if already set.
+      switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::MaxSwitchId{
+          platform->getAsic()->getMaxSwitchId()});
+#endif
+    }
   } else {
     switch_ = std::make_unique<SaiSwitchObj>(
         std::monostate(),
-        platform->getSwitchAttributes(false, switchType, switchId),
+        platform->getSwitchAttributes(false, switchType, switchId, bootType),
         swId);
 
     const auto& asic = platform_->getAsic();
@@ -100,10 +222,10 @@ SaiSwitchManager::SaiSwitchManager(
     if (asic->isSupported(HwAsic::Feature::ECMP_HASH_V6)) {
       resetLoadBalancer<SaiSwitchTraits::Attributes::EcmpHashV6>();
     }
-#if defined(SAI_VERSION_7_0_0_2_ODP)
-    resetLoadBalancer<SaiSwitchTraits::Attributes::LagHashV4>();
-    resetLoadBalancer<SaiSwitchTraits::Attributes::LagHashV6>();
-#endif
+    if (asic->isSupported(HwAsic::Feature::SAI_LAG_HASH)) {
+      resetLoadBalancer<SaiSwitchTraits::Attributes::LagHashV4>();
+      resetLoadBalancer<SaiSwitchTraits::Attributes::LagHashV6>();
+    }
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
     if (asic->isSupported(HwAsic::Feature::ECMP_MEMBER_WIDTH_INTROSPECTION)) {
       auto maxEcmpCount = SaiApiTable::getInstance()->switchApi().getAttribute(
@@ -131,6 +253,14 @@ PortSaiId SaiSwitchManager::getCpuPort() const {
     return *cpuPort_;
   }
   throw FbossError("getCpuPort not supported on Phy");
+}
+
+void SaiSwitchManager::setCpuRecyclePort(PortSaiId portSaiId) {
+  cpuRecyclePort_ = portSaiId;
+}
+
+std::optional<PortSaiId> SaiSwitchManager::getCpuRecyclePort() const {
+  return cpuRecyclePort_;
 }
 
 SwitchSaiId SaiSwitchManager::getSwitchSaiId() const {
@@ -194,10 +324,20 @@ void SaiSwitchManager::programEcmpLoadBalancerParams(
     std::optional<cfg::HashingAlgorithm> algo) {
   auto hashSeed = seed ? seed.value() : 0;
   auto hashAlgo = algo ? toSaiHashAlgo(algo.value()) : SAI_HASH_ALGORITHM_CRC;
+  size_t kMaskLimit = sizeof(int) * kBitsPerByte;
+  auto maxHashSeedLength = platform_->getAsic()->getMaxHashSeedLength();
+  CHECK(maxHashSeedLength <= kMaskLimit);
+  int mask = (maxHashSeedLength == kMaskLimit)
+      ? -1
+      : static_cast<int>(pow(2.0, maxHashSeedLength) - 1);
+  hashSeed &= mask;
   switch_->setOptionalAttribute(
       SaiSwitchTraits::Attributes::EcmpDefaultHashSeed{hashSeed});
-  switch_->setOptionalAttribute(
-      SaiSwitchTraits::Attributes::EcmpDefaultHashAlgorithm{hashAlgo});
+  if (platform_->getAsic()->isSupported(
+          HwAsic::Feature::SAI_ECMP_HASH_ALGORITHM)) {
+    switch_->setOptionalAttribute(
+        SaiSwitchTraits::Attributes::EcmpDefaultHashAlgorithm{hashAlgo});
+  }
 }
 
 template <typename HashAttrT>
@@ -276,6 +416,9 @@ void SaiSwitchManager::addOrUpdateEcmpLoadBalancer(
     const std::shared_ptr<LoadBalancer>& newLb) {
   programEcmpLoadBalancerParams(newLb->getSeed(), newLb->getAlgorithm());
 
+  // Get UdfGroup Ids if supported.
+  auto udfGroupIds = getUdfGroupIds(newLb);
+
   if (newLb->getIPv4Fields().begin() != newLb->getIPv4Fields().end()) {
     // v4 ECMP
     auto programmedLoadBalancer =
@@ -294,7 +437,9 @@ void SaiSwitchManager::addOrUpdateEcmpLoadBalancer(
         [&v4EcmpHashFields](const auto& entry) {
           v4EcmpHashFields.transportFields()->insert(entry->cref());
         });
-    ecmpV4Hash_ = managerTable_->hashManager().getOrCreate(v4EcmpHashFields);
+
+    ecmpV4Hash_ =
+        managerTable_->hashManager().getOrCreate(v4EcmpHashFields, udfGroupIds);
 
     // Set the new ecmp v4 hash attribute on switch obj
     setLoadBalancer<SaiSwitchTraits::Attributes::EcmpHashV4>(
@@ -319,7 +464,8 @@ void SaiSwitchManager::addOrUpdateEcmpLoadBalancer(
         [&v6EcmpHashFields](const auto& entry) {
           v6EcmpHashFields.transportFields()->insert(entry->cref());
         });
-    ecmpV6Hash_ = managerTable_->hashManager().getOrCreate(v6EcmpHashFields);
+    ecmpV6Hash_ =
+        managerTable_->hashManager().getOrCreate(v6EcmpHashFields, udfGroupIds);
 
     // Set the new ecmp v6 hash attribute on switch obj
     setLoadBalancer<SaiSwitchTraits::Attributes::EcmpHashV6>(
@@ -395,6 +541,7 @@ void SaiSwitchManager::addOrUpdateLagLoadBalancer(
 
 void SaiSwitchManager::addOrUpdateLoadBalancer(
     const std::shared_ptr<LoadBalancer>& newLb) {
+  XLOG(DBG2) << "Add load balancer : " << newLb->getID();
   if (newLb->getID() == cfg::LoadBalancerID::AGGREGATE_PORT) {
     return addOrUpdateLagLoadBalancer(newLb);
   }
@@ -404,18 +551,24 @@ void SaiSwitchManager::addOrUpdateLoadBalancer(
 void SaiSwitchManager::changeLoadBalancer(
     const std::shared_ptr<LoadBalancer>& /*oldLb*/,
     const std::shared_ptr<LoadBalancer>& newLb) {
+  XLOG(DBG2) << "Change load balancer : " << newLb->getID();
   return addOrUpdateLoadBalancer(newLb);
 }
 
 void SaiSwitchManager::removeLoadBalancer(
     const std::shared_ptr<LoadBalancer>& oldLb) {
+  XLOG(DBG2) << "Remove load balancer : " << oldLb->getID();
   if (oldLb->getID() == cfg::LoadBalancerID::AGGREGATE_PORT) {
     programLagLoadBalancerParams(std::nullopt, std::nullopt);
+    resetLoadBalancer<SaiSwitchTraits::Attributes::LagHashV4>();
+    resetLoadBalancer<SaiSwitchTraits::Attributes::LagHashV6>();
     lagV4Hash_.reset();
     lagV6Hash_.reset();
     return;
   }
   programEcmpLoadBalancerParams(std::nullopt, std::nullopt);
+  resetLoadBalancer<SaiSwitchTraits::Attributes::EcmpHashV4>();
+  resetLoadBalancer<SaiSwitchTraits::Attributes::EcmpHashV6>();
   ecmpV4Hash_.reset();
   ecmpV6Hash_.reset();
 }
@@ -518,6 +671,26 @@ void SaiSwitchManager::resetTamObject() {
       std::vector<sai_object_id_t>{SAI_NULL_OBJECT_ID}});
 }
 
+void SaiSwitchManager::setArsProfile(
+    [[maybe_unused]] ArsProfileSaiId arsProfileSaiId) {
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+  if (FLAGS_flowletSwitchingEnable &&
+      platform_->getAsic()->isSupported(HwAsic::Feature::FLOWLET)) {
+    switch_->setOptionalAttribute(
+        SaiSwitchTraits::Attributes::ArsProfile{arsProfileSaiId});
+  }
+#endif
+}
+
+void SaiSwitchManager::resetArsProfile() {
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+  if (FLAGS_flowletSwitchingEnable) {
+    switch_->setOptionalAttribute(
+        SaiSwitchTraits::Attributes::ArsProfile{SAI_NULL_OBJECT_ID});
+  }
+#endif
+}
+
 void SaiSwitchManager::setupCounterRefreshInterval() {
   switch_->setOptionalAttribute(
       SaiSwitchTraits::Attributes::CounterRefreshInterval{
@@ -538,22 +711,478 @@ std::optional<bool> SaiSwitchManager::getPtpTcEnabled() {
 }
 
 bool SaiSwitchManager::isGlobalQoSMapSupported() const {
-#if defined(SAI_VERSION_7_2_0_0_ODP) || defined(SAI_VERSION_8_2_0_0_ODP) ||    \
-    defined(SAI_VERSION_8_2_0_0_SIM) ||                                        \
-    defined(SAI_VERSION_8_2_0_0_DNX_ODP) || defined(SAI_VERSION_9_0_EA_ODP) || \
-    defined(SAI_VERSION_9_0_EA_DNX_ODP) || defined(SAI_VERSION_9_0_EA_SIM_ODP)
+#if defined(BRCM_SAI_SDK_XGS_AND_DNX)
   return false;
 #endif
   return platform_->getAsic()->isSupported(HwAsic::Feature::QOS_MAP_GLOBAL);
 }
 
 bool SaiSwitchManager::isMplsQoSMapSupported() const {
-#if defined(SAI_VERSION_7_2_0_0_ODP)
-  return false;
-#endif
-#if defined(TAJO_SDK_VERSION_1_42_1) || defined(TAJO_SDK_VERSION_1_42_8)
+#if defined(TAJO_SDK_VERSION_1_42_8)
   return false;
 #endif
   return platform_->getAsic()->isSupported(HwAsic::Feature::SAI_MPLS_QOS);
+}
+
+const std::vector<sai_stat_id_t>& SaiSwitchManager::supportedDropStats() const {
+  static std::vector<sai_stat_id_t> stats;
+  if (stats.size()) {
+    // initialized
+    return stats;
+  }
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::SWITCH_DROP_STATS)) {
+    stats.insert(
+        stats.end(),
+        SaiSwitchTraits::CounterIdsToRead.begin(),
+        SaiSwitchTraits::CounterIdsToRead.end());
+    if (!platform_->getAsic()->isSupported(
+            HwAsic::Feature::PACKET_INTEGRITY_DROP_STATS)) {
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+      stats.erase(std::find(
+          stats.begin(), stats.end(), SAI_SWITCH_STAT_PACKET_INTEGRITY_DROP));
+#endif
+    }
+    if (isJerichoAsic(platform_->getAsic()->getAsicType())) {
+      static const std::vector<sai_stat_id_t> kJerichoConfigDropStats{
+          SAI_SWITCH_STAT_OUT_CONFIGURED_DROP_REASONS_0_DROPPED_PKTS,
+          SAI_SWITCH_STAT_OUT_CONFIGURED_DROP_REASONS_1_DROPPED_PKTS,
+          SAI_SWITCH_STAT_OUT_CONFIGURED_DROP_REASONS_2_DROPPED_PKTS,
+      };
+      stats.insert(
+          stats.end(),
+          kJerichoConfigDropStats.begin(),
+          kJerichoConfigDropStats.end());
+    }
+    if (platform_->getAsic()->getAsicType() ==
+        cfg::AsicType::ASIC_TYPE_JERICHO3) {
+      static const std::vector<sai_stat_id_t> kJericho3ConfigDropStats{
+          // IN configured drop reasons
+          SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_0_DROPPED_PKTS,
+          SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_1_DROPPED_PKTS,
+          SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_2_DROPPED_PKTS,
+          SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_3_DROPPED_PKTS,
+          SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_4_DROPPED_PKTS,
+          SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_5_DROPPED_PKTS,
+          SAI_SWITCH_STAT_IN_CONFIGURED_DROP_REASONS_6_DROPPED_PKTS,
+      };
+      stats.insert(
+          stats.end(),
+          kJericho3ConfigDropStats.begin(),
+          kJericho3ConfigDropStats.end());
+    }
+  }
+  return stats;
+}
+
+const std::vector<sai_stat_id_t>& SaiSwitchManager::supportedErrorStats()
+    const {
+  static std::vector<sai_stat_id_t> stats;
+  if (stats.size()) {
+    // initialized
+    return stats;
+  }
+  if (platform_->getAsic()->isSupported(
+          HwAsic::Feature::EGRESS_CELL_ERROR_STATS)) {
+    stats.insert(
+        stats.end(),
+        SaiSwitchTraits::egressFabricCellError().begin(),
+        SaiSwitchTraits::egressFabricCellError().end());
+    stats.insert(
+        stats.end(),
+        SaiSwitchTraits::egressNonFabricCellError().begin(),
+        SaiSwitchTraits::egressNonFabricCellError().end());
+    stats.insert(
+        stats.end(),
+        SaiSwitchTraits::egressNonFabricCellUnpackError().begin(),
+        SaiSwitchTraits::egressNonFabricCellUnpackError().end());
+    stats.insert(
+        stats.end(),
+        SaiSwitchTraits::egressParityCellError().begin(),
+        SaiSwitchTraits::egressParityCellError().end());
+  }
+  return stats;
+}
+
+const std::vector<sai_stat_id_t>& SaiSwitchManager::supportedDramStats() const {
+  static std::vector<sai_stat_id_t> stats;
+  if (stats.size()) {
+    // initialized
+    return stats;
+  }
+  if (platform_->getAsic()->isSupported(
+          HwAsic::Feature::DRAM_ENQUEUE_DEQUEUE_STATS)) {
+    stats.insert(
+        stats.end(),
+        SaiSwitchTraits::dramStats().begin(),
+        SaiSwitchTraits::dramStats().end());
+  }
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::DRAM_BLOCK_TIME)) {
+    stats.insert(
+        stats.end(),
+        SaiSwitchTraits::dramBlockTime().begin(),
+        SaiSwitchTraits::dramBlockTime().end());
+  }
+  return stats;
+}
+
+const std::vector<sai_stat_id_t>& SaiSwitchManager::supportedWatermarkStats()
+    const {
+  static std::vector<sai_stat_id_t> stats;
+  if (stats.size()) {
+    // initialized
+    return stats;
+  }
+  if (platform_->getAsic()->isSupported(
+          HwAsic::Feature::RCI_WATERMARK_COUNTER)) {
+    stats.insert(
+        stats.end(),
+        SaiSwitchTraits::rciWatermarkStats().begin(),
+        SaiSwitchTraits::rciWatermarkStats().end());
+  }
+  if (platform_->getAsic()->isSupported(
+          HwAsic::Feature::DTL_WATERMARK_COUNTER)) {
+    stats.insert(
+        stats.end(),
+        SaiSwitchTraits::dtlWatermarkStats().begin(),
+        SaiSwitchTraits::dtlWatermarkStats().end());
+  }
+  if (platform_->getAsic()->isSupported(
+          HwAsic::Feature::EGRESS_CORE_BUFFER_WATERMARK)) {
+    stats.insert(
+        stats.end(),
+        SaiSwitchTraits::egressCoreBufferWatermarkBytes().begin(),
+        SaiSwitchTraits::egressCoreBufferWatermarkBytes().end());
+  }
+  if (platform_->getAsic()->isSupported(
+          HwAsic::Feature::INGRESS_SRAM_MIN_BUFFER_WATERMARK)) {
+    stats.insert(
+        stats.end(),
+        SaiSwitchTraits::sramMinBufferWatermarkBytes().begin(),
+        SaiSwitchTraits::sramMinBufferWatermarkBytes().end());
+  }
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::FDR_FIFO_WATERMARK)) {
+    stats.insert(
+        stats.end(),
+        SaiSwitchTraits::fdrFifoWatermarkBytes().begin(),
+        SaiSwitchTraits::fdrFifoWatermarkBytes().end());
+  }
+  return stats;
+}
+
+const std::vector<sai_stat_id_t>& SaiSwitchManager::supportedCreditStats()
+    const {
+  static std::vector<sai_stat_id_t> stats;
+  if (stats.size()) {
+    // initialized
+    return stats;
+  }
+  if (platform_->getAsic()->isSupported(
+          HwAsic::Feature::DELETED_CREDITS_STAT)) {
+    stats.insert(
+        stats.end(),
+        SaiSwitchTraits::deletedCredits().begin(),
+        SaiSwitchTraits::deletedCredits().end());
+  }
+  return stats;
+}
+
+const HwSwitchWatermarkStats SaiSwitchManager::getHwSwitchWatermarkStats()
+    const {
+  HwSwitchWatermarkStats switchWatermarkStats;
+  // Get NPU specific watermark stats!
+  auto supportedStats = supportedWatermarkStats();
+  if (supportedStats.size()) {
+    switch_->updateStats(supportedStats, SAI_STATS_MODE_READ_AND_CLEAR);
+  }
+  fillHwSwitchWatermarkStats(
+      switch_->getStats(supportedStats), switchWatermarkStats);
+  // SAI_SWITCH_STAT_DEVICE_WATERMARK_BYTES is always needed, however,
+  // this stats as such is not supported as of now. Instead, the needed
+  // watermarks at device level is fetched via the buffer pool watermark
+  // SAI_BUFFER_POOL_STAT_WATERMARK_BYTES and available in SaiSwitch.
+  switchWatermarkStats.deviceWatermarkBytes() =
+      managerTable_->bufferManager().getDeviceWatermarkBytes();
+  switchWatermarkStats.globalHeadroomWatermarkBytes()->insert(
+      managerTable_->bufferManager().getGlobalHeadroomWatermarkBytes().begin(),
+      managerTable_->bufferManager().getGlobalHeadroomWatermarkBytes().end());
+  switchWatermarkStats.globalSharedWatermarkBytes()->insert(
+      managerTable_->bufferManager().getGlobalSharedWatermarkBytes().begin(),
+      managerTable_->bufferManager().getGlobalSharedWatermarkBytes().end());
+  return switchWatermarkStats;
+}
+
+void SaiSwitchManager::updateStats(bool updateWatermarks) {
+  auto switchDropStats = supportedDropStats();
+  if (switchDropStats.size()) {
+    switch_->updateStats(switchDropStats, SAI_STATS_MODE_READ);
+    HwSwitchDropStats dropStats;
+    fillHwSwitchDropStats(
+        switch_->getStats(switchDropStats),
+        dropStats,
+        platform_->getAsic()->getAsicType());
+    // Accumulate switch drop stats
+    switchDropStats_.globalDrops() =
+        switchDropStats_.globalDrops().value_or(0) +
+        dropStats.globalDrops().value_or(0);
+    switchDropStats_.globalReachabilityDrops() =
+        switchDropStats_.globalReachabilityDrops().value_or(0) +
+        dropStats.globalReachabilityDrops().value_or(0);
+    switchDropStats_.packetIntegrityDrops() =
+        switchDropStats_.packetIntegrityDrops().value_or(0) +
+        dropStats.packetIntegrityDrops().value_or(0);
+    switchDropStats_.fdrCellDrops() =
+        switchDropStats_.fdrCellDrops().value_or(0) +
+        dropStats.fdrCellDrops().value_or(0);
+    switchDropStats_.voqResourceExhaustionDrops() =
+        switchDropStats_.voqResourceExhaustionDrops().value_or(0) +
+        dropStats.voqResourceExhaustionDrops().value_or(0);
+    switchDropStats_.globalResourceExhaustionDrops() =
+        switchDropStats_.globalResourceExhaustionDrops().value_or(0) +
+        dropStats.globalResourceExhaustionDrops().value_or(0);
+    switchDropStats_.sramResourceExhaustionDrops() =
+        switchDropStats_.sramResourceExhaustionDrops().value_or(0) +
+        dropStats.sramResourceExhaustionDrops().value_or(0);
+    switchDropStats_.vsqResourceExhaustionDrops() =
+        switchDropStats_.vsqResourceExhaustionDrops().value_or(0) +
+        dropStats.vsqResourceExhaustionDrops().value_or(0);
+    switchDropStats_.dropPrecedenceDrops() =
+        switchDropStats_.dropPrecedenceDrops().value_or(0) +
+        dropStats.dropPrecedenceDrops().value_or(0);
+    switchDropStats_.queueResolutionDrops() =
+        switchDropStats_.queueResolutionDrops().value_or(0) +
+        dropStats.queueResolutionDrops().value_or(0);
+    switchDropStats_.ingressPacketPipelineRejectDrops() =
+        switchDropStats_.ingressPacketPipelineRejectDrops().value_or(0) +
+        dropStats.ingressPacketPipelineRejectDrops().value_or(0);
+  }
+  auto errorDropStats = supportedErrorStats();
+  if (errorDropStats.size()) {
+    switch_->updateStats(errorDropStats, SAI_STATS_MODE_READ);
+    HwSwitchDropStats errorStats;
+    // Fill error stats and update drops stats
+    fillHwSwitchErrorStats(switch_->getStats(errorDropStats), errorStats);
+    switchDropStats_.rqpFabricCellCorruptionDrops() =
+        switchDropStats_.rqpFabricCellCorruptionDrops().value_or(0) +
+        errorStats.rqpFabricCellCorruptionDrops().value_or(0);
+    switchDropStats_.rqpNonFabricCellCorruptionDrops() =
+        switchDropStats_.rqpNonFabricCellCorruptionDrops().value_or(0) +
+        errorStats.rqpNonFabricCellCorruptionDrops().value_or(0);
+    switchDropStats_.rqpNonFabricCellMissingDrops() =
+        switchDropStats_.rqpNonFabricCellMissingDrops().value_or(0) +
+        errorStats.rqpNonFabricCellMissingDrops().value_or(0);
+    switchDropStats_.rqpParityErrorDrops() =
+        switchDropStats_.rqpParityErrorDrops().value_or(0) +
+        errorStats.rqpParityErrorDrops().value_or(0);
+  }
+
+  if (switchDropStats.size() || errorDropStats.size()) {
+    platform_->getHwSwitch()->getSwitchStats()->update(switchDropStats_);
+  }
+  auto switchDramStats = supportedDramStats();
+  if (switchDramStats.size()) {
+    switch_->updateStats(switchDramStats, SAI_STATS_MODE_READ_AND_CLEAR);
+    HwSwitchDramStats dramStats;
+    fillHwSwitchDramStats(switch_->getStats(switchDramStats), dramStats);
+    platform_->getHwSwitch()->getSwitchStats()->update(dramStats);
+  }
+  auto switchCreditStats = supportedCreditStats();
+  if (switchCreditStats.size()) {
+    switch_->updateStats(switchCreditStats, SAI_STATS_MODE_READ_AND_CLEAR);
+    HwSwitchCreditStats creditStats;
+    fillHwSwitchCreditStats(switch_->getStats(switchCreditStats), creditStats);
+    platform_->getHwSwitch()->getSwitchStats()->update(creditStats);
+  }
+  if (updateWatermarks) {
+    switchWatermarkStats_ = getHwSwitchWatermarkStats();
+    publishSwitchWatermarks(switchWatermarkStats_);
+  }
+}
+
+void SaiSwitchManager::setSwitchIsolate(bool isolate) {
+  // Supported only for FABRIC switches!
+  // It is checked while applying thrift config
+  CHECK(
+      platform_->getAsic()->getSwitchType() == cfg::SwitchType::FABRIC ||
+      platform_->getAsic()->getSwitchType() == cfg::SwitchType::VOQ);
+  XLOG(DBG2) << " Setting switch state to : "
+             << (isolate ? "DRAINED" : "UNDRAINED");
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::SwitchIsolate{isolate});
+}
+
+std::vector<sai_object_id_t> SaiSwitchManager::getUdfGroupIds(
+    const std::shared_ptr<LoadBalancer>& newLb) const {
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::SAI_UDF_HASH)) {
+    return managerTable_->udfManager().getUdfGroupIds(newLb->getUdfGroupIds());
+  }
+#endif
+  return {};
+}
+
+void SaiSwitchManager::setForceTrafficOverFabric(bool forceTrafficOverFabric) {
+  auto& switchApi = SaiApiTable::getInstance()->switchApi();
+  auto oldSetForceTrafficOverFabric = switchApi.getAttribute(
+      switch_->adapterKey(),
+      SaiSwitchTraits::Attributes::ForceTrafficOverFabric{});
+  if (oldSetForceTrafficOverFabric != forceTrafficOverFabric) {
+    SaiApiTable::getInstance()->switchApi().setAttribute(
+        switch_->adapterKey(),
+        SaiSwitchTraits::Attributes::ForceTrafficOverFabric{
+            forceTrafficOverFabric});
+  }
+}
+
+void SaiSwitchManager::setCreditWatchdog(bool creditWatchdog) {
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::CreditWd{creditWatchdog});
+#endif
+}
+
+void SaiSwitchManager::setLocalCapsuleSwitchIds(
+    const std::map<SwitchID, int>& switchIdToNumCores) {
+  std::vector<sai_uint32_t> values;
+  for (const auto& it : switchIdToNumCores) {
+    sai_uint32_t switchId = it.first;
+    int numCores = it.second;
+    for (auto idx = 0; idx < numCores; idx++) {
+      values.push_back(switchId + idx);
+    }
+  }
+  XLOG(DBG2) << "set local capsule switch ids "
+             << std::string(values.begin(), values.end());
+  if (values.empty()) {
+#if defined BRCM_SAI_SDK_DNX_GTE_12_0
+    switch_->setOptionalAttribute(
+        SaiSwitchTraits::Attributes::MultiStageLocalSwitchIds{values});
+#endif
+    // Note: setting MultiStageLocalSwitchIds to empty, when its was not set
+    // before should be a no-op, but there is a bug in pre 12.0 sai where this
+    // is not correctly handled complaining invalid parameters
+    return;
+  }
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::MultiStageLocalSwitchIds{values});
+}
+
+void SaiSwitchManager::setReachabilityGroupList(
+    const std::vector<int>& reachabilityGroups) {
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+  std::vector<uint32_t> groupList(
+      reachabilityGroups.begin(), reachabilityGroups.end());
+  std::sort(groupList.begin(), groupList.end());
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::ReachabilityGroupList{groupList});
+#endif
+}
+
+void SaiSwitchManager::setSramGlobalFreePercentXoffTh(
+    uint8_t sramFreePercentXoffThreshold) {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::SramFreePercentXoffTh{
+          sramFreePercentXoffThreshold});
+#endif
+}
+
+void SaiSwitchManager::setSramGlobalFreePercentXonTh(
+    uint8_t sramFreePercentXonThreshold) {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::SramFreePercentXonTh{
+          sramFreePercentXonThreshold});
+#endif
+}
+
+void SaiSwitchManager::setLinkFlowControlCreditTh(
+    uint16_t linkFlowControlThreshold) {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::FabricCllfcTxCreditTh{
+          linkFlowControlThreshold});
+#endif
+}
+
+void SaiSwitchManager::setVoqDramBoundTh(uint32_t dramBoundThreshold) {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  // There are 3 different types of rate classes available and
+  // dramBound, upper and lower limits are applied to each of
+  // those. However, in our case, we just need to set the same
+  // DRAM bounds value for all the rate classes.
+  std::vector<uint32_t> dramBounds(6, dramBoundThreshold);
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::VoqDramBoundTh{dramBounds});
+#endif
+}
+
+void SaiSwitchManager::setConditionalEntropyRehashPeriodUS(
+    int conditionalEntropyRehashPeriodUS) {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::CondEntropyRehashPeriodUS{
+          conditionalEntropyRehashPeriodUS});
+#endif
+}
+
+void SaiSwitchManager::setShelConfig(
+    const std::optional<cfg::SelfHealingEcmpLagConfig>& shelConfig) {
+  if (shelConfig.has_value()) {
+    switch_->setOptionalAttribute(
+        SaiSwitchTraits::Attributes::ShelSrcMac{platform_->getLocalMac()});
+    switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::ShelSrcIp{
+        folly::IPAddressV6(*shelConfig.value().shelSrcIp())});
+    switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::ShelDstIp{
+        folly::IPAddressV6(*shelConfig.value().shelDstIp())});
+    switch_->setOptionalAttribute(
+        SaiSwitchTraits::Attributes::ShelPeriodicInterval{static_cast<uint32_t>(
+            *shelConfig.value().shelPeriodicIntervalMS())});
+  } else {
+    switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::ShelSrcMac{});
+    switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::ShelSrcIp{});
+    switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::ShelDstIp{});
+    switch_->setOptionalAttribute(
+        SaiSwitchTraits::Attributes::ShelPeriodicInterval{0});
+  }
+}
+
+void SaiSwitchManager::setLocalVoqMaxExpectedLatency(
+    int localVoqMaxExpectedLatencyNsec) {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::VoqLatencyMinLocalNs{
+          localVoqMaxExpectedLatencyNsec});
+#endif
+}
+
+void SaiSwitchManager::setRemoteL1VoqMaxExpectedLatency(
+    int remoteL1VoqMaxExpectedLatencyNsec) {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::VoqLatencyMinLevel1Ns{
+          remoteL1VoqMaxExpectedLatencyNsec});
+#endif
+}
+
+void SaiSwitchManager::setRemoteL2VoqMaxExpectedLatency(
+    int remoteL2VoqMaxExpectedLatencyNsec) {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::VoqLatencyMinLevel2Ns{
+          remoteL2VoqMaxExpectedLatencyNsec});
+#endif
+}
+
+void SaiSwitchManager::setVoqOutOfBoundsLatency(int voqOutOfBoundsLatency) {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::VoqLatencyMaxLocalNs{voqOutOfBoundsLatency});
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::VoqLatencyMaxLevel1Ns{
+          voqOutOfBoundsLatency});
+  switch_->setOptionalAttribute(
+      SaiSwitchTraits::Attributes::VoqLatencyMaxLevel2Ns{
+          voqOutOfBoundsLatency});
+#endif
 }
 } // namespace facebook::fboss

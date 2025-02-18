@@ -13,9 +13,13 @@
 #include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SwitchState.h"
 
-#include <mutex>
-
 using namespace facebook::fboss;
+
+namespace {
+HwSwitchMatcher scope() {
+  return HwSwitchMatcher{std::unordered_set<SwitchID>{SwitchID(0)}};
+}
+} // namespace
 
 class HostifManagerTest : public ManagerTestBase {};
 
@@ -28,7 +32,7 @@ TEST_F(HostifManagerTest, createHostifTrap) {
       trapId, SaiHostifTrapTraits::Attributes::TrapType{});
   auto trapPacketActionExpected = saiApiTable->hostifApi().getAttribute(
       trapId, SaiHostifTrapTraits::Attributes::PacketAction{});
-  sai_hostif_trap_type_t hostifTrapId;
+  sai_int32_t hostifTrapId;
   sai_packet_action_t hostifPacketAction;
   std::tie(hostifTrapId, hostifPacketAction) =
       SaiHostifManager::packetReasonToHostifTrap(trapType, saiPlatform.get());
@@ -72,16 +76,86 @@ TEST_F(HostifManagerTest, removeHostifTrap) {
   EXPECT_EQ(trapGroup1, trapGroup2);
 }
 
+TEST_F(HostifManagerTest, createHostifUserDefinedTrap) {
+  uint32_t queueId = 4;
+  // create an user defined trap
+  std::shared_ptr<SaiHostifUserDefinedTrapHandle> userDefinedTrap =
+      saiManagerTable->hostifManager().ensureHostifUserDefinedTrap(queueId);
+  HostifUserDefinedTrapSaiId trapId = userDefinedTrap->trap->adapterKey();
+  auto trapGroupId = saiApiTable->hostifApi().getAttribute(
+      trapId, SaiHostifUserDefinedTrapTraits::Attributes::TrapGroup{});
+  auto queueIdExpected = saiApiTable->hostifApi().getAttribute(
+      HostifTrapGroupSaiId{trapGroupId},
+      SaiHostifTrapGroupTraits::Attributes::Queue{});
+  // user defined trap's trapGroup should point to queueId
+  EXPECT_EQ(queueIdExpected, queueId);
+}
+
+TEST_F(HostifManagerTest, sharedHostifUserDefinedTrapGroup) {
+  uint32_t queueId = 4;
+  auto trapType = cfg::PacketRxReason::ARP;
+  auto& hostifManager = saiManagerTable->hostifManager();
+  // create a normal trap and user defined trap using the same queue
+  HostifTrapSaiId trapId1 = hostifManager.addHostifTrap(trapType, queueId, 1);
+  std::shared_ptr<SaiHostifUserDefinedTrapHandle> userDefinedTrap =
+      saiManagerTable->hostifManager().ensureHostifUserDefinedTrap(queueId);
+  HostifUserDefinedTrapSaiId trapId2 = userDefinedTrap->trap->adapterKey();
+  auto trapGroup1 = saiApiTable->hostifApi().getAttribute(
+      trapId1, SaiHostifTrapTraits::Attributes::TrapGroup{});
+  auto trapGroup2 = saiApiTable->hostifApi().getAttribute(
+      trapId2, SaiHostifUserDefinedTrapTraits::Attributes::TrapGroup{});
+  // both traps should point to the same trap group
+  EXPECT_EQ(trapGroup1, trapGroup2);
+  auto queueIdExpected = saiApiTable->hostifApi().getAttribute(
+      HostifTrapGroupSaiId{trapGroup1},
+      SaiHostifTrapGroupTraits::Attributes::Queue{});
+  // trap group should point to queueId
+  EXPECT_EQ(queueIdExpected, queueId);
+  // call ensureHostifUserDefinedTrap() using the same queueId again
+  std::shared_ptr<SaiHostifUserDefinedTrapHandle> userDefinedTrap2 =
+      saiManagerTable->hostifManager().ensureHostifUserDefinedTrap(queueId);
+  HostifUserDefinedTrapSaiId trapId3 = userDefinedTrap2->trap->adapterKey();
+  // shoud return the old trapId that is already programmed
+  EXPECT_EQ(trapId2, trapId3);
+}
+
+TEST_F(HostifManagerTest, removeHostifUserDefinedTrap) {
+  uint32_t queueId = 4;
+  auto trapType = cfg::PacketRxReason::ARP;
+  auto& hostifManager = saiManagerTable->hostifManager();
+  // create a normal trap and user defined trap using the same queue
+  HostifTrapSaiId trapId1 = hostifManager.addHostifTrap(trapType, queueId, 1);
+  std::shared_ptr<SaiHostifUserDefinedTrapHandle> userDefinedTrap =
+      saiManagerTable->hostifManager().ensureHostifUserDefinedTrap(queueId);
+  HostifUserDefinedTrapSaiId trapId2 = userDefinedTrap->trap->adapterKey();
+  auto trapGroup1 = saiApiTable->hostifApi().getAttribute(
+      trapId1, SaiHostifTrapTraits::Attributes::TrapGroup{});
+  // remove one of them
+  saiManagerTable->hostifManager().removeHostifTrap(trapType);
+  // trap group for the queue should still be valid
+  auto trapGroup2 = saiApiTable->hostifApi().getAttribute(
+      trapId2, SaiHostifUserDefinedTrapTraits::Attributes::TrapGroup{});
+  EXPECT_EQ(trapGroup1, trapGroup2);
+  // remove user defined trap
+  userDefinedTrap.reset();
+  // trap group should be removed
+  EXPECT_THROW(
+      saiApiTable->hostifApi().getAttribute(
+          HostifTrapGroupSaiId{trapGroup2},
+          SaiHostifTrapGroupTraits::Attributes::Queue{}),
+      std::out_of_range);
+}
+
 TEST_F(HostifManagerTest, addCpuQueueAndCheckStats) {
-  auto prevControlPlane = std::make_shared<ControlPlane>();
-  auto newControlPlane = prevControlPlane->clone();
-  std::vector<uint8_t> queueIds = {1, 2, 3, 4};
-  auto queueConfig = makeQueueConfig({queueIds}, cfg::StreamType::ALL);
-  newControlPlane->resetQueues(queueConfig);
   auto prevState = std::make_shared<SwitchState>();
-  prevState->resetControlPlane(prevControlPlane);
   auto newState = std::make_shared<SwitchState>();
-  newState->resetControlPlane(newControlPlane);
+  auto newControlPlane = std::make_shared<ControlPlane>();
+  std::vector<uint8_t> queueIds = {1, 2, 3, 4};
+  auto queueConfig = makeQueueConfig({queueIds}, cfg::StreamType::MULTICAST);
+  newControlPlane->resetQueues(queueConfig);
+  auto newMultiControlPlane = std::make_shared<MultiControlPlane>();
+  newMultiControlPlane->addNode(scope().matcherString(), newControlPlane);
+  newState->resetControlPlane(newMultiControlPlane);
   auto delta = StateDelta(prevState, newState);
   saiManagerTable->hostifManager().processHostifDelta(
       delta.getControlPlaneDelta());
@@ -89,7 +163,7 @@ TEST_F(HostifManagerTest, addCpuQueueAndCheckStats) {
 
   const auto& cpuStat = saiManagerTable->hostifManager().getCpuFb303Stats();
   for (const auto& portQueue : queueConfig) {
-    for (auto statKey : HwCpuFb303Stats::kQueueStatKeys()) {
+    for (auto statKey : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
       EXPECT_TRUE(
           facebook::fbData->getStatMap()->contains(HwCpuFb303Stats::statName(
               statKey, portQueue->getID(), *portQueue->getName())));
@@ -102,25 +176,29 @@ TEST_F(HostifManagerTest, addCpuQueueAndCheckStats) {
 }
 
 TEST_F(HostifManagerTest, removeCpuQueueAndCheckStats) {
-  auto prevControlPlane = std::make_shared<ControlPlane>();
-  auto newControlPlane = prevControlPlane->clone();
+  auto newControlPlane = std::make_shared<ControlPlane>();
   std::vector<uint8_t> queueIds = {1, 2, 3, 4};
-  auto queueConfig = makeQueueConfig({queueIds}, cfg::StreamType::ALL);
+  auto queueConfig = makeQueueConfig({queueIds}, cfg::StreamType::MULTICAST);
   newControlPlane->resetQueues(queueConfig);
   auto prevState = std::make_shared<SwitchState>();
-  prevState->resetControlPlane(prevControlPlane);
   auto newState = std::make_shared<SwitchState>();
-  newState->resetControlPlane(newControlPlane);
+  auto newMultiSwitchControlPlane = std::make_shared<MultiControlPlane>();
+  newMultiSwitchControlPlane->addNode(scope().matcherString(), newControlPlane);
+  newState->resetControlPlane(newMultiSwitchControlPlane);
   auto delta0 = StateDelta(prevState, newState);
   saiManagerTable->hostifManager().processHostifDelta(
       delta0.getControlPlaneDelta());
 
   auto newNewControlPlane = newControlPlane->clone();
   std::vector<uint8_t> newQueueIds = {1, 2};
-  auto newQueueConfig = makeQueueConfig({newQueueIds}, cfg::StreamType::ALL);
+  auto newQueueConfig =
+      makeQueueConfig({newQueueIds}, cfg::StreamType::MULTICAST);
   newNewControlPlane->resetQueues(newQueueConfig);
+  auto newNewMultiSwitchControlPlane = std::make_shared<MultiControlPlane>();
+  newNewMultiSwitchControlPlane->addNode(
+      scope().matcherString(), newNewControlPlane);
   auto newNewState = newState->clone();
-  newNewState->resetControlPlane(newNewControlPlane);
+  newNewState->resetControlPlane(newNewMultiSwitchControlPlane);
   auto delta1 = StateDelta(newState, newNewState);
   saiManagerTable->hostifManager().processHostifDelta(
       delta1.getControlPlaneDelta());
@@ -129,7 +207,7 @@ TEST_F(HostifManagerTest, removeCpuQueueAndCheckStats) {
   const auto& cpuStat = saiManagerTable->hostifManager().getCpuFb303Stats();
   for (auto queueId : {1, 2}) {
     auto queueName = folly::to<std::string>("queue", queueId);
-    for (auto statKey : HwCpuFb303Stats::kQueueStatKeys()) {
+    for (auto statKey : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
       EXPECT_TRUE(facebook::fbData->getStatMap()->contains(
           HwCpuFb303Stats::statName(statKey, queueId, queueName)));
       EXPECT_EQ(
@@ -139,7 +217,7 @@ TEST_F(HostifManagerTest, removeCpuQueueAndCheckStats) {
     }
   }
   for (auto queueId : {3, 4}) {
-    for (auto statKey : HwCpuFb303Stats::kQueueStatKeys()) {
+    for (auto statKey : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
       EXPECT_FALSE(
           facebook::fbData->getStatMap()->contains(HwCpuFb303Stats::statName(
               statKey, queueId, folly::to<std::string>("queue", queueId))));
@@ -148,24 +226,27 @@ TEST_F(HostifManagerTest, removeCpuQueueAndCheckStats) {
 }
 
 TEST_F(HostifManagerTest, changeCpuQueueAndCheckStats) {
-  auto prevControlPlane = std::make_shared<ControlPlane>();
-  auto newControlPlane = prevControlPlane->clone();
-  auto queueConfig = makeQueueConfig({1}, cfg::StreamType::ALL);
+  auto newControlPlane = std::make_shared<ControlPlane>();
+  auto queueConfig = makeQueueConfig({1}, cfg::StreamType::MULTICAST);
   newControlPlane->resetQueues(queueConfig);
   auto prevState = std::make_shared<SwitchState>();
-  prevState->resetControlPlane(prevControlPlane);
   auto newState = std::make_shared<SwitchState>();
-  newState->resetControlPlane(newControlPlane);
+  auto newMultiControlPlane = std::make_shared<MultiControlPlane>();
+  newMultiControlPlane->addNode(scope().matcherString(), newControlPlane);
+  newState->resetControlPlane(newMultiControlPlane);
   auto delta0 = StateDelta(prevState, newState);
   saiManagerTable->hostifManager().processHostifDelta(
       delta0.getControlPlaneDelta());
 
   auto newNewControlPlane = newControlPlane->clone();
-  auto newQueueConfig = makeQueueConfig({1}, cfg::StreamType::ALL);
+  auto newQueueConfig = makeQueueConfig({1}, cfg::StreamType::MULTICAST);
   newQueueConfig[0]->setName("high");
   newNewControlPlane->resetQueues(newQueueConfig);
   auto newNewState = newState->clone();
-  newNewState->resetControlPlane(newNewControlPlane);
+  auto newNewMultiSwitchControlPlane = std::make_shared<MultiControlPlane>();
+  newNewMultiSwitchControlPlane->addNode(
+      scope().matcherString(), newNewControlPlane);
+  newNewState->resetControlPlane(newNewMultiSwitchControlPlane);
   auto delta1 = StateDelta(newState, newNewState);
   saiManagerTable->hostifManager().processHostifDelta(
       delta1.getControlPlaneDelta());
@@ -173,7 +254,7 @@ TEST_F(HostifManagerTest, changeCpuQueueAndCheckStats) {
 
   auto oldQueueName = folly::to<std::string>("queue", 1);
   const auto& cpuStat = saiManagerTable->hostifManager().getCpuFb303Stats();
-  for (auto statKey : HwCpuFb303Stats::kQueueStatKeys()) {
+  for (auto statKey : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
     EXPECT_TRUE(facebook::fbData->getStatMap()->contains(
         HwCpuFb303Stats::statName(statKey, 1, "high")));
     EXPECT_FALSE(facebook::fbData->getStatMap()->contains(
@@ -186,8 +267,7 @@ TEST_F(HostifManagerTest, changeCpuQueueAndCheckStats) {
 }
 
 TEST_F(HostifManagerTest, checkHostifPriority) {
-  auto prevControlPlane = std::make_shared<ControlPlane>();
-  auto newControlPlane = prevControlPlane->clone();
+  auto newControlPlane = std::make_shared<ControlPlane>();
   std::vector<std::pair<cfg::PacketRxReason, uint16_t>>
       rxReasonToQueueMappings = {
           std::pair(cfg::PacketRxReason::ARP, 1),
@@ -203,9 +283,10 @@ TEST_F(HostifManagerTest, checkHostifPriority) {
   }
   newControlPlane->resetRxReasonToQueue(rxReasonToQueues);
   auto prevState = std::make_shared<SwitchState>();
-  prevState->resetControlPlane(prevControlPlane);
   auto newState = std::make_shared<SwitchState>();
-  newState->resetControlPlane(newControlPlane);
+  auto newMultiControlPlane = std::make_shared<MultiControlPlane>();
+  newMultiControlPlane->addNode(scope().matcherString(), newControlPlane);
+  newState->resetControlPlane(newMultiControlPlane);
   auto delta0 = StateDelta(prevState, newState);
   saiManagerTable->hostifManager().processHostifDelta(
       delta0.getControlPlaneDelta());
@@ -225,10 +306,12 @@ TEST_F(HostifManagerTest, checkHostifPriority) {
   rxReasonToQueue.rxReason() = cfg::PacketRxReason::ARP_RESPONSE;
   rxReasonToQueue.queueId() = 1;
   rxReasonToQueues.push_back(rxReasonToQueue);
-  auto newControlPlaneNew = prevControlPlane->clone();
+  auto newControlPlaneNew = std::make_shared<ControlPlane>();
   newControlPlaneNew->resetRxReasonToQueue(rxReasonToQueues);
   auto newNewState = std::make_shared<SwitchState>();
-  newNewState->resetControlPlane(newControlPlaneNew);
+  auto newMultiControlPlaneNew = std::make_shared<MultiControlPlane>();
+  newMultiControlPlaneNew->addNode(scope().matcherString(), newControlPlaneNew);
+  newNewState->resetControlPlane(newMultiControlPlaneNew);
   auto delta = StateDelta(newState, newNewState);
   saiManagerTable->hostifManager().processHostifDelta(
       delta.getControlPlaneDelta());
@@ -243,21 +326,21 @@ TEST_F(HostifManagerTest, checkHostifPriority) {
 
 TEST_F(HostifManagerTest, resetSchedulerOid) {
   // Create queue 1 and a scheduler config with Stream Type ALL
-  auto prevControlPlane = std::make_shared<ControlPlane>();
-  auto newControlPlane = prevControlPlane->clone();
-  auto queueConfig = makeQueueConfig({1}, cfg::StreamType::ALL);
+  auto newControlPlane = std::make_shared<ControlPlane>();
+  auto queueConfig = makeQueueConfig({1}, cfg::StreamType::MULTICAST);
   newControlPlane->resetQueues(queueConfig);
   auto prevState = std::make_shared<SwitchState>();
-  prevState->resetControlPlane(prevControlPlane);
   auto newState = std::make_shared<SwitchState>();
-  newState->resetControlPlane(newControlPlane);
+  auto newMultiControlPlane = std::make_shared<MultiControlPlane>();
+  newMultiControlPlane->addNode(scope().matcherString(), newControlPlane);
+  newState->resetControlPlane(newMultiControlPlane);
 
   // Apply the config changes using processHostifDelta
   auto delta = StateDelta(prevState, newState);
   saiManagerTable->hostifManager().processHostifDelta(
       delta.getControlPlaneDelta());
   const auto queueHandle = saiManagerTable->hostifManager().getQueueHandle(
-      std::pair(1, cfg::StreamType::ALL));
+      std::pair(1, cfg::StreamType::MULTICAST));
 
   // Ensure scheduler is created with a valid OID.
   EXPECT_TRUE(queueHandle->scheduler);

@@ -37,7 +37,7 @@ std::optional<folly::IPAddress> getLocalIPv6FromWhoAmI() {
 
   while (std::getline(infile, line)) {
     std::vector<std::string> kv;
-    folly::split("=", line, kv);
+    folly::split('=', line, kv);
     if (kv.size() != 2) {
       continue;
     }
@@ -208,7 +208,7 @@ size_t BcmSflowExporterTable::size() const {
 void BcmSflowExporterTable::addExporter(const shared_ptr<SflowCollector>& c) {
   try {
     auto exporter = make_unique<BcmSflowExporter>(c->getAddress());
-    map_.emplace(c->getID(), move(exporter));
+    map_.emplace(c->getID(), std::move(exporter));
   } catch (const fboss::thrift::FbossBaseError& ex) {
     XLOG(ERR) << "Could not add exporter: "
               << c->getAddress().getFullyQualified()

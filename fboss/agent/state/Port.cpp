@@ -63,10 +63,11 @@ Port* Port::modify(std::shared_ptr<SwitchState>* state) {
     return this;
   }
 
-  PortMap* ports = (*state)->getPorts()->modify(state);
+  MultiSwitchPortMap* ports = (*state)->getPorts()->modify(state);
+  const auto scope = ports->getNodeAndScope(getID()).second;
   auto newPort = clone();
   auto* ptr = newPort.get();
-  ports->updatePort(std::move(newPort));
+  ports->updateNode(std::move(newPort), scope);
   return ptr;
 }
 
@@ -75,11 +76,36 @@ Port::Port(PortID id, const std::string& name) {
   set<switch_state_tags::portName>(name);
 }
 
-void Port::fillPhyInfo(phy::PhyInfo* phyInfo) {
-  phyInfo->name() = getName();
-  phyInfo->speed() = getSpeed();
+InterfaceID Port::getInterfaceID() const {
+  // On VOQ/Fabric switches, port and interface have 1:1 relation.
+  // For non VOQ/Fabric switches, in practice, a port is always part of a
+  // single VLAN (and thus single interface).
+  auto intfs = getInterfaceIDs();
+  CHECK_EQ(intfs.size(), 1);
+  return InterfaceID(intfs.at(0));
 }
 
-template class ThriftStructNode<Port, state::PortFields>;
+void Port::setActiveErrors(const std::set<PortError>& errors) {
+  set<switch_state_tags::activeErrors>(
+      std::vector<PortError>(errors.begin(), errors.end()));
+}
+
+void Port::addError(PortError error) {
+  auto& errors = safe_cref<switch_state_tags::activeErrors>()->impl();
+  if (std::find(errors.cbegin(), errors.cend(), error) != errors.end()) {
+    return;
+  }
+  auto portErrors = getActiveErrors();
+  portErrors.push_back(error);
+  set<switch_state_tags::activeErrors>(portErrors);
+}
+
+void Port::removeError(PortError error) {
+  auto errors = getActiveErrors();
+  std::erase(errors, error);
+  set<switch_state_tags::activeErrors>(errors);
+}
+
+template struct ThriftStructNode<Port, state::PortFields>;
 
 } // namespace facebook::fboss

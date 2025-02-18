@@ -15,32 +15,12 @@
 #include "fboss/agent/state/InterfaceMap.h"
 #include "fboss/agent/state/NodeBase-defs.h"
 #include "fboss/agent/state/SwitchState.h"
-#include "folly/IPAddress.h"
-#include "folly/MacAddress.h"
-
-using folly::IPAddress;
-using folly::MacAddress;
-using folly::to;
-using std::string;
-
-namespace {
-constexpr auto kInterfaceId = "interfaceId";
-constexpr auto kRouterId = "routerId";
-constexpr auto kVlanId = "vlanId";
-constexpr auto kName = "name";
-constexpr auto kMac = "mac";
-constexpr auto kAddresses = "addresses";
-constexpr auto kNdpConfig = "ndpConfig";
-constexpr auto kMtu = "mtu";
-constexpr auto kIsVirtual = "isVirtual";
-constexpr auto kIsStateSyncDisabled = "isStateSyncDisabled";
-} // namespace
 
 namespace facebook::fboss {
 
 std::optional<folly::CIDRNetwork> Interface::getAddressToReach(
     const folly::IPAddress& dest) const {
-  auto getAddressToReachFn = [this, &dest](auto addresses) {
+  auto getAddressToReachFn = [&dest](auto addresses) {
     std::optional<folly::CIDRNetwork> reachableBy;
     for (const auto& [ipStr, mask] : addresses) {
       auto cidr = folly::CIDRNetwork(ipStr, mask);
@@ -134,7 +114,7 @@ bool Interface::isIpAttached(
     InterfaceID intfID,
     const std::shared_ptr<SwitchState>& state) {
   const auto& allIntfs = state->getInterfaces();
-  const auto intf = allIntfs->getInterfaceIf(intfID);
+  const auto intf = allIntfs->getNodeIf(intfID);
   if (!intf) {
     return false;
   }
@@ -148,14 +128,43 @@ Interface* Interface::modify(std::shared_ptr<SwitchState>* state) {
     CHECK(!(*state)->isPublished());
     return this;
   }
+  bool isLocal = false;
 
-  InterfaceMap* interfaces = (*state)->getInterfaces()->modify(state);
+  auto switchSettings = (*state)->getSwitchSettings()->size()
+      ? (*state)->getSwitchSettings()->cbegin()->second
+      : std::make_shared<SwitchSettings>();
+
+  if (getType() == cfg::InterfaceType::SYSTEM_PORT &&
+      getScope() == cfg::Scope::GLOBAL) {
+    // For global system port RIFs, look whether these fall
+    // in my sysport ranges. If so, the RIF is local
+    auto id(static_cast<int64_t>(getID()));
+    auto switchId2Info = switchSettings->getSwitchIdToSwitchInfo();
+    for (const auto& [_, switchInfo] : switchId2Info) {
+      for (const auto& sysPortRange :
+           *switchInfo.systemPortRanges()->systemPortRanges()) {
+        if (id >= *sysPortRange.minimum() && id <= *sysPortRange.maximum()) {
+          isLocal = true;
+          break;
+        }
+      }
+      if (isLocal) {
+        break;
+      }
+    }
+  } else {
+    // VLAN based rifs, or rifs with local scope are always local
+    isLocal = true;
+  }
+  auto interfaces = isLocal ? (*state)->getInterfaces()->modify(state)
+                            : (*state)->getRemoteInterfaces()->modify(state);
+  auto scope = interfaces->getNodeAndScope(getID()).second;
   auto newInterface = clone();
   auto* ptr = newInterface.get();
-  interfaces->updateInterface(std::move(newInterface));
+  interfaces->updateNode(std::move(newInterface), scope);
   return ptr;
 }
 
-template class ThriftStructNode<Interface, state::InterfaceFields>;
+template struct ThriftStructNode<Interface, state::InterfaceFields>;
 
 } // namespace facebook::fboss

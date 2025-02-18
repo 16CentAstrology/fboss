@@ -8,7 +8,6 @@
 
 #include <fboss/agent/if/gen-cpp2/ctrl_types.h>
 #include "fboss/agent/AddressUtil.h"
-#include "fboss/cli/fboss2/utils/CmdClientUtils.h"
 
 #include "fboss/cli/fboss2/commands/show/ndp/CmdShowNdp.h"
 #include "fboss/cli/fboss2/commands/show/ndp/gen-cpp2/model_types.h"
@@ -34,6 +33,7 @@ std::vector<facebook::fboss::NdpEntryThrift> createNdpEntries() {
   ndpEntry1.state() = "REACHABLE";
   ndpEntry1.ttl() = 45013;
   ndpEntry1.classID() = 0;
+  ndpEntry1.resolvedSince() = 0;
 
   fboss::NdpEntryThrift ndpEntry2;
   folly::IPAddressV6 ipv6_2("fe80::464c:a8ff:fee4:1c3f");
@@ -99,6 +99,7 @@ TEST_F(CmdShowNdpTestFixture, createModel) {
   EXPECT_EQ(entries[0].get_state(), "REACHABLE");
   EXPECT_EQ(entries[0].get_ttl(), 45013);
   EXPECT_EQ(entries[0].get_classID(), 0);
+  EXPECT_EQ(entries[0].get_resolvedSince(), "1969-12-31 16:00:00");
 
   EXPECT_EQ(entries[1].get_ip(), "fe80::464c:a8ff:fee4:1c3f");
   EXPECT_EQ(entries[1].get_mac(), "44:4c:a8:e4:1c:3f");
@@ -108,6 +109,7 @@ TEST_F(CmdShowNdpTestFixture, createModel) {
   EXPECT_EQ(entries[1].get_state(), "REACHABLE");
   EXPECT_EQ(entries[1].get_ttl(), 21045);
   EXPECT_EQ(entries[1].get_classID(), 0);
+  EXPECT_EQ(entries[1].get_resolvedSince(), "--");
 }
 
 TEST_F(CmdShowNdpTestFixture, printOutput) {
@@ -120,12 +122,12 @@ TEST_F(CmdShowNdpTestFixture, printOutput) {
 
   std::string output = ss.str();
   std::string expectOutput =
-      "IP Address                                   MAC Address        Interface   VLAN               State         TTL      CLASSID     \n"
-      "fe80::526b:4bff:fe28:8fb0                    50:6b:4b:28:8f:b0  eth1/1/1    downlinks (2000)   REACHABLE     45013    0           \n"
-      "fe80::464c:a8ff:fee4:1c3f                    44:4c:a8:e4:1c:3f  eth2/1/1    uplink_1 (4001)    REACHABLE     21045    0           \n\n";
+      " IP Address                 MAC Address        Interface  VLAN/InterfaceID  State      TTL    CLASSID  Voq Switch  Resolved Since      \n"
+      "-------------------------------------------------------------------------------------------------------------------------------------------------\n"
+      " fe80::526b:4bff:fe28:8fb0  50:6b:4b:28:8f:b0  eth1/1/1   downlinks (2000)  REACHABLE  45013  0        --          1969-12-31 16:00:00 \n"
+      " fe80::464c:a8ff:fee4:1c3f  44:4c:a8:e4:1c:3f  eth2/1/1   uplink_1 (4001)   REACHABLE  21045  0        --          --                  \n\n";
 
-  EXPECT_EQ(true, true);
-  // EXPECT_EQ(output, expectOutput);
+  EXPECT_EQ(output, expectOutput);
 }
 
 } // namespace facebook::fboss

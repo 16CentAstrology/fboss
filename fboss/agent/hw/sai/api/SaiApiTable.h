@@ -10,6 +10,8 @@
 #pragma once
 
 #include "fboss/agent/hw/sai/api/AclApi.h"
+#include "fboss/agent/hw/sai/api/ArsApi.h"
+#include "fboss/agent/hw/sai/api/ArsProfileApi.h"
 #include "fboss/agent/hw/sai/api/BridgeApi.h"
 #include "fboss/agent/hw/sai/api/BufferApi.h"
 #include "fboss/agent/hw/sai/api/CounterApi.h"
@@ -34,7 +36,9 @@
 #include "fboss/agent/hw/sai/api/SwitchApi.h"
 #include "fboss/agent/hw/sai/api/SystemPortApi.h"
 #include "fboss/agent/hw/sai/api/TamApi.h"
+#include "fboss/agent/hw/sai/api/TamEventAgingGroupApi.h"
 #include "fboss/agent/hw/sai/api/TunnelApi.h"
+#include "fboss/agent/hw/sai/api/UdfApi.h"
 #include "fboss/agent/hw/sai/api/VirtualRouterApi.h"
 #include "fboss/agent/hw/sai/api/VlanApi.h"
 #include "fboss/agent/hw/sai/api/WredApi.h"
@@ -63,6 +67,12 @@ class SaiApiTable {
       const std::set<sai_api_t>& desiredApis);
 
   const AclApi& aclApi() const;
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+  const ArsApi& arsApi() const;
+
+  const ArsProfileApi& arsProfileApi() const;
+#endif
 
   const BridgeApi& bridgeApi() const;
 
@@ -108,6 +118,8 @@ class SaiApiTable {
 
   const SystemPortApi& systemPortApi() const;
 
+  const UdfApi& udfApi() const;
+
   const VirtualRouterApi& virtualRouterApi() const;
 
   const VlanApi& vlanApi() const;
@@ -115,6 +127,10 @@ class SaiApiTable {
   const WredApi& wredApi() const;
 
   const TamApi& tamApi() const;
+
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  const TamEventAgingGroupApi& tamEventAgingGroupApi() const;
+#endif
 
   const TunnelApi& tunnelApi() const;
 
@@ -142,6 +158,10 @@ class SaiApiTable {
  private:
   std::tuple<
       std::unique_ptr<AclApi>,
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+      std::unique_ptr<ArsApi>,
+      std::unique_ptr<ArsProfileApi>,
+#endif
       std::unique_ptr<BridgeApi>,
       std::unique_ptr<BufferApi>,
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
@@ -165,10 +185,14 @@ class SaiApiTable {
       std::unique_ptr<SchedulerApi>,
       std::unique_ptr<SwitchApi>,
       std::unique_ptr<SystemPortApi>,
+      std::unique_ptr<UdfApi>,
       std::unique_ptr<VirtualRouterApi>,
       std::unique_ptr<VlanApi>,
       std::unique_ptr<WredApi>,
       std::unique_ptr<TamApi>,
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+      std::unique_ptr<TamEventAgingGroupApi>,
+#endif
       std::unique_ptr<TunnelApi>,
       std::unique_ptr<LagApi>,
       std::unique_ptr<MacsecApi>>

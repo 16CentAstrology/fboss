@@ -46,5 +46,15 @@ bool writeSysfs(const std::string& path, const std::string& val);
 
 boost::filesystem::recursive_directory_iterator recursive_directory_iterator(
     const std::string& path);
+
+void createSymLink(const std::string& linkPath, const std::string& targetPath);
+
+void touchFile(const std::string& path);
+
+void createDirectoryTree(const std::string& path);
+
+std::string parentDirectoryTree(const std::string& path);
+
+void removeDir(const std::string& path);
 } // namespace fboss
 } // namespace facebook

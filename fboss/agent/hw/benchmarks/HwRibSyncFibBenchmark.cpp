@@ -19,29 +19,30 @@
 #include "fboss/agent/benchmarks/AgentBenchmarks.h"
 
 #include <folly/Benchmark.h>
-#include <folly/logging/xlog.h>
 
 namespace facebook::fboss {
 
 BENCHMARK(RibSyncFibBenchmark) {
   folly::BenchmarkSuspender suspender;
   AgentEnsembleSwitchConfigFn initialConfigFn =
-      [](HwSwitch* hwSwitch, const std::vector<PortID>& ports) {
-        auto config = utility::onePortPerInterfaceConfig(hwSwitch, ports);
-        return config;
+      [](const AgentEnsemble& ensemble) {
+        return utility::onePortPerInterfaceConfig(
+            ensemble.getSw(), ensemble.masterLogicalPortIds());
       };
 
-  auto ensemble = createAgentEnsemble(initialConfigFn);
+  auto ensemble =
+      createAgentEnsemble(initialConfigFn, false /*disableLinkStateToggler*/);
   auto state = ensemble->getSw()->getState();
   utility::THAlpmRouteScaleGenerator gen(state, 50000);
   const auto& routeChunks = gen.getThriftRoutes();
   CHECK_EQ(1, routeChunks.size());
   // Create a dummy rib since we don't want to go through
   // AgentSwitchEnsemble and write to HW
-  auto rib = RoutingInformationBase::fromFollyDynamic(
-      ensemble->getSw()->getRib()->toFollyDynamic(), nullptr, nullptr);
+  auto rib = RoutingInformationBase::fromThrift(
+      ensemble->getSw()->getRib()->toThrift(), nullptr, nullptr);
   auto switchState = ensemble->getSw()->getState();
   rib->update(
+      ensemble->getSw()->getScopeResolver(),
       RouterID(0),
       ClientID::BGPD,
       AdminDistance::EBGP,
@@ -55,6 +56,7 @@ BENCHMARK(RibSyncFibBenchmark) {
   suspender.dismiss();
   // Sync fib with the same routes
   rib->update(
+      ensemble->getSw()->getScopeResolver(),
       RouterID(0),
       ClientID::BGPD,
       AdminDistance::EBGP,

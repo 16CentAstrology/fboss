@@ -1,0 +1,76 @@
+load("@fbcode_macros//build_defs:cpp_unittest.bzl", "cpp_unittest")
+
+oncall("fboss_agent_push")
+
+cpp_unittest(
+    name = "subscription_tests",
+    srcs = ["SubscriptionTests.cpp"],
+    deps = [
+        "//fboss/fsdb/oper:subscription_manager",
+        "//folly/coro:blocking_wait",
+        "//folly/coro:timeout",
+        "//folly/io/async:scoped_event_base_thread",
+    ],
+)
+
+cpp_unittest(
+    name = "subscribable_storage_tests",
+    srcs = ["SubscribableStorageTests.cpp"],
+    compiler_flags = ["-ftemplate-backtrace-limit=0"],
+    supports_static_listing = False,
+    deps = [
+        "fbsource//third-party/googletest:gmock",
+        "//fboss/fsdb/oper:extended_path_builder",
+        "//fboss/fsdb/oper:subscribable_storage",
+        "//fboss/fsdb/tests:thriftpath_test_thrift-cpp2-thriftpath",
+        "//fboss/fsdb/tests:thriftpath_test_thrift-cpp2-types",
+        "//fboss/lib:common_utils",
+        "//fboss/thrift_cow/visitors:visitors",
+        "//folly:random",
+        "//folly/coro:async_generator",
+        "//folly/coro:blocking_wait",
+        "//folly/coro:collect",
+        "//folly/coro:gtest_helpers",
+        "//folly/coro:task",
+        "//folly/coro:timeout",
+        "//folly/json:dynamic",
+        "//thrift/lib/cpp2/folly_dynamic:folly_dynamic",
+    ],
+)
+
+cpp_unittest(
+    name = "path_builder_tests",
+    srcs = ["ExtendedPathBuilderTests.cpp"],
+    deps = [
+        "fbsource//third-party/googletest:gmock",
+        "//fboss/fsdb/oper:extended_path_builder",
+    ],
+)
+
+cpp_unittest(
+    name = "path_helper_tests",
+    srcs = [
+        "PathConverterTests.cpp",
+        "PathValidatorTests.cpp",
+    ],
+    deps = [
+        "fbsource//third-party/googletest:gmock",
+        "//fboss/fsdb/oper:extended_path_builder",
+        "//fboss/fsdb/oper:path_helpers",
+    ],
+)
+
+cpp_unittest(
+    name = "subscription_path_store_tests",
+    srcs = [
+        "SubscriptionPathStoreTests.cpp",
+    ],
+    compiler_flags = ["-ftemplate-backtrace-limit=0"],
+    deps = [
+        "fbsource//third-party/googletest:gmock",
+        "//fboss/fsdb/if:fsdb_oper-cpp2-types",
+        "//fboss/fsdb/oper:extended_path_builder",
+        "//fboss/fsdb/oper:subscription_manager",
+        "//folly/json:dynamic",
+    ],
+)

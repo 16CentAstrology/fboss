@@ -4,6 +4,7 @@
 
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
+#include "fboss/agent/state/Interface.h"
 #include "fboss/agent/state/NodeBase.h"
 #include "fboss/agent/state/Thrifty.h"
 #include "fboss/agent/types.h"
@@ -18,6 +19,7 @@ class TeFlowEntry
     : public ThriftStructNode<TeFlowEntry, state::TeFlowEntryFields> {
  public:
   using Base = ThriftStructNode<TeFlowEntry, state::TeFlowEntryFields>;
+  using Base::modify;
   explicit TeFlowEntry(TeFlow flowId) {
     set<switch_state_tags::flow>(flowId);
   }
@@ -54,11 +56,35 @@ class TeFlowEntry
   void setEnabled(bool enable) {
     set<switch_state_tags::enabled>(enable);
   }
+  std::optional<bool> getStatEnabled() const {
+    if (auto statEnabled = cref<switch_state_tags::statEnabled>()) {
+      return statEnabled->cref();
+    }
+    return std::nullopt;
+  }
+  void setStatEnabled(std::optional<bool> statEnabled) {
+    if (statEnabled.has_value()) {
+      set<switch_state_tags::statEnabled>(statEnabled.value());
+    } else {
+      ref<switch_state_tags::statEnabled>().reset();
+    }
+  }
 
-  TeFlowEntry* modify(std::shared_ptr<SwitchState>* state);
   std::string str() const;
 
   TeFlowDetails toDetails() const;
+
+  static std::shared_ptr<TeFlowEntry> createTeFlowEntry(const FlowEntry& entry);
+  void resolve(const std::shared_ptr<SwitchState>& state);
+  static bool isNexthopResolved(
+      NextHopThrift nexthop,
+      const std::shared_ptr<SwitchState>& state);
+
+  template <typename AddrT>
+  static std::optional<folly::MacAddress> getNeighborMac(
+      const std::shared_ptr<SwitchState>& state,
+      const std::shared_ptr<Interface>& interface,
+      AddrT ip);
 
  private:
   // Inherit the constructors required for clone()

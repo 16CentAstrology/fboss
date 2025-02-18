@@ -8,9 +8,7 @@
 
 #include "fboss/agent/hw/test/ConfigFactory.h"
 
-extern "C" {
-#include <bcm/l3.h>
-}
+extern "C" {}
 
 namespace facebook::fboss {
 
@@ -27,8 +25,7 @@ class BcmDeathTest : public BcmTest {
         masterLogicalPortIds()[1],
         masterLogicalPortIds()[2],
     };
-    return utility::onePortPerInterfaceConfig(
-        getHwSwitch(), ports, cfg::PortLoopbackMode::NONE);
+    return utility::onePortPerInterfaceConfig(getHwSwitch(), ports);
   }
 
   template <typename AddrT>

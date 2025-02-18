@@ -16,7 +16,7 @@
 #include "fboss/agent/PortDescriptorTemplate.h"
 
 #include <folly/Conv.h>
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 #include <folly/logging/xlog.h>
 
 namespace facebook::fboss {
@@ -51,7 +51,12 @@ class PortDescriptor
 
     return cfgPort;
   }
-  static PortDescriptor fromCfgCfgPortDescriptor(cfg::PortDescriptor cfg);
+  static PortDescriptor fromCfgCfgPortDescriptor(cfg::PortDescriptor cfg) {
+    if (*cfg.portType() == cfg::PortDescriptorType::Physical) {
+      return PortDescriptor(PortID(*cfg.portId()));
+    }
+    return PortDescriptor(AggregatePortID(*cfg.portId()));
+  }
 };
 
 // helper so port descriptors work directly in folly::to<string> expressions.

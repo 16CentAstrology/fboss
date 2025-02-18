@@ -31,35 +31,58 @@ class PortApiTest : public ::testing::Test {
       uint32_t speed,
       const std::vector<uint32_t>& lanes,
       bool adminState) const {
-    SaiPortTraits::CreateAttributes a {
-      lanes, speed, adminState, std::nullopt,
+    SaiPortTraits::CreateAttributes a{
+        lanes,        speed,        adminState,   std::nullopt,
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
-          std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt,
 #endif
-          std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
-          std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
-          std::nullopt, // Ingress Mirror Session
-          std::nullopt, // Egress Mirror Session
-          std::nullopt, // Ingress Sample Packet
-          std::nullopt, // Egress Sample Packet
-          std::nullopt, // Ingress mirror sample session
-          std::nullopt, // Egress mirror sample session
-          std::nullopt, // Ingress macsec acl
-          std::nullopt, // Egress macsec acl
-          std::nullopt, // System Port Id
-          std::nullopt, // PTP Mode
-          std::nullopt, // PFC Mode
-          std::nullopt, // PFC Priorities
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+        std::nullopt, // Port Fabric Isolate
+#endif
+        std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+        std::nullopt, // TAM object
+        std::nullopt, // Ingress Mirror Session
+        std::nullopt, // Egress Mirror Session
+        std::nullopt, // Ingress Sample Packet
+        std::nullopt, // Egress Sample Packet
+        std::nullopt, // Ingress mirror sample session
+        std::nullopt, // Egress mirror sample session
+        std::nullopt, // PRBS Polynomial
+        std::nullopt, // PRBS Config
+        std::nullopt, // Ingress macsec acl
+        std::nullopt, // Egress macsec acl
+        std::nullopt, // System Port Id
+        std::nullopt, // PTP Mode
+        std::nullopt, // PFC Mode
+        std::nullopt, // PFC Priorities
 #if !defined(TAJO_SDK)
-          std::nullopt, // PFC Rx Priorities
-          std::nullopt, // PFC Tx Priorities
+        std::nullopt, // PFC Rx Priorities
+        std::nullopt, // PFC Tx Priorities
 #endif
-          std::nullopt, // TC to Priority Group map
-          std::nullopt, // PFC Priority to Queue map
+        std::nullopt, // TC to Priority Group map
+        std::nullopt, // PFC Priority to Queue map
 #if SAI_API_VERSION >= SAI_VERSION(1, 9, 0)
-          std::nullopt, // Inter frame gap
+        std::nullopt, // Inter frame gap
 #endif
-          std::nullopt, // Link Training Enable
+        std::nullopt, // Link Training Enable
+        std::nullopt, // FDR Enable
+        std::nullopt, // Rx Lane Squelch Enable
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
+        std::nullopt, // PFC Deadlock Detection Interval
+        std::nullopt, // PFC Deadlock Recovery Interval
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+        std::nullopt, // ARS enable
+        std::nullopt, // ARS scaling factor
+        std::nullopt, // ARS port load past weight
+        std::nullopt, // ARS port load future weight
+#endif
+        std::nullopt, // Reachability Group
+        std::nullopt, // CondEntropyRehashEnable
+        std::nullopt, // CondEntropyRehashPeriodUS
+        std::nullopt, // CondEntropyRehashSeed
+        std::nullopt, // ShelEnable
     };
     return portApi->create<SaiPortTraits>(a, 0);
   }
@@ -74,21 +97,51 @@ class PortApiTest : public ::testing::Test {
       std::vector<sai_int32_t> rxDspMode,
       std::vector<sai_int32_t> rxAfeTrim,
       std::vector<sai_int32_t> rxAcCouplingByPass,
-      std::vector<sai_int32_t> rxAfeAdaptiveEnable) const {
-    SaiPortSerdesTraits::CreateAttributes a {
-      portSaiId, preemphasis,
-          std::nullopt, // IDriver
-          txPre1,
-#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
-          std::nullopt, // txPre2
-#endif
-          txMain, txPost1,
-#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
-          std::nullopt, // txPost2
-          std::nullopt, // txPost3
-#endif
-          rxCtlCode, rxDspMode, rxAfeTrim, rxAcCouplingByPass,
-          rxAfeAdaptiveEnable
+      std::vector<sai_int32_t> rxAfeAdaptiveEnable,
+      std::vector<sai_uint32_t> txPre3) const {
+    SaiPortSerdesTraits::CreateAttributes a{
+        portSaiId,
+        preemphasis,
+        std::nullopt, // IDriver
+        txPre1,
+        std::nullopt, // txPre2
+        txPre3,
+        txMain,
+        txPost1,
+        std::nullopt, // txPost2
+        std::nullopt, // txPost3
+        std::nullopt, // txLutMode
+        rxCtlCode,
+        rxDspMode,
+        rxAfeTrim,
+        rxAcCouplingByPass,
+        rxAfeAdaptiveEnable,
+        std::nullopt, // txDiffEncoderEn
+        std::nullopt, // txDigGain
+        std::nullopt, // txFfeCoeff0
+        std::nullopt, // txFfeCoeff1
+        std::nullopt, // txFfeCoeff2
+        std::nullopt, // txFfeCoeff3
+        std::nullopt, // txFfeCoeff4
+        std::nullopt, // txDriverSwing
+        std::nullopt, // rxInstgBoost1Start
+        std::nullopt, // rxInstgBoost1Step
+        std::nullopt, // rxInstgBoost1Stop
+        std::nullopt, // rxInstgBoost2OrHrStart
+        std::nullopt, // rxInstgBoost2OrHrStep
+        std::nullopt, // rxInstgBoost2OrHrStop
+        std::nullopt, // rxInstgC1Start1p7
+        std::nullopt, // rxInstgC1Step1p7
+        std::nullopt, // rxInstgC1Stop1p7
+        std::nullopt, // rxInstgDfeStart1p7
+        std::nullopt, // rxInstgDfeStep1p7
+        std::nullopt, // rxInstgDfeStop1p7
+        std::nullopt, // rxEnableScanSelection
+        std::nullopt, // rxInstgScanUseSrSettings
+        std::nullopt, // rxCdrCfgOvEn
+        std::nullopt, // rxCdrTdet1stOrdStepOvVal
+        std::nullopt, // rxCdrTdet2ndOrdStepOvVal
+        std::nullopt, // rxCdrTdetFineStepOvVal
     };
     return portApi->create<SaiPortSerdesTraits>(a, 0 /*switch id*/);
   }
@@ -220,6 +273,15 @@ TEST_F(PortApiTest, setGetOptionalAttributes) {
   auto gotFecMode = portApi->getAttribute(portId, fecMode);
   EXPECT_EQ(gotFecMode, saiFecMode);
 
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+  // Internal Loopback Mode get/set
+  int32_t saiLoopbackMode = SAI_PORT_LOOPBACK_MODE_MAC;
+  SaiPortTraits::Attributes::PortLoopbackMode loopbackMode{saiLoopbackMode};
+  portApi->setAttribute(portId, loopbackMode);
+  auto gotLoopbackMode = portApi->getAttribute(portId, loopbackMode);
+  EXPECT_EQ(gotLoopbackMode, saiLoopbackMode);
+#endif
+
   // Internal Loopback Mode get/set
   int32_t saiInternalLoopbackMode = SAI_PORT_INTERNAL_LOOPBACK_MODE_MAC;
   SaiPortTraits::Attributes::InternalLoopbackMode internalLoopbackMode{
@@ -321,6 +383,34 @@ TEST_F(PortApiTest, setGetOptionalAttributes) {
       portApi->getAttribute(portId, SaiPortTraits::Attributes::InterFrameGap{});
   EXPECT_EQ(interFrameGap, gotInterFrameGap);
 #endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+  // Port Fabric Isolate
+  SaiPortTraits::Attributes::FabricIsolate fabricIsolate_attr(true);
+  portApi->setAttribute(portId, fabricIsolate_attr);
+  EXPECT_EQ(portApi->getAttribute(portId, fabricIsolate_attr), true);
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+  // ARS related attributes
+  // Ars enable
+  SaiPortTraits::Attributes::ArsEnable arsEnable_attr(true);
+  portApi->setAttribute(portId, arsEnable_attr);
+  EXPECT_EQ(portApi->getAttribute(portId, arsEnable_attr), true);
+  // Ars scaling factor
+  SaiPortTraits::Attributes::ArsPortLoadScalingFactor
+      arsPortLoadScalingFactor_attr(16);
+  portApi->setAttribute(portId, arsPortLoadScalingFactor_attr);
+  EXPECT_EQ(portApi->getAttribute(portId, arsPortLoadScalingFactor_attr), 16);
+  // Ars port load past weight
+  SaiPortTraits::Attributes::ArsPortLoadPastWeight arsPortLoadPastWeight_attr(
+      60);
+  portApi->setAttribute(portId, arsPortLoadPastWeight_attr);
+  EXPECT_EQ(portApi->getAttribute(portId, arsPortLoadPastWeight_attr), 60);
+  // Ars port load future weight
+  SaiPortTraits::Attributes::ArsPortLoadFutureWeight
+      arsPortLoadFutureWeight_attr(20);
+  portApi->setAttribute(portId, arsPortLoadFutureWeight_attr);
+  EXPECT_EQ(portApi->getAttribute(portId, arsPortLoadFutureWeight_attr), 20);
+#endif
 }
 
 // ObjectApi tests
@@ -357,11 +447,13 @@ TEST_F(PortApiTest, getSome) {
 TEST_F(PortApiTest, serdesApi) {
   auto id = createPort(100000, {42}, true);
   auto serdesId =
-      createPortSerdes(id, {0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8});
+      createPortSerdes(id, {0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}, {9});
   auto preemphasis = portApi->getAttribute(
       serdesId, SaiPortSerdesTraits::Attributes::Preemphasis{});
   auto txFirPre1 = portApi->getAttribute(
       serdesId, SaiPortSerdesTraits::Attributes::TxFirPre1{});
+  auto txFirPre3 = portApi->getAttribute(
+      serdesId, SaiPortSerdesTraits::Attributes::TxFirPre3{});
   auto txFirMain = portApi->getAttribute(
       serdesId, SaiPortSerdesTraits::Attributes::TxFirMain{});
   auto txFirPost1 = portApi->getAttribute(
@@ -385,6 +477,7 @@ TEST_F(PortApiTest, serdesApi) {
   EXPECT_EQ(rxAfeTrim, std::vector<sai_int32_t>{6});
   EXPECT_EQ(rxAcCouplingByPass, std::vector<sai_int32_t>{7});
   EXPECT_EQ(rxAfeAdaptiveEnable, std::vector<sai_int32_t>{8});
+  EXPECT_EQ(txFirPre3, std::vector<sai_uint32_t>{9});
 }
 
 #if !defined(IS_OSS)
@@ -424,4 +517,15 @@ TEST_F(PortApiTest, getFabricAttachedSwitchType) {
   auto swType = portApi->getAttribute(
       id, SaiPortTraits::Attributes::FabricAttachedSwitchType{});
   EXPECT_EQ(swType, SAI_SWITCH_TYPE_VOQ);
+}
+
+TEST_F(PortApiTest, getFabricReachability) {
+  const auto switchId = 3;
+  auto id = createPort(100000, {42}, true);
+  sai_fabric_port_reachability_t reachability;
+  reachability.switch_id = switchId;
+  auto reachabilityGot = portApi->getAttribute(
+      id, SaiPortTraits::Attributes::FabricReachability{reachability});
+  EXPECT_EQ(reachabilityGot.switch_id, switchId);
+  EXPECT_TRUE(reachabilityGot.reachable);
 }

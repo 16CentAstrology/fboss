@@ -49,6 +49,12 @@ class OpenBmcUpgradeTest : public LinkTest {
     });
   }
 
+  std::vector<link_test_production_features::LinkTestProductionFeature>
+  getProductionFeatures() const override {
+    return {
+        link_test_production_features::LinkTestProductionFeature::L1_LINK_TEST};
+  }
+
  protected:
   void openBmcSanityCheck() const {
     XLOG(DBG2) << "Checking ssh access to oob";
@@ -67,7 +73,7 @@ class OpenBmcUpgradeTest : public LinkTest {
 
   void upgradeOpenBmc() const {
     std::string upgradeCmd = folly::sformat(
-        "sshpass -p {} ssh root@{} /opt/scripts/run_flashy.sh --device {}",
+        "sshpass -p {} ssh root@{} /run/scripts/run_flashy.sh --device {}",
         FLAGS_openbmc_password,
         FLAGS_oob_asset,
         FLAGS_oob_flash_device_name);
@@ -120,10 +126,10 @@ TEST_F(OpenBmcUpgradeTest, openBmcHitlessUpgrade) {
   // Assert no traffic loss and no ecmp shrink. If ports flap
   // these conditions will not be true
   assertNoInDiscards();
-  auto ecmpSizeInSw = getVlanOwningCabledPorts().size();
+  auto ecmpSizeInSw = getSingleVlanOrRoutedCabledPorts().size();
   EXPECT_EQ(
       utility::getEcmpSizeInHw(
-          sw()->getHw(),
+          platform()->getHwSwitch(),
           {folly::IPAddress("::"), 0},
           RouterID(0),
           ecmpSizeInSw),

@@ -13,19 +13,19 @@
 #include "fboss/agent/packet/IPv6Hdr.h"
 #include "fboss/agent/types.h"
 
-namespace folly {
-namespace io {
+namespace folly::io {
 class Cursor;
-}
-} // namespace folly
+} // namespace folly::io
 
 namespace facebook::fboss {
 
 class IPv4Hdr;
 class IPv6Hdr;
+class PortStats;
 
 struct TCPHeader {
  public:
+  TCPHeader() = default;
   TCPHeader(uint16_t _srcPort, uint16_t _dstPort)
       : srcPort(_srcPort), dstPort(_dstPort) {}
 
@@ -46,9 +46,13 @@ struct TCPHeader {
         urgentPointer(_urgentPointer) {}
 
   bool operator==(const TCPHeader& r) const;
+  bool operator!=(const TCPHeader& r) const {
+    return !(*this == r);
+  }
   static uint32_t size() {
     return 20;
   }
+  void parse(folly::io::Cursor* cursor);
   /*
    * Output as a string
    */
@@ -73,7 +77,7 @@ struct TCPHeader {
   uint32_t sequenceNumber{0};
   uint32_t ackNumber{0};
   // header length or data offset is leading 4 bits
-  // remaining 4 bits are
+  // remaining 4 bits are reserved
   uint8_t dataOffsetAndReserved{5 << 4};
   uint8_t flags{0};
   uint16_t windowSize{0};
@@ -107,7 +111,8 @@ void TCPHeader::write(CursorType* cursor) const {
   cursor->template writeBE<uint16_t>(dstPort);
   cursor->template writeBE<uint32_t>(sequenceNumber);
   cursor->template writeBE<uint32_t>(ackNumber);
-  cursor->template writeBE<uint16_t>(dataOffsetAndReserved);
+  cursor->template writeBE<uint8_t>(dataOffsetAndReserved);
+  cursor->template writeBE<uint8_t>(flags);
   cursor->template writeBE<uint16_t>(windowSize);
   cursor->template writeBE<uint16_t>(csum);
   cursor->template writeBE<uint16_t>(urgentPointer);

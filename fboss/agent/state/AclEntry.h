@@ -66,17 +66,10 @@ class AclTtl {
     return std::tie(value_, mask_) == std::tie(ttl.value_, ttl.mask_);
   }
 
-  AclTtl& operator=(const AclTtl& ttl) {
-    value_ = ttl.value_;
-    mask_ = ttl.mask_;
-    return *this;
-  }
+  AclTtl& operator=(const AclTtl& ttl) = default;
 
   state::AclTtl toThrift() const;
   static AclTtl fromThrift(state::AclTtl const& entry);
-
-  folly::dynamic toFollyDynamic() const;
-  static AclTtl fromFollyDynamic(const folly::dynamic& ttlJson);
 
  private:
   uint16_t value_;
@@ -92,6 +85,11 @@ USE_THRIFT_COW(AclEntry);
 class AclEntry : public ThriftStructNode<AclEntry, state::AclEntryFields> {
  public:
   using BaseT = ThriftStructNode<AclEntry, state::AclEntryFields>;
+  using BaseT::modify;
+  using UdfGroups = std::vector<std::string>;
+  using RoceBytes = std::vector<signed char>;
+  using RoceMask = std::vector<signed char>;
+  using UdfTable = std::vector<cfg::AclUdfEntry>;
   static const uint8_t kProtoIcmp = 1;
   static const uint8_t kProtoIcmpv6 = 58;
   static const uint8_t kMaxIcmpType = 0xFF;
@@ -341,6 +339,61 @@ class AclEntry : public ThriftStructNode<AclEntry, state::AclEntryFields> {
     set<switch_state_tags::lookupClassNeighbor>(lookupClassNeighbor);
   }
 
+  void setUdfGroups(const UdfGroups& udfGroups) {
+    set<switch_state_tags::udfGroups>(udfGroups);
+  }
+
+  std::optional<UdfGroups> getUdfGroups() const {
+    if (auto udf = cref<switch_state_tags::udfGroups>()) {
+      return udf->toThrift();
+    }
+    return std::nullopt;
+  }
+
+  std::optional<uint8_t> getRoceOpcode() const {
+    if (auto opcode = cref<switch_state_tags::roceOpcode>()) {
+      return opcode->cref();
+    }
+    return std::nullopt;
+  }
+
+  void setRoceOpcode(const uint8_t opcode) {
+    set<switch_state_tags::roceOpcode>(opcode);
+  }
+
+  std::optional<RoceBytes> getRoceBytes() const {
+    if (auto roceBytes = cref<switch_state_tags::roceBytes>()) {
+      return roceBytes->toThrift();
+    }
+    return std::nullopt;
+  }
+
+  void setRoceBytes(RoceBytes roceBytes) {
+    set<switch_state_tags::roceBytes>(roceBytes);
+  }
+
+  std::optional<RoceMask> getRoceMask() const {
+    if (auto roceMask = cref<switch_state_tags::roceMask>()) {
+      return roceMask->toThrift();
+    }
+    return std::nullopt;
+  }
+
+  void setRoceMask(RoceMask roceMask) {
+    set<switch_state_tags::roceMask>(roceMask);
+  }
+
+  std::optional<UdfTable> getUdfTable() const {
+    if (auto udfData = cref<switch_state_tags::udfTable>()) {
+      return udfData->toThrift();
+    }
+    return std::nullopt;
+  }
+
+  void setUdfTable(const UdfTable& aclUdfEntryList) {
+    set<switch_state_tags::udfTable>(aclUdfEntryList);
+  }
+
   std::optional<cfg::AclLookupClass> getLookupClassRoute() const {
     if (auto lookupClassRoute = cref<switch_state_tags::lookupClassRoute>()) {
       return lookupClassRoute->cref();
@@ -389,12 +442,16 @@ class AclEntry : public ThriftStructNode<AclEntry, state::AclEntryFields> {
         getIcmpType() || getDscp() || getIpType() || getTtl() || getDstMac() ||
         getL4SrcPort() || getL4DstPort() || getLookupClassL2() ||
         getLookupClassNeighbor() || getLookupClassRoute() ||
-        getPacketLookupResult() || getEtherType() || getVlanID();
+        getPacketLookupResult() || getEtherType() || getVlanID() ||
+        getUdfGroups() || getRoceOpcode() || getRoceBytes() || getRoceMask() ||
+        getUdfTable();
   }
 
   std::set<cfg::AclTableQualifier> getRequiredAclTableQualifiers() const;
 
-  AclEntry* modify(std::shared_ptr<SwitchState>* state);
+  AclEntry* modify(
+      std::shared_ptr<SwitchState>* state,
+      const HwSwitchMatcher& matcher);
 
  private:
   // Inherit the constructors required for clone()

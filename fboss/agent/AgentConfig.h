@@ -14,9 +14,12 @@
 
 #include <memory>
 
+DECLARE_bool(multi_switch);
+
 namespace facebook::fboss {
 
 struct AgentConfig {
+  explicit AgentConfig(const cfg::AgentConfig& thriftConfig);
   AgentConfig(cfg::AgentConfig thriftConfig, std::string rawConfig)
       : thrift(std::move(thriftConfig)), raw(std::move(rawConfig)) {}
 
@@ -33,10 +36,11 @@ struct AgentConfig {
 
   void dumpConfig(folly::StringPiece path) const;
 
+  cfg::AgentRunMode getRunMode() const;
+
   const cfg::AgentConfig thrift;
   const std::string raw;
 };
 
 std::unique_ptr<facebook::fboss::AgentConfig> createEmptyAgentConfig();
-
 } // namespace facebook::fboss

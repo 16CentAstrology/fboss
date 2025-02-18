@@ -15,8 +15,6 @@
 #include "fboss/agent/Platform.h"
 #include "fboss/agent/Utils.h"
 #include "fboss/agent/platforms/wedge/WedgePlatform.h"
-#include "fboss/agent/platforms/wedge/galaxy/GalaxyFCPlatform.h"
-#include "fboss/agent/platforms/wedge/galaxy/GalaxyLCPlatform.h"
 #include "fboss/agent/platforms/wedge/wedge100/Wedge100Platform.h"
 #include "fboss/agent/platforms/wedge/wedge40/FakeWedge40Platform.h"
 #include "fboss/agent/platforms/wedge/wedge40/Wedge40Platform.h"
@@ -30,30 +28,27 @@ std::unique_ptr<WedgePlatform> createWedgePlatform() {
   productInfo->initialize();
   auto localMac = getLocalMacAddress();
 
-  auto mode = productInfo->getMode();
-  if (mode == PlatformMode::WEDGE) {
+  auto type = productInfo->getType();
+  if (type == PlatformType::PLATFORM_WEDGE) {
     return std::make_unique<Wedge40Platform>(std::move(productInfo), localMac);
-  } else if (mode == PlatformMode::WEDGE100) {
+  } else if (type == PlatformType::PLATFORM_WEDGE100) {
     return std::make_unique<Wedge100Platform>(std::move(productInfo), localMac);
-  } else if (mode == PlatformMode::GALAXY_LC) {
-    return std::make_unique<GalaxyLCPlatform>(std::move(productInfo), localMac);
-  } else if (mode == PlatformMode::GALAXY_FC) {
-    return std::make_unique<GalaxyFCPlatform>(std::move(productInfo), localMac);
-  } else if (mode == PlatformMode::FAKE_WEDGE40) {
+  } else if (type == PlatformType::PLATFORM_FAKE_WEDGE40) {
     return std::make_unique<FakeWedge40Platform>(
         std::move(productInfo), localMac);
   }
 
-  // mode is neither of the offical platforms above, consider it as a Facebook
-  // dev platform
+  // platform type is neither of the offical platforms above, consider it as a
+  // Facebook dev platform
   return createFBWedgePlatform(std::move(productInfo), localMac);
 }
 
 std::unique_ptr<Platform> initWedgePlatform(
     std::unique_ptr<AgentConfig> config,
-    uint32_t hwFeaturesDesired) {
+    uint32_t hwFeaturesDesired,
+    int16_t switchIndex) {
   auto platform = createWedgePlatform();
-  platform->init(std::move(config), hwFeaturesDesired);
+  platform->init(std::move(config), hwFeaturesDesired, switchIndex);
   return std::move(platform);
 }
 

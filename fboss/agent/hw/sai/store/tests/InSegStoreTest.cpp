@@ -10,17 +10,20 @@ using namespace ::testing;
 #include "fboss/agent/hw/sai/store/SaiStore.h"
 #include "fboss/agent/hw/sai/store/tests/SaiStoreTest.h"
 
+using namespace facebook::fboss;
+
 TEST_F(SaiStoreTest, createInSegEntry) {
   auto& mplsApi = saiApiTable->mplsApi();
-  typename SaiInSegTraits::InSegEntry entry{0, 100};
-  typename SaiInSegTraits::Attributes::NextHopId nextHopIdAttribute(1010);
-  typename SaiInSegTraits::CreateAttributes attributes{
+  typename facebook::fboss::SaiInSegTraits::InSegEntry entry{0, 100};
+  typename facebook::fboss::SaiInSegTraits::Attributes::NextHopId
+      nextHopIdAttribute(1010);
+  typename facebook::fboss::SaiInSegTraits::CreateAttributes attributes{
       SAI_PACKET_ACTION_FORWARD, 1, nextHopIdAttribute};
-  mplsApi.create<SaiInSegTraits>(entry, attributes);
+  mplsApi.create<facebook::fboss::SaiInSegTraits>(entry, attributes);
 
   saiStore->setSwitchId(0);
   saiStore->reload();
-  auto& store = saiStore->get<SaiInSegTraits>();
+  auto& store = saiStore->get<facebook::fboss::SaiInSegTraits>();
 
   auto got = store.get(entry);
   EXPECT_EQ(got->adapterKey(), entry);
@@ -33,8 +36,9 @@ TEST_F(SaiStoreTest, createInSegEntry) {
 
 TEST_F(SaiStoreTest, modifyInSegEntry) {
   auto& mplsApi = saiApiTable->mplsApi();
-  typename SaiInSegTraits::InSegEntry entry{0, 100};
-  typename SaiInSegTraits::Attributes::NextHopId nextHopIdAttribute(1010);
+  typename facebook::fboss::SaiInSegTraits::InSegEntry entry{0, 100};
+  typename facebook::fboss::SaiInSegTraits::Attributes::NextHopId
+      nextHopIdAttribute(1010);
   typename SaiInSegTraits::CreateAttributes attributes{
       SAI_PACKET_ACTION_FORWARD, 1, nextHopIdAttribute};
   mplsApi.create<SaiInSegTraits>(entry, attributes);

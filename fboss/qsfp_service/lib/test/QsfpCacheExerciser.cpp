@@ -7,7 +7,7 @@
 #include "fboss/qsfp_service/lib/QsfpCache.h"
 
 #include <folly/Random.h>
-#include <folly/experimental/FunctionScheduler.h>
+#include <folly/executors/FunctionScheduler.h>
 #include <folly/init/Init.h>
 #include <folly/io/async/EventBase.h>
 
@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
                            [i](std::runtime_error exc) {
                              XLOG(ERR) << "Error retrieving info for tcvr " << i
                                        << ": " << exc.what();
-                             return facebook::fboss::TransceiverInfo();
+                             return facebook::fboss::TransceiverInfo{};
                            });
         futs.push_back(std::move(fut));
       }

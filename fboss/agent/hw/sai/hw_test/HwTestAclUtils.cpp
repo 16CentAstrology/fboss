@@ -21,6 +21,7 @@
 #include <optional>
 
 DECLARE_bool(enable_acl_table_group);
+DECLARE_bool(sai_user_defined_trap);
 
 namespace facebook::fboss::utility {
 
@@ -30,7 +31,9 @@ std::string getActualAclTableName(
   // single acl table. Now support multiple tables so can accept table name. If
   // table name not provided we are still using single table, so continue using
   // kAclTable1.
-  return aclTableName.has_value() ? aclTableName.value() : kAclTable1;
+  return aclTableName.has_value()
+      ? aclTableName.value()
+      : cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE();
 }
 
 std::shared_ptr<AclEntry> getSwAcl(
@@ -39,7 +42,7 @@ std::shared_ptr<AclEntry> getSwAcl(
     cfg::AclStage aclStage,
     const std::string& aclTableName) {
   if (FLAGS_enable_acl_table_group) {
-    auto aclTableGroup = state->getAclTableGroups()->getAclTableGroup(aclStage);
+    auto aclTableGroup = state->getAclTableGroups()->getNodeIf(aclStage);
     auto aclTable = aclTableGroup->getAclTableMap()->getTableIf(aclTableName);
     return aclTable->getAclMap()->getEntry(aclName);
   } else {
@@ -278,6 +281,14 @@ void checkSwHwAclMatch(
     EXPECT_EQ(dstMacMask, SaiAclTableManager::kMacMask());
   }
 
+  if (swAcl->getVlanID()) {
+    auto aclFieldVlanIdGot = SaiApiTable::getInstance()->aclApi().getAttribute(
+        aclEntryId, SaiAclEntryTraits::Attributes::FieldOuterVlanId());
+    auto [vlanVal, vlanMask] = aclFieldVlanIdGot.getDataAndMask();
+    EXPECT_EQ(vlanVal, swAcl->getVlanID().value());
+    EXPECT_EQ(vlanMask, SaiAclTableManager::kOuterVlanIdMask);
+  }
+
   if (swAcl->getIpType()) {
     auto aclFieldIpTypeDataExpected =
         aclTableManager.cfgIpTypeToSaiIpType(swAcl->getIpType().value());
@@ -338,17 +349,16 @@ void checkSwHwAclMatch(
   if (action) {
     // THRIFT_COPY
     auto matchAction = MatchAction::fromThrift(action->toThrift());
-    if (matchAction.getSendToQueue()) {
-      auto sendToQueue = matchAction.getSendToQueue().value();
-      bool sendToCpu = sendToQueue.second;
+    if (matchAction.getSetTc()) {
+      auto setTc = matchAction.getSetTc().value();
+      bool sendToCpu = setTc.second;
       if (!sendToCpu) {
-        auto expectedQueueId =
-            static_cast<sai_uint8_t>(*sendToQueue.first.queueId());
+        auto expectedTcValue = static_cast<sai_uint8_t>(*setTc.first.tcValue());
         auto aclActionSetTCGot =
             SaiApiTable::getInstance()->aclApi().getAttribute(
                 aclEntryId, SaiAclEntryTraits::Attributes::ActionSetTC());
-        auto queueIdGot = aclActionSetTCGot.getData();
-        EXPECT_EQ(queueIdGot, expectedQueueId);
+        auto tcValueGot = aclActionSetTCGot.getData();
+        EXPECT_EQ(tcValueGot, expectedTcValue);
       }
     }
 
@@ -469,11 +479,15 @@ void checkAclEntryAndStatCount(
     }
 
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
-    auto aclCounterNameGot = SaiApiTable::getInstance()->aclApi().getAttribute(
-        AclCounterSaiId(aclCounterIdGot),
-        SaiAclCounterTraits::Attributes::Label());
-    XLOG(DBG2) << "checkAclEntryAndStatCount:: aclCounterNameGot: "
-               << aclCounterNameGot.data();
+    if (hwSwitch->getPlatform()->getAsic()->isSupported(
+            HwAsic::Feature::ACL_COUNTER_LABEL)) {
+      auto aclCounterNameGot =
+          SaiApiTable::getInstance()->aclApi().getAttribute(
+              AclCounterSaiId(aclCounterIdGot),
+              SaiAclCounterTraits::Attributes::Label());
+      XLOG(DBG2) << "checkAclEntryAndStatCount:: aclCounterNameGot: "
+                 << aclCounterNameGot.data();
+    }
 #endif
 
     XLOG(DBG2) << " enablePacketCount: " << enablePacketCount
@@ -492,7 +506,7 @@ void checkAclStat(
     std::vector<cfg::CounterType> counterTypes,
     const std::optional<std::string>& aclTableName) {
   for (const auto& aclName : acls) {
-    auto swAcl = state->getAcl(aclName);
+    auto swAcl = getAclEntryByName(state, aclName);
     auto swTrafficCounter = getAclTrafficCounter(state, aclName);
     ASSERT_TRUE(swTrafficCounter);
     ASSERT_EQ(statName, *swTrafficCounter->name());
@@ -517,11 +531,15 @@ void checkAclStat(
 
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
     // Counter name must match what was previously configured
-    auto aclCounterNameGot = SaiApiTable::getInstance()->aclApi().getAttribute(
-        AclCounterSaiId(aclCounterIdGot),
-        SaiAclCounterTraits::Attributes::Label());
-    std::string aclCounterNameGotStr(aclCounterNameGot.data());
-    EXPECT_EQ(statName, aclCounterNameGotStr);
+    if (hw->getPlatform()->getAsic()->isSupported(
+            HwAsic::Feature::ACL_COUNTER_LABEL)) {
+      auto aclCounterNameGot =
+          SaiApiTable::getInstance()->aclApi().getAttribute(
+              AclCounterSaiId(aclCounterIdGot),
+              SaiAclCounterTraits::Attributes::Label());
+      std::string aclCounterNameGotStr(aclCounterNameGot.data());
+      EXPECT_EQ(statName, aclCounterNameGotStr);
+    }
 
     // Verify that only the configured 'types' (byte/packet) of counters are
     // configured.
@@ -603,6 +621,10 @@ void checkAclStatDeleted(
                 SaiAclEntryTraits::Attributes::ActionCounter())
             .getData();
     // Counter name must match what was previously configured
+    if (!hwSwitch->getPlatform()->getAsic()->isSupported(
+            HwAsic::Feature::ACL_COUNTER_LABEL)) {
+      continue;
+    }
     auto aclCounterNameGot = SaiApiTable::getInstance()->aclApi().getAttribute(
         AclCounterSaiId(aclCounterIdGot),
         SaiAclCounterTraits::Attributes::Label());
@@ -618,7 +640,9 @@ void checkAclStatDeleted(
 void checkAclStatSize(
     const HwSwitch* /*hwSwitch*/,
     const std::string& /*statName*/) {
-  throw FbossError("Not implemented");
+  // SAI does not expose a stat size. Either or both of packets/bytes
+  // attributes are used.
+  // Verification of these 2 types is done above in checkAclStat
 }
 
 uint64_t getAclCounterId(
@@ -677,6 +701,37 @@ uint64_t getAclInOutPackets(
       SaiAclCounterTraits::Attributes::CounterPackets());
 
   return counterPackets;
+}
+
+void checkSwAclSendToQueue(
+    std::shared_ptr<SwitchState> state,
+    const std::string& aclName,
+    bool sendToCPU,
+    int queueId) {
+  auto acl = getAclEntryByName(state, aclName);
+  ASSERT_TRUE(acl->getAclAction());
+  if (FLAGS_sai_user_defined_trap) {
+    ASSERT_TRUE(acl->getAclAction()->cref<switch_state_tags::setTc>());
+    ASSERT_EQ(
+        acl->getAclAction()
+            ->cref<switch_state_tags::userDefinedTrap>()
+            ->cref<switch_config_tags::queueId>()
+            ->cref(),
+        queueId);
+    ASSERT_EQ(
+        acl->getAclAction()
+            ->cref<switch_state_tags::setTc>()
+            ->cref<switch_state_tags::sendToCPU>()
+            ->cref(),
+        sendToCPU);
+    ASSERT_EQ(
+        acl->getAclAction()
+            ->cref<switch_state_tags::setTc>()
+            ->cref<switch_state_tags::action>()
+            ->cref<switch_config_tags::tcValue>()
+            ->cref(),
+        queueId);
+  }
 }
 
 } // namespace facebook::fboss::utility

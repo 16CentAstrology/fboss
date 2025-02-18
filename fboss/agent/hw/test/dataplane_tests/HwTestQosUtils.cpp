@@ -9,114 +9,74 @@
  */
 
 #include "fboss/agent/hw/test/dataplane_tests/HwTestQosUtils.h"
-
 #include "fboss/agent/hw/test/HwSwitchEnsemble.h"
-
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
-#include "fboss/agent/state/Interface.h"
-#include "fboss/agent/state/SwitchState.h"
+#include "fboss/lib/CommonUtils.h"
 
 #include <folly/logging/xlog.h>
-
-#include <chrono>
+#include <gtest/gtest.h>
 #include <thread>
 
-#include <gtest/gtest.h>
-
-using namespace std::chrono_literals;
 using namespace facebook::fboss;
 
 namespace facebook::fboss::utility {
+namespace {
 
-bool verifyQueueMappings(
+bool queueHit(
     const HwPortStats& portStatsBefore,
-    const std::map<int, std::vector<uint8_t>>& q2dscps,
-    std::function<std::map<PortID, HwPortStats>()> getAllHwPortStats,
-    const PortID portId) {
-  auto retries = 10;
-  bool statsMatch;
-  do {
-    auto portStatsAfter = getAllHwPortStats();
-    statsMatch = true;
-    for (const auto& _q2dscps : q2dscps) {
-      auto queuePacketsBefore =
-          portStatsBefore.queueOutPackets_()->find(_q2dscps.first)->second;
-      auto queuePacketsAfter =
-          portStatsAfter[portId].queueOutPackets_()[_q2dscps.first];
-      // Note, on some platforms, due to how loopbacked packets are pruned
-      // from being broadcast, they will appear more than once on a queue
-      // counter, so we can only check that the counter went up, not that it
-      // went up by exactly one.
-      if (queuePacketsAfter < queuePacketsBefore + _q2dscps.second.size()) {
-        statsMatch = false;
-        break;
-      }
-    }
-    if (!statsMatch) {
-      std::this_thread::sleep_for(20ms);
-    } else {
-      break;
-    }
-    XLOG(DBG2) << " Retrying ...";
-  } while (--retries && !statsMatch);
-  return statsMatch;
-}
-
-bool verifyQueueMappingsInvariantHelper(
-    const std::map<int, std::vector<uint8_t>>& q2dscpMap,
-    HwSwitch* hwSwitch,
-    std::shared_ptr<SwitchState> swState,
-    std::function<std::map<PortID, HwPortStats>()> getAllHwPortStats,
-    const std::vector<PortID>& ecmpPorts,
-    PortID portId) {
-  auto portStatsBefore = getAllHwPortStats();
-  auto vlanId = utility::firstVlanID(swState);
-  auto intfMac = utility::getFirstInterfaceMac(swState);
-
-  for (const auto& q2dscps : q2dscpMap) {
-    for (auto dscp : q2dscps.second) {
-      utility::sendTcpPkts(
-          hwSwitch,
-          1 /*numPktsToSend*/,
-          vlanId,
-          intfMac,
-          folly::IPAddressV6("2620:0:1cfe:face:b00c::4"), // dst ip
-          8000,
-          8001,
-          portId,
-          dscp);
-    }
-  }
-
-  bool mappingVerified = false;
-  for (auto& ecmpPort : ecmpPorts) {
-    // Since we don't know which port the above IP will get hashed to,
-    // iterate over all ports in ecmp group to find one which satisfies
-    // dscp to queue mapping.
-    if (mappingVerified) {
-      break;
-    }
-    XLOG(DBG2) << "Mapping verified for : " << (int)ecmpPort;
-
-    mappingVerified = verifyQueueMappings(
-        portStatsBefore[ecmpPort], q2dscpMap, getAllHwPortStats, ecmpPort);
-  }
-  return mappingVerified;
-}
-
-bool verifyQueueMappings(
-    const HwPortStats& portStatsBefore,
-    const std::map<int, std::vector<uint8_t>>& q2dscps,
+    int queueId,
     HwSwitchEnsemble* ensemble,
     facebook::fboss::PortID egressPort) {
-  // lambda that returns HwPortStats for the given port
-  auto getPortStats = [ensemble,
-                       egressPort]() -> std::map<PortID, HwPortStats> {
-    std::vector<facebook::fboss::PortID> portIds = {egressPort};
-    return ensemble->getLatestPortStats(portIds);
-  };
-
-  return verifyQueueMappings(
-      portStatsBefore, q2dscps, getPortStats, egressPort);
+  auto queuePacketsBefore =
+      portStatsBefore.queueOutPackets_()->find(queueId)->second;
+  auto portStatsAfter = ensemble->getLatestPortStats(egressPort);
+  auto queuePacketsAfter = portStatsAfter.queueOutPackets_()[queueId];
+  // Note, on some platforms, due to how loopbacked packets are pruned
+  // from being broadcast, they will appear more than once on a queue
+  // counter, so we can only check that the counter went up, not that it
+  // went up by exactly one.
+  XLOG(DBG2) << "Port ID: " << egressPort << " queue: " << queueId
+             << " queuePacketsBefore " << queuePacketsBefore
+             << " queuePacketsAfter " << queuePacketsAfter;
+  return queuePacketsAfter > queuePacketsBefore;
 }
+
+bool voqHit(
+    const HwSysPortStats& portStatsBefore,
+    int queueId,
+    HwSwitchEnsemble* ensemble,
+    facebook::fboss::SystemPortID egressPort) {
+  auto queueBytesBefore =
+      portStatsBefore.queueOutBytes_()->find(queueId)->second;
+  auto portStatsAfter = ensemble->getLatestSysPortStats(egressPort);
+  auto queueBytesAfter = portStatsAfter.queueOutBytes_()[queueId];
+  XLOG(DBG2) << "Sys port: " << egressPort << " queue " << queueId
+             << " queueBytesBefore " << queueBytesBefore << " queueBytesAfter "
+             << queueBytesAfter;
+  return queueBytesAfter > queueBytesBefore;
+}
+} // namespace
+
+void verifyQueueHit(
+    const HwPortStats& portStatsBefore,
+    int queueId,
+    HwSwitchEnsemble* ensemble,
+    facebook::fboss::PortID egressPort) {
+  WITH_RETRIES({
+    EXPECT_EVENTUALLY_TRUE(
+        queueHit(portStatsBefore, queueId, ensemble, egressPort));
+  });
+}
+
+void verifyVoQHit(
+    const HwSysPortStats& portStatsBefore,
+    int queueId,
+    HwSwitchEnsemble* ensemble,
+    facebook::fboss::SystemPortID egressPort) {
+  WITH_RETRIES({
+    EXPECT_EVENTUALLY_TRUE(
+        voqHit(portStatsBefore, queueId, ensemble, egressPort));
+  });
+}
+
 } // namespace facebook::fboss::utility

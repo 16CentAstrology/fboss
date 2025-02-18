@@ -34,6 +34,18 @@ class HwTestLearningUpdateObserver
  private:
   void packetReceived(RxPacket* /*pkt*/) noexcept override {}
   void linkStateChanged(PortID /*port*/, bool /*up*/) override {}
+  void linkActiveStateChangedOrFwIsolated(
+      const std::map<PortID, bool>& /*port2IsActive */,
+      bool /* fwIsolated */,
+      const std::optional<uint32_t>& /* numActiveFabricPortsAtFwIsolate */)
+      override {}
+  void switchReachabilityChanged(
+      const SwitchID /*switchId*/,
+      const std::map<SwitchID, std::set<PortID>>& /*switchReachabilityInfo*/)
+      override {}
+  void linkConnectivityChanged(
+      const std::map<PortID, multiswitch::FabricConnectivityDelta>&
+      /*port2OldAndNewConnectivity*/) override {}
 
   void applyStateUpdateHelper(
       L2Entry l2Entry,
@@ -45,7 +57,7 @@ class HwTestLearningUpdateObserver
   std::vector<std::pair<L2Entry, L2EntryUpdateType>> data_;
 
   std::unique_ptr<std::thread> applyStateUpdateThread_;
-  folly::EventBase applyStateUpdateEventBase_;
+  FbossEventBase applyStateUpdateEventBase_{"ApplyStateUpdateEventBase"};
 };
 
 class HwTestLearningUpdateAutoObserver : public HwTestLearningUpdateObserver {

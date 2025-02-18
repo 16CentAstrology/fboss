@@ -54,6 +54,8 @@ class BufferApiTest : public ::testing::Test {
         SAI_BUFFER_PROFILE_THRESHOLD_MODE_DYNAMIC};
     SaiBufferProfileTraits::Attributes::SharedDynamicThreshold dynamicThresh{
         24};
+    std::optional<SaiBufferProfileTraits::Attributes::SharedStaticThreshold>
+        staticThresh;
     SaiBufferProfileTraits::Attributes::XoffTh xoffTh{0};
     SaiBufferProfileTraits::Attributes::XonTh xonTh{0};
     SaiBufferProfileTraits::Attributes::XonOffsetTh xonOffsetTh{0};
@@ -62,7 +64,19 @@ class BufferApiTest : public ::testing::Test {
       xonOffsetTh = SaiBufferProfileTraits::Attributes::XonOffsetTh{4826};
     }
     SaiBufferProfileTraits::CreateAttributes c{
-        pool, reservedBytes, mode, dynamicThresh, xoffTh, xonTh, xonOffsetTh};
+        pool,
+        reservedBytes,
+        mode,
+        dynamicThresh,
+        staticThresh,
+        xoffTh,
+        xonTh,
+        xonOffsetTh,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt};
     return bufferApi->create<SaiBufferProfileTraits>(c, 0);
   }
   void checkBufferProfile(BufferProfileSaiId id) const {

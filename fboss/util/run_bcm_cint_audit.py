@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# pyre-unsafe
+
 # Run as python3 run_bcm_cint_audit.py
 #
 #
@@ -164,7 +166,7 @@ def get_wrapped_apis():
     )
 
 
-if __name__ == "__main__":
+def main() -> None:
     used_apis = get_used_apis()
     wrapped_apis = get_wrapped_apis()
     diff = used_apis - wrapped_apis - KNOWN_MISSING_APIS
@@ -178,3 +180,7 @@ if __name__ == "__main__":
         sys.exit(1)
     else:
         print("No missing API in Bcm Cinter.")
+
+
+if __name__ == "__main__":
+    main()

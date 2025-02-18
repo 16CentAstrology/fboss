@@ -40,19 +40,13 @@ class IPv6Hdr {
   /*
    * default constructor
    */
-  IPv6Hdr() {}
+  IPv6Hdr() = default;
   /*
    * copy constructor
    */
   IPv6Hdr(const IPv6Hdr& rhs)
-      : version(rhs.version),
-        trafficClass(rhs.trafficClass),
-        flowLabel(rhs.flowLabel),
-        payloadLength(rhs.payloadLength),
-        nextHeader(rhs.nextHeader),
-        hopLimit(rhs.hopLimit),
-        srcAddr(rhs.srcAddr),
-        dstAddr(rhs.dstAddr) {}
+
+      = default;
   /*
    * parameterized data constructor
    */
@@ -84,21 +78,11 @@ class IPv6Hdr {
   /*
    * destructor
    */
-  ~IPv6Hdr() {}
+  ~IPv6Hdr() = default;
   /*
    * operator=
    */
-  IPv6Hdr& operator=(const IPv6Hdr& rhs) {
-    version = rhs.version;
-    trafficClass = rhs.trafficClass;
-    flowLabel = rhs.flowLabel;
-    payloadLength = rhs.payloadLength;
-    nextHeader = rhs.nextHeader;
-    hopLimit = rhs.hopLimit;
-    srcAddr = rhs.srcAddr;
-    dstAddr = rhs.dstAddr;
-    return *this;
-  }
+  IPv6Hdr& operator=(const IPv6Hdr& rhs) = default;
 
   /*
    * Serialize the IPv6 header using the specified cursor.
@@ -129,6 +113,13 @@ class IPv6Hdr {
   }
   size_t payloadSize() const {
     return payloadLength;
+  }
+  void decrementTTL() {
+    hopLimit = hopLimit > 0 ? hopLimit - 1 : hopLimit;
+  }
+
+  void setProtocol(uint8_t proto) {
+    nextHeader = proto;
   }
 
  public:
@@ -181,6 +172,11 @@ inline bool operator==(const IPv6Hdr& lhs, const IPv6Hdr& rhs) {
 
 inline bool operator!=(const IPv6Hdr& lhs, const IPv6Hdr& rhs) {
   return !operator==(lhs, rhs);
+}
+
+inline std::ostream& operator<<(std::ostream& os, const IPv6Hdr& v6Hdr) {
+  os << v6Hdr.toString();
+  return os;
 }
 
 } // namespace facebook::fboss

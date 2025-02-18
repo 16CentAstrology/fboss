@@ -12,7 +12,7 @@
 namespace facebook::fboss {
 
 TEST(MPLSHdrTest, parameterized_data_constructor_label) {
-  MPLSHdr hdr{MPLSHdr::Label{103, 4, 1, 79}};
+  MPLSHdr hdr{MPLSHdr::Label{103, 4, true, 79}};
   EXPECT_EQ(MPLSHdr::Label::kSizeBytes, hdr.size());
   const auto& label = hdr.stack()[0];
   EXPECT_EQ(103, label.label);
@@ -23,9 +23,9 @@ TEST(MPLSHdrTest, parameterized_data_constructor_label) {
 
 TEST(MPLSHdrTest, parameterized_data_constructor_stack) {
   std::vector<MPLSHdr::Label> stack{
-      MPLSHdr::Label{101, 4, 0, 79},
-      MPLSHdr::Label{102, 4, 0, 79},
-      MPLSHdr::Label{103, 4, 1, 79}};
+      MPLSHdr::Label{101, 4, false, 79},
+      MPLSHdr::Label{102, 4, false, 79},
+      MPLSHdr::Label{103, 4, true, 79}};
   MPLSHdr hdr{stack};
   const auto& hdrStack = hdr.stack();
   EXPECT_EQ(hdr.size(), 3 * MPLSHdr::Label::kSizeBytes);
@@ -36,9 +36,9 @@ TEST(MPLSHdrTest, parameterized_data_constructor_stack) {
 
 TEST(MPLSHdrTest, copy_constructor) {
   std::vector<MPLSHdr::Label> stack{
-      MPLSHdr::Label{101, 4, 0, 79},
-      MPLSHdr::Label{102, 4, 0, 79},
-      MPLSHdr::Label{103, 4, 1, 79}};
+      MPLSHdr::Label{101, 4, false, 79},
+      MPLSHdr::Label{102, 4, false, 79},
+      MPLSHdr::Label{103, 4, true, 79}};
   MPLSHdr hdr0{stack};
   MPLSHdr hdr1{hdr0};
   const auto& hdr0Stack = hdr0.stack();
@@ -207,4 +207,34 @@ TEST(MPLSHdrTest, decapsulateV4MplsPacket) {
   EXPECT_TRUE(folly::IOBufEqualTo()(ioBuf, expectedIOBuf));
 }
 
+TEST(MPLSHdrTest, decrementTTL) {
+  MPLSHdr hdr{MPLSHdr::Label{103, 4, true, 79}};
+  EXPECT_EQ(MPLSHdr::Label::kSizeBytes, hdr.size());
+  auto hdr2 = hdr;
+  hdr2.decrementTTL();
+  EXPECT_NE(hdr2, hdr);
+  const auto& label = hdr2.stack()[0];
+  EXPECT_EQ(103, label.label);
+  EXPECT_EQ(4, label.trafficClass);
+  EXPECT_EQ(1, label.bottomOfStack);
+  EXPECT_EQ(78, label.timeToLive);
+}
+
+TEST(MPLSHdrTest, decrementTTL0) {
+  MPLSHdr hdr{MPLSHdr::Label{103, 4, true, 0}};
+  EXPECT_EQ(MPLSHdr::Label::kSizeBytes, hdr.size());
+  auto hdr2 = hdr;
+  hdr2.decrementTTL();
+  EXPECT_EQ(hdr2, hdr);
+  const auto& label = hdr2.stack()[0];
+  EXPECT_EQ(103, label.label);
+  EXPECT_EQ(4, label.trafficClass);
+  EXPECT_EQ(1, label.bottomOfStack);
+  EXPECT_EQ(0, label.timeToLive);
+}
+
+TEST(MPLSHdrTest, toString) {
+  MPLSHdr hdr{MPLSHdr::Label{103, 4, true, 79}};
+  std::cout << hdr;
+}
 } // namespace facebook::fboss

@@ -10,6 +10,7 @@
 
 #include "fboss/agent/hw/sai/switch/SaiSwitch.h"
 
+#include "fboss/agent/FabricConnectivityManager.h"
 #include "fboss/agent/hw/HwResourceStatsPublisher.h"
 #include "fboss/agent/hw/sai/switch/ConcurrentIndices.h"
 #include "fboss/agent/hw/sai/switch/SaiAclTableManager.h"
@@ -18,10 +19,19 @@
 #include "fboss/agent/hw/sai/switch/SaiHostifManager.h"
 #include "fboss/agent/hw/sai/switch/SaiLagManager.h"
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
+#include "fboss/agent/hw/sai/switch/SaiSwitchManager.h"
 #include "fboss/agent/hw/sai/switch/SaiSystemPortManager.h"
 
+DECLARE_int32(update_cable_length_stats_s);
+
 namespace facebook::fboss {
-void SaiSwitch::updateStatsImpl(SwitchStats* /* switchStats */) {
+
+void SaiSwitch::updateStatsImpl() {
+  if (FLAGS_skip_stats_update_for_debug) {
+    // Skip collecting any ASIC stats while debugs are in progress
+    return;
+  }
+
   auto now =
       std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   bool updateWatermarks = now - watermarkStatsUpdateTime_ >=
@@ -30,21 +40,61 @@ void SaiSwitch::updateStatsImpl(SwitchStats* /* switchStats */) {
     watermarkStatsUpdateTime_ = now;
   }
 
-  auto portsIter = concurrentIndices_->portIds.begin();
-  while (portsIter != concurrentIndices_->portIds.end()) {
+  // Space out VOQ stats update and watermark as much as possible - to avoid
+  // stats collection blocking normal updates.
+  // Allow frequent collection in test scenario, where the interval is set to 0.
+  bool updateVoqStats = FLAGS_update_voq_stats_interval_s == 0 ||
+      (now - voqStatsUpdateTime_ >= FLAGS_update_voq_stats_interval_s &&
+       now - watermarkStatsUpdateTime_ >=
+           (FLAGS_update_voq_stats_interval_s / 2));
+  if (updateVoqStats) {
+    voqStatsUpdateTime_ = now;
+  }
+
+  bool updateCableLengths =
+      now - cableLengthStatsUpdateTime_ >= FLAGS_update_cable_length_stats_s;
+
+  if (updateCableLengths) {
+    cableLengthStatsUpdateTime_ = now;
+  }
+  int64_t missingCount = 0, mismatchCount = 0;
+  auto portsIter = concurrentIndices_->portSaiId2PortInfo.begin();
+  std::map<PortID, multiswitch::FabricConnectivityDelta> connectivityDelta;
+  while (portsIter != concurrentIndices_->portSaiId2PortInfo.end()) {
     {
       std::lock_guard<std::mutex> locked(saiSwitchMutex_);
+      auto endpointOpt = managerTable_->portManager().getFabricConnectivity(
+          portsIter->second.portID);
+      if (endpointOpt.has_value()) {
+        auto delta = fabricConnectivityManager_->processConnectivityInfoForPort(
+            portsIter->second.portID, *endpointOpt);
+        if (delta) {
+          connectivityDelta.insert({portsIter->second.portID, *delta});
+        }
+        if (fabricConnectivityManager_->isConnectivityInfoMissing(
+                portsIter->second.portID)) {
+          missingCount++;
+        }
+        if (fabricConnectivityManager_->isConnectivityInfoMismatch(
+                portsIter->second.portID)) {
+          mismatchCount++;
+        }
+      }
       managerTable_->portManager().updateStats(
-          portsIter->second, updateWatermarks);
+          portsIter->second.portID, updateWatermarks, updateCableLengths);
     }
     ++portsIter;
   }
+
+  getSwitchStats()->fabricReachabilityMissingCount(missingCount);
+  getSwitchStats()->fabricReachabilityMismatchCount(mismatchCount);
+
   auto sysPortsIter = concurrentIndices_->sysPortIds.begin();
   while (sysPortsIter != concurrentIndices_->sysPortIds.end()) {
     {
       std::lock_guard<std::mutex> locked(saiSwitchMutex_);
       managerTable_->systemPortManager().updateStats(
-          sysPortsIter->second, updateWatermarks);
+          sysPortsIter->second, updateWatermarks, updateVoqStats);
     }
     ++sysPortsIter;
   }
@@ -58,7 +108,10 @@ void SaiSwitch::updateStatsImpl(SwitchStats* /* switchStats */) {
   }
   if (platform_->getAsic()->isSupported(HwAsic::Feature::CPU_PORT)) {
     std::lock_guard<std::mutex> locked(saiSwitchMutex_);
-    managerTable_->hostifManager().updateStats(updateWatermarks);
+    managerTable_->hostifManager().updateStats(
+        updateWatermarks &&
+        getPlatform()->getAsic()->isSupported(
+            HwAsic::Feature::CPU_QUEUE_WATERMARK_STATS));
   }
 
   {
@@ -67,7 +120,8 @@ void SaiSwitch::updateStatsImpl(SwitchStats* /* switchStats */) {
   }
   {
     std::lock_guard<std::mutex> locked(saiSwitchMutex_);
-    HwResourceStatsPublisher().publish(hwResourceStats_);
+    HwResourceStatsPublisher(getPlatform()->getMultiSwitchStatsPrefix())
+        .publish(hwResourceStats_);
   }
   {
     std::lock_guard<std::mutex> locked(saiSwitchMutex_);
@@ -77,5 +131,18 @@ void SaiSwitch::updateStatsImpl(SwitchStats* /* switchStats */) {
     std::lock_guard<std::mutex> locked(saiSwitchMutex_);
     managerTable_->counterManager().updateStats();
   }
+  {
+    std::lock_guard<std::mutex> locked(saiSwitchMutex_);
+    managerTable_->switchManager().updateStats(updateWatermarks);
+  }
+  reportAsymmetricTopology();
+  reportInterPortGroupCableSkew();
+  if (!connectivityDelta.empty()) {
+    linkConnectivityChangeBottomHalfEventBase_.runInFbossEventBaseThread(
+        [this, connectivityDelta = std::move(connectivityDelta)] {
+          linkConnectivityChanged(connectivityDelta);
+        });
+  }
 }
+
 } // namespace facebook::fboss

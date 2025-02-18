@@ -28,6 +28,8 @@ namespace facebook::fboss {
 class Interface;
 class SwitchState;
 class RouteUpdateWrapper;
+class HwAsic;
+class SwSwitch;
 } // namespace facebook::fboss
 
 namespace facebook::fboss::utility {
@@ -85,8 +87,8 @@ struct EcmpMplsNextHop {
  * VLAN. Useful in setting up ECMP paths with loopbacks, without the risk of
  * creating dataplane floods
  */
-boost::container::flat_set<PortDescriptor> getPortsWithExclusiveVlanMembership(
-    const std::shared_ptr<SwitchState>& state);
+boost::container::flat_set<PortDescriptor> getSingleVlanOrRoutedCabledPorts(
+    const SwSwitch* sw);
 
 template <typename AddrT, typename NextHopT>
 class BaseEcmpSetupHelper {
@@ -105,6 +107,10 @@ class BaseEcmpSetupHelper {
   }
   AddrT ip(PortDescriptor portDesc) const {
     return nhop(portDesc).ip;
+  }
+  bool forAggregatePorts() const {
+    CHECK(!portDesc2Interface_.empty());
+    return ecmpPortDescriptorAt(0).isAggregatePort();
   }
 
   /*
@@ -136,9 +142,15 @@ class BaseEcmpSetupHelper {
 
   virtual void computeNextHops(
       const std::shared_ptr<SwitchState>& inputState,
-      std::optional<folly::MacAddress> mac) = 0;
+      std::optional<folly::MacAddress> mac,
+      bool forProdConfig,
+      const std::set<cfg::PortType>& portTypes) = 0;
 
   std::optional<VlanID> getVlan(
+      const PortDescriptor& port,
+      const std::shared_ptr<SwitchState>& state) const;
+
+  std::optional<InterfaceID> getInterface(
       const PortDescriptor& port,
       const std::shared_ptr<SwitchState>& state) const;
 
@@ -173,14 +185,12 @@ class BaseEcmpSetupHelper {
       const NextHopT& nhop,
       const std::shared_ptr<Interface>& intf,
       bool useLinkLocal) const;
-  std::optional<InterfaceID> getInterface(
-      const PortDescriptor& port,
-      const std::shared_ptr<SwitchState>& state) const;
 
  protected:
   boost::container::flat_map<PortDescriptor, InterfaceID>
   computePortDesc2Interface(
-      const std::shared_ptr<SwitchState>& inputState) const;
+      const std::shared_ptr<SwitchState>& inputState,
+      const std::set<cfg::PortType>& portTypes) const;
 
   std::vector<NextHopT> nhops_;
   boost::container::flat_map<PortDescriptor, InterfaceID> portDesc2Interface_;
@@ -197,12 +207,31 @@ class EcmpSetupTargetedPorts
   explicit EcmpSetupTargetedPorts(
       const std::shared_ptr<SwitchState>& inputState,
       RouterID routerId = RouterID(0))
-      : EcmpSetupTargetedPorts(inputState, std::nullopt, routerId) {}
+      : EcmpSetupTargetedPorts(
+            inputState,
+            std::nullopt,
+            routerId,
+            false,
+            {cfg::PortType::INTERFACE_PORT}) {}
+
+  EcmpSetupTargetedPorts(
+      const std::shared_ptr<SwitchState>& inputState,
+      bool forProdConfig,
+      const std::set<cfg::PortType>& portTypes)
+      : EcmpSetupTargetedPorts(
+            inputState,
+            std::nullopt,
+            RouterID(0),
+            forProdConfig,
+            portTypes) {}
 
   EcmpSetupTargetedPorts(
       const std::shared_ptr<SwitchState>& inputState,
       std::optional<folly::MacAddress> nextHopMac,
-      RouterID routerId = RouterID(0));
+      RouterID routerId = RouterID(0),
+      bool forProdConfig = false,
+      const std::set<cfg::PortType>& portTypes = {
+          cfg::PortType::INTERFACE_PORT});
 
   virtual ~EcmpSetupTargetedPorts() override {}
   EcmpNextHopT nhop(PortDescriptor portDesc) const override;
@@ -216,6 +245,31 @@ class EcmpSetupTargetedPorts
       const boost::container::flat_set<PortDescriptor>& nhops,
       const std::vector<RouteT>& prefixes = {RouteT{IPAddrT(), 0}},
       const std::vector<NextHopWeight>& weights = std::vector<NextHopWeight>(),
+      std::optional<RouteCounterID> counterID = std::nullopt) const {
+    programRoutes(wrapper.get(), nhops, prefixes, weights, counterID);
+  }
+  void programRoutes(
+      RouteUpdateWrapper* wrapper,
+      const boost::container::flat_set<PortDescriptor>& nhops,
+      const std::vector<RouteT>& prefixes = {RouteT{IPAddrT(), 0}},
+      const std::vector<NextHopWeight>& weights = std::vector<NextHopWeight>(),
+      std::optional<RouteCounterID> counterID = std::nullopt) const;
+
+  void programRoutes(
+      std::unique_ptr<RouteUpdateWrapper> wrapper,
+      const std::vector<boost::container::flat_set<PortDescriptor>>& nhops,
+      const std::vector<RouteT>& prefixes = {RouteT{IPAddrT(), 0}},
+      const std::vector<std::vector<NextHopWeight>>& weights =
+          std::vector<std::vector<NextHopWeight>>(),
+      std::optional<RouteCounterID> counterID = std::nullopt) const {
+    programRoutes(wrapper.get(), nhops, prefixes, weights, counterID);
+  }
+  void programRoutes(
+      RouteUpdateWrapper* wrapper,
+      const std::vector<boost::container::flat_set<PortDescriptor>>& nhops,
+      const std::vector<RouteT>& prefixes = {RouteT{IPAddrT(), 0}},
+      const std::vector<std::vector<NextHopWeight>>& weights =
+          std::vector<std::vector<NextHopWeight>>(),
       std::optional<RouteCounterID> counterID = std::nullopt) const;
 
   void programMplsRoutes(
@@ -237,17 +291,31 @@ class EcmpSetupTargetedPorts
 
   void unprogramRoutes(
       std::unique_ptr<RouteUpdateWrapper> wrapper,
+      const std::vector<RouteT>& prefixes = {RouteT{IPAddrT(), 0}}) const {
+    unprogramRoutes(wrapper.get(), prefixes);
+  }
+  void unprogramRoutes(
+      RouteUpdateWrapper* wrapper,
       const std::vector<RouteT>& prefixes = {RouteT{IPAddrT(), 0}}) const;
 
  private:
   virtual void computeNextHops(
       const std::shared_ptr<SwitchState>& inputState,
-      std::optional<folly::MacAddress> mac = std::nullopt) override;
+      std::optional<folly::MacAddress> mac = std::nullopt,
+      bool forProdConfig = false,
+      const std::set<cfg::PortType>& portTypes = {
+          cfg::PortType::INTERFACE_PORT}) override;
   RouteNextHopSet setupMplsNexthops(
       const boost::container::flat_set<PortDescriptor>& portDescriptors,
       std::map<PortDescriptor, LabelForwardingAction::LabelStack>& stacks,
       LabelForwardingAction::LabelForwardingType labelActionType,
       const std::vector<NextHopWeight>& weights) const;
+  void addRoutesToUpdater(
+      RouteUpdateWrapper* wrapper,
+      const boost::container::flat_set<PortDescriptor>& nhops,
+      const std::vector<RouteT>& prefixes = {RouteT{IPAddrT(), 0}},
+      const std::vector<NextHopWeight>& weights = std::vector<NextHopWeight>(),
+      const std::optional<RouteCounterID>& counterID = std::nullopt) const;
 
   RouterID routerId_;
 };
@@ -270,9 +338,12 @@ class MplsEcmpSetupTargetedPorts
   explicit MplsEcmpSetupTargetedPorts(
       const std::shared_ptr<SwitchState>& inputState,
       Label topLabel,
-      LabelForwardingAction::LabelForwardingType actionType)
+      LabelForwardingAction::LabelForwardingType actionType,
+      bool forProdConfig = false,
+      const std::set<cfg::PortType>& portTypes =
+          {cfg::PortType::INTERFACE_PORT})
       : topLabel_(topLabel), actionType_(actionType) {
-    computeNextHops(inputState, std::nullopt);
+    computeNextHops(inputState, std::nullopt, forProdConfig, portTypes);
   }
 
   virtual EcmpMplsNextHop<IPAddrT> nhop(PortDescriptor portDesc) const override;
@@ -289,7 +360,10 @@ class MplsEcmpSetupTargetedPorts
  private:
   virtual void computeNextHops(
       const std::shared_ptr<SwitchState>& inputState,
-      std::optional<folly::MacAddress> mac = std::nullopt) override;
+      std::optional<folly::MacAddress> mac = std::nullopt,
+      bool forProdConfig = false,
+      const std::set<cfg::PortType>& portTypes = {
+          cfg::PortType::INTERFACE_PORT}) override;
 
   Label topLabel_;
   LabelForwardingAction::LabelForwardingType actionType_;
@@ -302,14 +376,29 @@ class EcmpSetupAnyNPorts {
   using EcmpNextHopT = EcmpNextHop<IPAddrT>;
   explicit EcmpSetupAnyNPorts(
       const std::shared_ptr<SwitchState>& inputState,
-      RouterID routerId = RouterID(0))
-      : EcmpSetupAnyNPorts(inputState, std::nullopt, routerId) {}
+      RouterID routerId = RouterID(0),
+      const std::set<cfg::PortType>& portTypes =
+          {cfg::PortType::INTERFACE_PORT})
+      : EcmpSetupAnyNPorts(
+            inputState,
+            std::nullopt,
+            routerId,
+            false,
+            portTypes) {}
 
   EcmpSetupAnyNPorts(
       const std::shared_ptr<SwitchState>& inputState,
       const std::optional<folly::MacAddress>& nextHopMac,
-      RouterID routerId = RouterID(0))
-      : ecmpSetupTargetedPorts_(inputState, nextHopMac, routerId) {}
+      RouterID routerId = RouterID(0),
+      bool forProdConfig = false,
+      const std::set<cfg::PortType>& portTypes =
+          {cfg::PortType::INTERFACE_PORT})
+      : ecmpSetupTargetedPorts_(
+            inputState,
+            nextHopMac,
+            routerId,
+            forProdConfig,
+            portTypes) {}
 
   EcmpNextHopT nhop(size_t id) const {
     return getNextHops()[id];
@@ -370,6 +459,15 @@ class EcmpSetupAnyNPorts {
       size_t width,
       const std::vector<RouteT>& prefixes = {RouteT{IPAddrT(), 0}},
       const std::vector<NextHopWeight>& weights =
+          std::vector<NextHopWeight>()) const {
+    programRoutes(wrapper.get(), width, prefixes, weights);
+  }
+
+  void programRoutes(
+      RouteUpdateWrapper* wrapper,
+      size_t width,
+      const std::vector<RouteT>& prefixes = {RouteT{IPAddrT(), 0}},
+      const std::vector<NextHopWeight>& weights =
           std::vector<NextHopWeight>()) const;
 
   void programRoutes(
@@ -377,8 +475,16 @@ class EcmpSetupAnyNPorts {
       const boost::container::flat_set<PortDescriptor>& portDescs,
       const std::vector<RouteT>& prefixes,
       const std::vector<NextHopWeight>& weights =
-          std::vector<NextHopWeight>()) const;
+          std::vector<NextHopWeight>()) const {
+    programRoutes(updater.get(), portDescs, prefixes, weights);
+  }
 
+  void programRoutes(
+      RouteUpdateWrapper* updater,
+      const boost::container::flat_set<PortDescriptor>& portDescs,
+      const std::vector<RouteT>& prefixes,
+      const std::vector<NextHopWeight>& weights =
+          std::vector<NextHopWeight>()) const;
   void programIp2MplsRoutes(
       std::unique_ptr<RouteUpdateWrapper> wrapper,
       size_t width,
@@ -389,6 +495,12 @@ class EcmpSetupAnyNPorts {
 
   void unprogramRoutes(
       std::unique_ptr<RouteUpdateWrapper> wrapper,
+      const std::vector<RouteT>& prefixes = {RouteT{IPAddrT(), 0}}) const {
+    unprogramRoutes(wrapper.get(), prefixes);
+  }
+
+  void unprogramRoutes(
+      RouteUpdateWrapper* wrapper,
       const std::vector<RouteT>& prefixes = {RouteT{IPAddrT(), 0}}) const;
 
   std::optional<VlanID> getVlan(

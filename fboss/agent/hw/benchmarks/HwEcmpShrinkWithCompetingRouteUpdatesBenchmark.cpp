@@ -8,11 +8,11 @@
  *
  */
 
+#include "fboss/agent/HwAsicTable.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
-#include "fboss/agent/hw/test/HwLinkStateToggler.h"
 #include "fboss/agent/hw/test/HwTestEcmpUtils.h"
 #include "fboss/agent/hw/test/HwTestPortUtils.h"
-#include "fboss/agent/state/Port.h"
+
 #include "fboss/agent/test/EcmpSetupHelper.h"
 #include "fboss/agent/test/RouteScaleGenerators.h"
 #include "fboss/lib/FunctionCallTimeReporter.h"
@@ -36,14 +36,20 @@ BENCHMARK(HwEcmpGroupShrinkWithCompetingRouteUpdates) {
   std::unique_ptr<AgentEnsemble> ensemble{};
 
   AgentEnsembleSwitchConfigFn initialConfigFn =
-      [](HwSwitch* hwSwitch, const std::vector<PortID>& ports) {
-        return utility::onePortPerInterfaceConfig(hwSwitch, ports);
+      [](const AgentEnsemble& ensemble) {
+        return utility::onePortPerInterfaceConfig(
+            ensemble.getSw(), ensemble.masterLogicalPortIds());
+        ;
       };
-  ensemble = createAgentEnsemble(initialConfigFn);
-  auto hwSwitch = ensemble->getHw();
+  ensemble =
+      createAgentEnsemble(initialConfigFn, false /*disableLinkStateToggler*/);
+  // TODO(zecheng): Deprecate agent access to HwSwitch
+  auto hwSwitch = ensemble->getHwSwitch();
   auto state = ensemble->getSw()->getState();
   auto ecmpHelper = utility::EcmpSetupAnyNPorts6(state);
-  ensemble->applyNewState(ecmpHelper.resolveNextHops(state, kEcmpWidth));
+  ensemble->applyNewState([&](const std::shared_ptr<SwitchState>& in) {
+    return ecmpHelper.resolveNextHops(in, kEcmpWidth);
+  });
   ecmpHelper.programRoutes(
       std::make_unique<SwSwitchRouteUpdateWrapper>(
           ensemble->getSw(), ensemble->getSw()->getRib()),
@@ -54,8 +60,7 @@ BENCHMARK(HwEcmpGroupShrinkWithCompetingRouteUpdates) {
       kEcmpWidth,
       getEcmpSizeInHw(hwSwitch, prefix, ecmpHelper.getRouterId(), kEcmpWidth));
   // Warm up the stats cache
-  SwitchStats dummy{};
-  ensemble->getHw()->updateStats(&dummy);
+  ensemble->getSw()->updateStats();
   auto routeChunks = utility::RouteDistributionGenerator(
                          ensemble->getSw()->getState(),
                          {{64, 10'000}},

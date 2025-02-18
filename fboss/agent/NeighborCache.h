@@ -125,9 +125,9 @@ class NeighborCache {
             intfID)) {}
 
   // Methods useful for subclasses
-  void setPendingEntry(AddressType ip) {
+  void setPendingEntry(AddressType ip, PortDescriptor port) {
     std::lock_guard<std::mutex> g(cacheLock_);
-    impl_->setPendingEntry(ip);
+    impl_->setPendingEntry(ip, port);
   }
 
   void setExistingEntry(
@@ -213,11 +213,6 @@ class NeighborCache {
   void processEntry(AddressType ip) {
     std::lock_guard<std::mutex> g(cacheLock_);
     return impl_->processEntry(ip);
-  }
-
-  // Has the entry corresponding to ip has been hit in hw
-  bool isHit(AddressType ip) {
-    return sw_->getAndClearNeighborHit(RouterID(0), ip);
   }
 
   // Forbidden copy constructor and assignment operator

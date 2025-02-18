@@ -1,0 +1,73 @@
+load("@fbcode_macros//build_defs:cpp_unittest.bzl", "cpp_unittest")
+
+oncall("fboss_agent_push")
+
+cpp_unittest(
+    name = "pkt_test",
+    srcs = [
+        "ArpHdrTest.cpp",
+        "DHCPv4PacketTest.cpp",
+        "EthFrameTest.cpp",
+        "EthHdrTest.cpp",
+        "ICMPHdrTest.cpp",
+        "ICMPPacketTest.cpp",
+        "IPv4HdrTest.cpp",
+        "IPv6HdrTest.cpp",
+        "LlcHdrTest.cpp",
+        "MPLSHdrTest.cpp",
+        "NDPOptionTest.cpp",
+        "NDPRouterAdvertisementTest.cpp",
+        "PTPHdrTest.cpp",
+        "PktUtilTest.cpp",
+        "TCPHeaderTest.cpp",
+        "UDPHdrTest.cpp",
+    ],
+    deps = [
+        "fbcode//fboss/agent:core",
+        "fbcode//fboss/agent:dhcpv4_options_of_interest",
+        "fbcode//fboss/agent:fboss-error",
+        "fbcode//fboss/agent:stats",
+        "fbcode//fboss/agent/hw/mock:mock",
+        "fbcode//fboss/agent/hw/mock:pkt",
+        "fbcode//fboss/agent/packet:ether_type",
+        "fbcode//fboss/agent/packet:packet",
+        "fbcode//fboss/agent/packet:packet_factory",
+        "fbcode//fboss/agent/packet:pktutil",
+        "fbcode//fboss/agent/state:state",
+        "fbcode//fboss/agent/test:utils",
+        "fbcode//folly:conv",
+        "fbcode//folly:memory",
+        "fbcode//folly:network_address",
+        "fbcode//folly:random",
+        "fbcode//folly/io:iobuf",
+        "fbcode//folly/logging:logging",
+    ],
+)
+
+cpp_unittest(
+    name = "sflow_structs_test",
+    srcs = [
+        "SflowStructsTest.cpp",
+    ],
+    deps = [
+        "//fboss/agent/packet:sflow_structs",
+        "//folly:network_address",
+        "//folly/container:array",
+    ],
+)
+
+cpp_unittest(
+    name = "dhcpv6_packet_test",
+    srcs = [
+        "DHCPv6PacketTest.cpp",
+    ],
+    deps = [
+        "//fboss/agent:core",
+        "//fboss/agent:fboss-error",
+        "//fboss/agent/packet:packet",
+        "//folly:conv",
+        "//folly:memory",
+        "//folly:network_address",
+        "//folly/io:iobuf",
+    ],
+)

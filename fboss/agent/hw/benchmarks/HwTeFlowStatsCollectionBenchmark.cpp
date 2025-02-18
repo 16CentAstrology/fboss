@@ -17,12 +17,10 @@
 #include "fboss/lib/FunctionCallTimeReporter.h"
 
 #include "fboss/agent/benchmarks/AgentBenchmarks.h"
+#include "fboss/agent/hw/benchmarks/HwTeFlowScaleBenchmarkHelper.h"
 
 #include <folly/Benchmark.h>
 #include <folly/IPAddress.h>
-#include <folly/logging/xlog.h>
-
-DEFINE_int32(teflow_scale_entries, 9216, "Teflow scale entries");
 
 namespace facebook::fboss {
 
@@ -31,8 +29,11 @@ namespace facebook::fboss {
  */
 
 BENCHMARK(HwTeFlowStatsCollection) {
+  folly::BenchmarkSuspender suspender;
+
   static std::string nextHopAddr("1::1");
   static std::string ifName("fboss2000");
+  static std::string dstIpStart("100");
   static int prefixLength(61);
   uint32_t numEntries = FLAGS_teflow_scale_entries;
   // @lint-ignore CLANGTIDY
@@ -40,14 +41,14 @@ BENCHMARK(HwTeFlowStatsCollection) {
   std::unique_ptr<AgentEnsemble> ensemble{};
 
   AgentEnsembleSwitchConfigFn initialConfigFn =
-      [](HwSwitch* hwSwitch, const std::vector<PortID>& ports) {
+      [](const AgentEnsemble& ensemble) {
+        auto ports = ensemble.masterLogicalPortIds();
         CHECK_GT(ports.size(), 0);
-        return utility::onePortPerInterfaceConfig(
-            hwSwitch, {ports[0], ports[1]}, cfg::PortLoopbackMode::MAC);
+        return utility::onePortPerInterfaceConfig(ensemble.getSw(), ports);
       };
 
   AgentEnsemblePlatformConfigFn platformConfigFn =
-      [](cfg::PlatformConfig& config) {
+      [](const cfg::SwitchConfig&, cfg::PlatformConfig& config) {
         if (!(config.chip()->getType() == config.chip()->bcm)) {
           return;
         }
@@ -56,33 +57,39 @@ BENCHMARK(HwTeFlowStatsCollection) {
         AgentEnsemble::enableExactMatch(bcm);
       };
 
-  folly::BenchmarkSuspender suspender;
-  ensemble = createAgentEnsemble(initialConfigFn, platformConfigFn);
+  ensemble = createAgentEnsemble(
+      initialConfigFn, false /*disableLinkStateToggler*/, platformConfigFn);
   const auto& ports = ensemble->masterLogicalPortIds();
-  auto hwSwitch = ensemble->getHw();
-  auto ecmpHelper =
-      utility::EcmpSetupAnyNPorts6(ensemble->getSw()->getState(), RouterID(0));
-  // Setup EM Config
-  auto state = ensemble->getSw()->getState();
-  utility::setExactMatchCfg(&state, prefixLength);
-  ensemble->applyNewState(state);
+  // TODO(zecheng): Deprecate agent access to HwSwitch
+  auto hwSwitch = ensemble->getHwSwitch();
+  ensemble->applyNewState([&](const std::shared_ptr<SwitchState>& in) {
+    // Setup EM Config
+    auto state = in->clone();
+    utility::setExactMatchCfg(&state, prefixLength);
+    return state;
+  });
   // Resolve nextHops
   CHECK_GE(ports.size(), 2);
-  ensemble->applyNewState(ecmpHelper.resolveNextHops(
-      ensemble->getSw()->getState(), {PortDescriptor(ports[0])}));
-  ensemble->applyNewState(ecmpHelper.resolveNextHops(
-      ensemble->getSw()->getState(), {PortDescriptor(ports[1])}));
+  ensemble->applyNewState([&](const std::shared_ptr<SwitchState>& in) {
+    auto ecmpHelper = utility::EcmpSetupAnyNPorts6(in, RouterID(0));
+    return ecmpHelper.resolveNextHops(
+        in, {PortDescriptor(ports[0]), PortDescriptor(ports[1])});
+  });
   // Add Entries
   auto flowEntries = utility::makeFlowEntries(
-      "100", nextHopAddr, ifName, ports[0], numEntries);
-  state = ensemble->getSw()->getState();
-  utility::addFlowEntries(&state, flowEntries);
-  ensemble->applyNewState(state, true /* rollback on fail */);
+      dstIpStart, nextHopAddr, ifName, ports[0], numEntries);
+  ensemble->applyNewState(
+      [&](const std::shared_ptr<SwitchState>& in) {
+        auto state = in->clone();
+        utility::addFlowEntries(&state, flowEntries, ensemble->scopeResolver());
+        return state;
+      },
+      "add-te-flows",
+      true /* rollback on fail */);
   CHECK_EQ(utility::getNumTeFlowEntries(hwSwitch), numEntries);
   // Measure stats collection time for 9K entries
-  SwitchStats dummy;
   suspender.dismiss();
-  hwSwitch->updateStats(&dummy);
+  hwSwitch->updateStats();
   suspender.rehire();
 }
 

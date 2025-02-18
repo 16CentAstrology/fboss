@@ -32,7 +32,7 @@ void MockTransceiverI2CApi::moduleRead(
       (len != 1 && throwReadExceptionForDomQuery_)) {
     throw std::exception();
   }
-  if (offset == 0) {
+  if (offset == 0 && len == 1) {
     if (overridenMgmtInterface_.find(module) != overridenMgmtInterface_.end()) {
       buf[0] = overridenMgmtInterface_[module];
     } else {
@@ -40,7 +40,7 @@ void MockTransceiverI2CApi::moduleRead(
     }
   } else if (const auto tcvrItor = overridenTransceivers_.find(module);
              tcvrItor != overridenTransceivers_.end()) {
-    tcvrItor->second->readTransceiver(param, buf);
+    tcvrItor->second->readTransceiver(param, buf, 0);
   } else {
     XLOG(ERR)
         << "moduleRead(module=" << module << ", i2cAddress=" << i2cAddress
@@ -67,28 +67,34 @@ void MockTransceiverI2CApi::overridePresence(unsigned int id, bool presence) {
 
 void MockTransceiverI2CApi::overrideMgmtInterface(
     unsigned int id,
-    uint8_t mgmt) {
+    uint8_t mgmt,
+    TransceiverManager* mgr) {
   overridenMgmtInterface_[id] = mgmt;
   switch (mgmt) {
     case uint8_t(TransceiverModuleIdentifier::UNKNOWN):
       overridenTransceivers_[id] =
-          std::make_unique<UnknownModuleIdentifierTransceiver>(id);
+          std::make_unique<UnknownModuleIdentifierTransceiver>(id, mgr);
       break;
     case uint8_t(TransceiverModuleIdentifier::SFP_PLUS):
-      overridenTransceivers_[id] = std::make_unique<Sfp10GTransceiver>(id);
+      overridenTransceivers_[id] = std::make_unique<Sfp10GTransceiver>(id, mgr);
       break;
     case uint8_t(TransceiverModuleIdentifier::QSFP):
     case uint8_t(TransceiverModuleIdentifier::QSFP_PLUS):
     case uint8_t(TransceiverModuleIdentifier::QSFP28):
-      overridenTransceivers_[id] = std::make_unique<SffDacTransceiver>(id);
+      overridenTransceivers_[id] = std::make_unique<SffDacTransceiver>(id, mgr);
       break;
     case uint8_t(TransceiverModuleIdentifier::QSFP_DD):
     case uint8_t(TransceiverModuleIdentifier::QSFP_PLUS_CMIS):
-      overridenTransceivers_[id] = std::make_unique<Cmis200GTransceiver>(id);
+      overridenTransceivers_[id] =
+          std::make_unique<Cmis200GTransceiver>(id, mgr);
       break;
     case uint8_t(TransceiverModuleIdentifier::MINIPHOTON_OBO):
       overridenTransceivers_[id] =
-          std::make_unique<MiniphotonOBOTransceiver>(id);
+          std::make_unique<MiniphotonOBOTransceiver>(id, mgr);
+      break;
+    case uint8_t(TransceiverModuleIdentifier::OSFP):
+      overridenTransceivers_[id] =
+          std::make_unique<Cmis2x400GFr4Transceiver>(id, mgr);
       break;
     default:
       overridenTransceivers_.erase(id);

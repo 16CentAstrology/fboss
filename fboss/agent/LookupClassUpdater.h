@@ -48,15 +48,22 @@ class LookupClassUpdater : public StateObserver {
       VlanID vlanID,
       cfg::AclLookupClass classID);
 
- private:
   using ClassID2Count = boost::container::flat_map<cfg::AclLookupClass, int>;
+  boost::container::flat_map<PortID, ClassID2Count>& getPort2ClassIDAndCount() {
+    return port2ClassIDAndCount_;
+  }
 
+  int getMaxNumHostsPerQueue() {
+    return maxNumHostsPerQueue_;
+  }
+
+ private:
   bool portHasClassID(const std::shared_ptr<Port>& port);
 
   template <typename NeighborEntryT>
   bool shouldProcessNeighborEntry(
-      const std::shared_ptr<NeighborEntryT>& newEntry,
-      bool added) const;
+      const std::shared_ptr<NeighborEntryT>& oldEntry,
+      const std::shared_ptr<NeighborEntryT>& newEntry) const;
   template <typename AddedNeighborEntryT>
   void processAdded(
       const std::shared_ptr<SwitchState>& switchState,
@@ -92,7 +99,11 @@ class LookupClassUpdater : public StateObserver {
       const std::shared_ptr<RemovedEntryT>& removedEntry);
 
   cfg::AclLookupClass getClassIDwithMinimumNeighbors(
-      ClassID2Count classID2Count) const;
+      const ClassID2Count& classID2Count) const;
+
+  cfg::AclLookupClass getClassIDwithQueuePerPhysicalHost(
+      const ClassID2Count& classID2Count,
+      const folly::MacAddress& mac) const;
 
   template <typename RemovedEntryT>
   void removeNeighborFromLocalCacheForEntry(
@@ -109,6 +120,7 @@ class LookupClassUpdater : public StateObserver {
 
   template <typename AddrT>
   void updateStateObserverLocalCacheHelper(
+      const std::shared_ptr<SwitchState>& switchState,
       const std::shared_ptr<Vlan>& vlan,
       const std::shared_ptr<Port>& port);
 
@@ -120,6 +132,9 @@ class LookupClassUpdater : public StateObserver {
   void repopulateClassIdsForResolvedNeighbors(
       const std::shared_ptr<SwitchState>& switchState,
       PortID portID);
+  void clearAndRepopulateClassIDsForPort(
+      const StateDelta& stateDelta,
+      const std::shared_ptr<Port>& port);
 
   void processPortUpdates(const StateDelta& stateDelta);
 
@@ -136,6 +151,7 @@ class LookupClassUpdater : public StateObserver {
 
   template <typename AddrT>
   void validateRemovedPortEntries(
+      const std::shared_ptr<SwitchState>& switchState,
       const std::shared_ptr<Vlan>& vlan,
       PortID portID);
 
@@ -168,13 +184,27 @@ class LookupClassUpdater : public StateObserver {
       const std::shared_ptr<Vlan>& vlan,
       folly::MacAddress macAddress);
 
+  void removeAndUpdateClassIDForMacVlan(
+      const std::shared_ptr<SwitchState>& switchState,
+      folly::MacAddress macAddress,
+      VlanID vlanID);
+
   void processMacAddrsToBlockUpdates(const StateDelta& stateDelta);
+
+  void processMacOuis(const StateDelta& stateDelta);
+
+  void populateMacOuis(
+      const std::shared_ptr<SwitchState>& switchState,
+      std::set<uint64_t>& vendorMacOuis,
+      std::set<uint64_t>& metaMacOuis);
 
   /*
    * Methods to iterate over MacTable, ArpTable or NdpTable or table deltas.
    */
   template <typename AddrT>
   auto getTable(const std::shared_ptr<Vlan>& vlan);
+
+  void updateMaxNumHostsPerQueueCounter();
 
   SwSwitch* sw_;
 
@@ -208,6 +238,7 @@ class LookupClassUpdater : public StateObserver {
       std::pair<cfg::AclLookupClass, int>>;
   boost::container::flat_map<PortID, MacAndVlan2ClassIDAndRefCnt>
       port2MacAndVlanEntries_;
+  bool port2MacAndVlanEntriesUpdated_{false};
 
   /*
    * Some use cases (e.g. DR) requires blocking traffic to specific neighbors.
@@ -264,8 +295,11 @@ class LookupClassUpdater : public StateObserver {
    *  traffic to.
    */
   std::set<std::pair<VlanID, folly::MacAddress>> macAddrsToBlock_;
+  std::set<uint64_t> vendorMacOuis_;
+  std::set<uint64_t> metaMacOuis_;
+  int maxNumHostsPerQueue_{0};
 
-  friend class VlanTableDeltaCallbackGenerator;
+  friend class NeighborTableDeltaCallbackGenerator;
   bool inited_{false};
 };
 

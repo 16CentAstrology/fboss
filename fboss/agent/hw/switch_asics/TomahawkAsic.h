@@ -20,22 +20,28 @@ class TomahawkAsic : public BroadcomXgsAsic {
   cfg::PortSpeed getMaxPortSpeed() const override {
     return cfg::PortSpeed::HUNDREDG;
   }
-  int getDefaultNumPortQueues(cfg::StreamType streamType, bool cpu)
-      const override;
+  int getDefaultNumPortQueues(
+      cfg::StreamType streamType,
+      cfg::PortType portType) const override;
   uint32_t getMaxLabelStackDepth() const override {
     return 3;
   }
   uint64_t getMMUSizeBytes() const override {
     return 16 * 1024 * 1024;
   }
-  uint64_t getDefaultReservedBytes(cfg::StreamType /*streamType*/, bool cpu)
-      const override {
-    return cpu ? 1664 : 0;
+  uint64_t getSramSizeBytes() const override {
+    // No HBM!
+    return getMMUSizeBytes();
+  }
+  std::optional<uint64_t> getDefaultReservedBytes(
+      cfg::StreamType /*streamType*/,
+      cfg::PortType portType) const override {
+    return portType == cfg::PortType::CPU_PORT ? 1664 : 0;
   }
   uint32_t getMMUCellSize() const {
     return 208;
   }
-  cfg::MMUScalingFactor getDefaultScalingFactor(
+  std::optional<cfg::MMUScalingFactor> getDefaultScalingFactor(
       cfg::StreamType /*streamType*/,
       bool /*cpu*/) const override {
     return cfg::MMUScalingFactor::TWO;
@@ -67,11 +73,33 @@ class TomahawkAsic : public BroadcomXgsAsic {
   uint32_t getMaxEcmpSize() const override {
     return 128;
   }
+  std::optional<uint32_t> getMaxEcmpGroups() const override {
+    // 56960-DS113: With Config change(l3_max_ecmp_mode = 1): 1024
+    // CS00012341838
+    return 895;
+  }
+  std::optional<uint32_t> getMaxEcmpMembers() const override {
+    // 56960-DS113
+    return 16000;
+  }
   uint32_t getStaticQueueLimitBytes() const override {
     return getMMUSizeBytes();
   }
   uint32_t getNumMemoryBuffers() const override {
     return 4;
+  }
+  std::optional<uint32_t> getMaxAclTables() const override {
+    return 10;
+  }
+  std::optional<uint32_t> getMaxAclEntries() const override {
+    // Max ACL entries per ACL table
+    return 256;
+  }
+  std::optional<uint32_t> getMaxNdpTableSize() const override {
+    return 20476;
+  }
+  std::optional<uint32_t> getMaxArpTableSize() const override {
+    return 40944;
   }
 };
 

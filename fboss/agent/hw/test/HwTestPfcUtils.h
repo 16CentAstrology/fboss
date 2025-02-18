@@ -12,6 +12,7 @@
 
 #include "fboss/agent/HwSwitch.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
+#include "fboss/agent/state/Port.h"
 
 namespace facebook::fboss::utility {
 
@@ -43,10 +44,18 @@ int getProgrammedPfcWatchdogControlParam(
     const PortID& portId,
     int param);
 
-int getPfcWatchdogRecoveryAction();
+cfg::PfcWatchdogRecoveryAction getPfcWatchdogRecoveryAction(
+    const HwSwitch* hw,
+    const PortID& portId);
 
-// Maps cfg::PfcWatchdogRecoveryAction to switch specific value
-int pfcWatchdogRecoveryAction(
-    cfg::PfcWatchdogRecoveryAction configuredRecoveryAction);
+// Routine to validate if the SW and HW match for the PG cfg
+void checkSwHwPgCfgMatch(
+    const HwSwitch* hw,
+    const std::shared_ptr<Port>& swPort,
+    bool pfcEnable);
 
+// Compare PFC WD configs
+void checkPfcWdSwHwCfgMatch(
+    const cfg::PfcWatchdog& swCfg,
+    const cfg::PfcWatchdog& hwCfg);
 } // namespace facebook::fboss::utility

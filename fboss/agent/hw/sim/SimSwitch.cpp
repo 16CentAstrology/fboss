@@ -16,7 +16,7 @@
 
 #include <folly/Conv.h>
 #include <folly/Memory.h>
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 
 using std::make_shared;
 using std::make_unique;
@@ -29,17 +29,22 @@ SimSwitch::SimSwitch(SimPlatform* platform, uint32_t numPorts)
     : platform_(platform), numPorts_(numPorts) {}
 
 HwInitResult SimSwitch::initImpl(
-    HwSwitch::Callback* callback,
-    bool /*failHwCallsOnWarmboot*/,
-    cfg::SwitchType /*switchType*/,
-    std::optional<int64_t> /*switchId*/) {
+    HwSwitchCallback* callback,
+    BootType /*bootType*/,
+    bool /*failHwCallsOnWarmboot*/) {
   HwInitResult ret;
   callback_ = callback;
 
   auto state = make_shared<SwitchState>();
   for (uint32_t idx = 1; idx <= numPorts_; ++idx) {
     auto name = folly::to<string>("Port", idx);
-    state->registerPort(PortID(idx), name);
+    state::PortFields portFields;
+    portFields.portId() = PortID(idx);
+    portFields.portName() = name;
+    portFields.portType() = cfg::PortType::INTERFACE_PORT;
+    auto port = std::make_shared<Port>(std::move(portFields));
+    state->getPorts()->addNode(
+        port, HwSwitchMatcher(std::unordered_set<SwitchID>({SwitchID{0}})));
   }
   bootType_ = BootType::COLD_BOOT;
   ret.bootType = bootType_;
@@ -47,7 +52,8 @@ HwInitResult SimSwitch::initImpl(
   return ret;
 }
 
-std::shared_ptr<SwitchState> SimSwitch::stateChanged(const StateDelta& delta) {
+std::shared_ptr<SwitchState> SimSwitch::stateChangedImpl(
+    const StateDelta& delta) {
   // TODO
   return delta.newState();
 }
@@ -97,6 +103,10 @@ void SimSwitch::injectPacket(std::unique_ptr<RxPacket> pkt) {
 
 folly::dynamic SimSwitch::toFollyDynamic() const {
   return folly::dynamic::object;
+}
+
+std::shared_ptr<SwitchState> SimSwitch::reconstructSwitchState() const {
+  throw FbossError("reconstructSwitchState not implemented for SimSwitch");
 }
 
 } // namespace facebook::fboss

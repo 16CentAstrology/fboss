@@ -2,12 +2,8 @@
 
 #include "fboss/qsfp_service/test/hw_test/HwTest.h"
 
-#include "fboss/agent/AgentConfig.h"
-#include "fboss/agent/platforms/common/PlatformMapping.h"
-
 #include "fboss/qsfp_service/test/hw_test/HwPortUtils.h"
 #include "fboss/qsfp_service/test/hw_test/HwQsfpEnsemble.h"
-#include "thrift/lib/cpp/util/EnumUtils.h"
 
 #include <folly/gen/Base.h>
 #include <folly/logging/xlog.h>
@@ -24,9 +20,8 @@ TEST_F(HwTest, i2cUniqueSerialNumbers) {
   // Get the IDs of all connected transceivers
   auto ensemble = getHwQsfpEnsemble();
   WedgeManager* wedgeManager = ensemble->getWedgeManager();
-  auto agentConfig = wedgeManager->getAgentConfig();
   auto transceivers = utility::legacyTransceiverIds(
-      utility::getCabledPortTranceivers(*agentConfig, ensemble));
+      utility::getCabledPortTranceivers(ensemble));
 
   // Get information of all connected transceivers
   std::map<int32_t, TransceiverInfo> transceiverInfo;
@@ -36,22 +31,22 @@ TEST_F(HwTest, i2cUniqueSerialNumbers) {
   // Build a dictionary of transceiver ID, its ethernet name (eg eth1/1/1), and
   // the ethernet name of the connected transceiver from the other end
   std::unordered_map<int32_t, std::pair<std::string, std::string>> cabledNames;
-  auto& swConfig = *(agentConfig->thrift.sw());
 
-  for (auto& port : *swConfig.ports()) {
-    if (!port.expectedLLDPValues()->empty()) {
-      auto portName = *port.Port::name();
-      auto neighborName = port.expectedLLDPValues()->at(cfg::LLDPTag::PORT);
-      auto portId = *port.logicalID();
-      const int32_t id = static_cast<int32_t>(
-          *utility::getTranscieverIdx(PortID(portId), ensemble));
-      cabledNames[id] = {portName, neighborName};
-      XLOG(INFO) << fmt::format(
-          "Transceiver {:d} has name: {:s} and neighbor's name: {:s}",
-          id,
-          portName,
-          neighborName);
-    }
+  for (auto& cabledPairs : utility::getCabledPairs(ensemble)) {
+    auto aPortID = wedgeManager->getPortIDByPortName(cabledPairs.first);
+    auto zPortID = wedgeManager->getPortIDByPortName(cabledPairs.second);
+    CHECK(aPortID.has_value());
+    CHECK(zPortID.has_value());
+    auto aTcvrID = wedgeManager->getTransceiverID(*aPortID);
+    auto zTcvrID = wedgeManager->getTransceiverID(*zPortID);
+    CHECK(aTcvrID.has_value());
+    CHECK(zTcvrID.has_value());
+    cabledNames[*aTcvrID] = {cabledPairs.first, cabledPairs.second};
+    cabledNames[*zTcvrID] = {cabledPairs.second, cabledPairs.first};
+    XLOG(INFO) << fmt::format(
+        "Transceiver {:d} has neighbor {:d}",
+        static_cast<int>(*aTcvrID),
+        static_cast<int>(*zTcvrID));
   }
 
   // Get the serial numbers of all connected transceivers and insert them into
@@ -59,7 +54,7 @@ TEST_F(HwTest, i2cUniqueSerialNumbers) {
   std::unordered_map<std::string, int32_t> snIds;
 
   for (auto tcvrId : transceivers) {
-    auto vendor = transceiverInfo[tcvrId].vendor();
+    auto vendor = transceiverInfo[tcvrId].tcvrState()->vendor();
     CHECK(vendor);
     auto vendorInfo = *vendor;
     auto sn = *(vendorInfo.serialNumber());
@@ -78,12 +73,12 @@ TEST_F(HwTest, i2cUniqueSerialNumbers) {
       EXPECT_EQ(cabledNames[tcvrId].second, cabledNames[neighborId].first);
 
       auto transmitterTech =
-          *(transceiverInfo[tcvrId].cable()->transmitterTech());
-      EXPECT_TRUE(TransmitterTechnology::COPPER == transmitterTech);
+          *(transceiverInfo[tcvrId].tcvrState()->cable()->transmitterTech());
+      EXPECT_EQ(TransmitterTechnology::COPPER, transmitterTech);
 
-      transmitterTech =
-          *(transceiverInfo[neighborId].cable()->transmitterTech());
-      EXPECT_TRUE(TransmitterTechnology::COPPER == transmitterTech);
+      transmitterTech = *(
+          transceiverInfo[neighborId].tcvrState()->cable()->transmitterTech());
+      EXPECT_EQ(TransmitterTechnology::COPPER, transmitterTech);
     }
   }
 }

@@ -7,19 +7,14 @@
 #include "fboss/agent/hw/sai/switch/SaiSwitchManager.h"
 #include "fboss/agent/hw/sai/switch/tests/ManagerTestBase.h"
 
-#include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SwitchState.h"
-
-#include <folly/Singleton.h>
-
-#include <mutex>
 
 namespace facebook::fboss {
 
 namespace {
 void processInSegEntryDelta(
     SaiInSegEntryManager& manager,
-    const thrift_cow::ThriftMapDelta<LabelForwardingInformationBase>& delta) {
+    const ThriftMapDelta<LabelForwardingInformationBase>& delta) {
   DeltaFunctions::forEachChanged(
       delta,
       [&manager](auto removed, auto added) {
@@ -85,7 +80,7 @@ class InSegEntryManagerTest : public ManagerTestBase {
             ClientID(ClientID::OPENR),
             getLabelNextHopEntryWithNextHops(
                 nextHopBegin, nextHopEnd, actionType)));
-    LabelForwardingInformationBase::resolve(node);
+    MultiLabelForwardingInformationBase::resolve(node);
     fib->addNode(node);
   }
 
@@ -211,8 +206,7 @@ TEST_F(InSegEntryManagerTest, createInSegEntry) {
       0 /* begin next hop id */,
       4 /* end next hop id */,
       LabelForwardingAction::LabelForwardingType::SWAP);
-  thrift_cow::ThriftMapDelta<LabelForwardingInformationBase> delta(
-      &empty, &fib);
+  ThriftMapDelta<LabelForwardingInformationBase> delta(&empty, &fib);
   processInSegEntryDelta(saiManagerTable->inSegEntryManager(), delta);
 
   // verify
@@ -247,8 +241,7 @@ TEST_F(InSegEntryManagerTest, changeInSegEntry) {
       0 /* begin next hop id */,
       4 /* end next hop id */,
       LabelForwardingAction::LabelForwardingType::SWAP);
-  thrift_cow::ThriftMapDelta<LabelForwardingInformationBase> delta0(
-      &empty, &fib0);
+  ThriftMapDelta<LabelForwardingInformationBase> delta0(&empty, &fib0);
   processInSegEntryDelta(saiManagerTable->inSegEntryManager(), delta0);
   LabelForwardingInformationBase fib1{};
   // change
@@ -258,8 +251,7 @@ TEST_F(InSegEntryManagerTest, changeInSegEntry) {
       1 /* begin next hop id */,
       5 /* end next hop id */,
       LabelForwardingAction::LabelForwardingType::PUSH);
-  thrift_cow::ThriftMapDelta<LabelForwardingInformationBase> delta1(
-      &fib0, &fib1);
+  ThriftMapDelta<LabelForwardingInformationBase> delta1(&fib0, &fib1);
   processInSegEntryDelta(saiManagerTable->inSegEntryManager(), delta1);
 
   // verify
@@ -295,12 +287,10 @@ TEST_F(InSegEntryManagerTest, removeInSegEntry) {
       0 /* begin next hop id */,
       4 /* end next hop id */,
       LabelForwardingAction::LabelForwardingType::SWAP);
-  thrift_cow::ThriftMapDelta<LabelForwardingInformationBase> delta0(
-      &empty, &fib);
+  ThriftMapDelta<LabelForwardingInformationBase> delta0(&empty, &fib);
   processInSegEntryDelta(saiManagerTable->inSegEntryManager(), delta0);
   // remove
-  thrift_cow::ThriftMapDelta<LabelForwardingInformationBase> delta1(
-      &fib, &empty);
+  ThriftMapDelta<LabelForwardingInformationBase> delta1(&fib, &empty);
   processInSegEntryDelta(saiManagerTable->inSegEntryManager(), delta1);
 
   const auto* preWarmBootHandle =

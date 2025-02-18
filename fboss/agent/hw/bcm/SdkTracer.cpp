@@ -376,6 +376,39 @@ int __real_bcm_udf_init(int unit);
 
 int __real_bcm_udf_get(int unit, bcm_udf_id_t udf_id, bcm_udf_t* udf_info);
 
+int __real_bcm_field_qset_id_multi_set(
+    int unit,
+    bcm_field_qualify_t qualifier,
+    int num_objects,
+    int* object_list,
+    bcm_field_qset_t* qset);
+
+int __real_bcm_field_qualify_UdfClass(
+    int unit,
+    bcm_field_entry_t entry,
+    uint32 data,
+    uint32 mask);
+
+int __real_bcm_field_qualify_udf(
+    int unit,
+    bcm_field_entry_t eid,
+    bcm_udf_id_t udf_id,
+    int length,
+    uint8* data,
+    uint8* mask);
+
+int __real_bcm_field_qualify_udf_get(
+    int unit,
+    bcm_field_entry_t eid,
+    bcm_udf_id_t udf_id,
+    int max_length,
+    uint8* data,
+    uint8* mask,
+    int* actual_length);
+
+void __real_bcm_field_group_config_t_init(
+    bcm_field_group_config_t* group_config);
+
 int __real_bcm_l3_egress_ecmp_get(
     int unit,
     bcm_l3_egress_ecmp_t* ecmp,
@@ -391,6 +424,14 @@ int __real_bcm_field_group_get(
     int unit,
     bcm_field_group_t group,
     bcm_field_qset_t* qset);
+
+int __real_bcm_field_qset_id_multi_get(
+    int unit,
+    bcm_field_qset_t qset,
+    bcm_field_qualify_t qualifier,
+    int max_objects,
+    int* object_list,
+    int* count_objects);
 
 int __real_bcm_cosq_control_get(
     int unit,
@@ -830,10 +871,22 @@ int __real_bcm_l3_egress_ecmp_ethertype_set(
     int ethertype_count,
     int* ethertype_array);
 
+int __real_bcm_l3_egress_ecmp_ethertype_get(
+    int unit,
+    uint32* flags,
+    int ethertype_max,
+    int* ethertype_array,
+    int* ethertype_count);
+
 int __real_bcm_l3_egress_ecmp_member_status_set(
     int unit,
     bcm_if_t intf,
     int status);
+
+int __real_bcm_l3_egress_ecmp_member_status_get(
+    int unit,
+    bcm_if_t intf,
+    int* status);
 
 int __real_bcm_port_untagged_vlan_set(
     int unit,
@@ -1059,6 +1112,39 @@ int __real_bcm_udf_init(int unit);
 
 int __real_bcm_udf_get(int unit, bcm_udf_id_t udf_id, bcm_udf_t* udf_info);
 
+int __real_bcm_field_qset_id_multi_set(
+    int unit,
+    bcm_field_qualify_t qualifier,
+    int num_objects,
+    int* object_list,
+    bcm_field_qset_t* qset);
+
+int __real_bcm_field_qualify_UdfClass(
+    int unit,
+    bcm_field_entry_t entry,
+    uint32 data,
+    uint32 mask);
+
+int __real_bcm_field_qualify_udf(
+    int unit,
+    bcm_field_entry_t eid,
+    bcm_udf_id_t udf_id,
+    int length,
+    uint8* data,
+    uint8* mask);
+
+int __real_bcm_field_qualify_udf_get(
+    int unit,
+    bcm_field_entry_t eid,
+    bcm_udf_id_t udf_id,
+    int max_length,
+    uint8* data,
+    uint8* mask,
+    int* actual_length);
+
+void __real_bcm_field_group_config_t_init(
+    bcm_field_group_config_t* group_config);
+
 int __real_bcm_l3_route_get(int unit, bcm_l3_route_t* info);
 
 int __real_bcm_l3_egress_multipath_traverse(
@@ -1167,11 +1253,9 @@ int __real_bcm_tx(int unit, bcm_pkt_t* tx_pkt, void* cookie);
 
 int __real_bcm_pktio_tx(int unit, bcm_pktio_pkt_t* tx_pkt);
 
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_22))
 int __real_bcm_pktio_txpmd_stat_attach(int unit, uint32 counter_id);
 
 int __real_bcm_pktio_txpmd_stat_detach(int unit);
-#endif
 
 int __real_bcm_l3_egress_destroy(int unit, bcm_if_t intf);
 
@@ -1443,6 +1527,19 @@ int __real_bcm_l3_egress_ecmp_create(
     bcm_l3_egress_ecmp_t* ecmp,
     int intf_count,
     bcm_if_t* intf_array);
+
+void __real_bcm_l3_ecmp_dlb_port_quality_attr_t_init(
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr);
+
+int __real_bcm_l3_ecmp_dlb_port_quality_attr_set(
+    int unit,
+    bcm_port_t port,
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr);
+
+int __real_bcm_l3_ecmp_dlb_port_quality_attr_get(
+    int unit,
+    bcm_port_t port,
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr);
 
 int __real_bcm_attach_max(int* max_units);
 
@@ -1958,6 +2055,11 @@ int __real_bcm_flexctr_action_create(
 
 int __real_bcm_flexctr_action_destroy(int unit, uint32 stat_counter_id);
 
+int __real_bcm_flexctr_action_traverse(
+    int unit,
+    bcm_flexctr_action_traverse_cb trav_fn,
+    void* user_data);
+
 int __real_bcm_l3_route_stat_attach(
     int unit,
     bcm_l3_route_t* info,
@@ -2020,6 +2122,12 @@ int __real_bcm_port_ifg_set(
     bcm_port_duplex_t duplex,
     int bit_times);
 
+int __real_bcm_port_control_phy_timesync_set(
+    int unit,
+    bcm_port_t port,
+    bcm_port_control_phy_timesync_t type,
+    uint64 value);
+
 } // extern "C"
 
 using namespace facebook::fboss;
@@ -2069,8 +2177,12 @@ int __wrap_bcm_switch_pkt_trace_info_get(
     int len,
     uint8* data,
     bcm_switch_pkt_trace_info_t* pkt_trace_info) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_switch_pkt_trace_info_get(
       unit, options, port, len, data, pkt_trace_info));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_range_create(
@@ -2079,7 +2191,11 @@ int __wrap_bcm_field_range_create(
     uint32 flags,
     bcm_l4_port_t min,
     bcm_l4_port_t max) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_range_create(unit, range, flags, min, max));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_range_get(
@@ -2088,7 +2204,11 @@ int __wrap_bcm_field_range_get(
     uint32* flags,
     bcm_l4_port_t* min,
     bcm_l4_port_t* max) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_range_get(unit, range, flags, min, max));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_control_get(
@@ -2116,11 +2236,19 @@ int __wrap_bcm_cosq_bst_stat_clear(
     bcm_gport_t gport,
     bcm_cos_queue_t cosq,
     bcm_bst_stat_id_t bid) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_bst_stat_clear(unit, gport, cosq, bid));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_rx_cosq_mapping_size_get(int unit, int* size) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_rx_cosq_mapping_size_get(unit, size));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l2_traverse(
@@ -2134,18 +2262,30 @@ int __wrap_bcm_port_subsidiary_ports_get(
     int unit,
     bcm_port_t port,
     bcm_pbmp_t* pbmp) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_subsidiary_ports_get(unit, port, pbmp));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_group_enable_get(
     int unit,
     bcm_field_group_t group,
     int* enable) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_group_enable_get(unit, group, enable));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_info(int unit, bcm_l3_info_t* l3info) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_info(unit, l3info));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_bst_profile_get(
@@ -2154,7 +2294,11 @@ int __wrap_bcm_cosq_bst_profile_get(
     bcm_cos_queue_t cosq,
     bcm_bst_stat_id_t bid,
     bcm_cosq_bst_profile_t* profile) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_bst_profile_get(unit, gport, cosq, bid, profile));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_switch_object_count_multi_get(
@@ -2162,15 +2306,23 @@ int __wrap_bcm_switch_object_count_multi_get(
     int object_size,
     bcm_switch_object_t* object_array,
     int* entries) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_switch_object_count_multi_get(
       unit, object_size, object_array, entries));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_switch_object_count_get(
     int unit,
     bcm_switch_object_t object,
     int* entries) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_switch_object_count_get(unit, object, entries));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_pause_addr_set(int unit, bcm_port_t port, bcm_mac_t mac) {
@@ -2182,7 +2334,11 @@ int __wrap_bcm_l3_alpm_resource_get(
     int unit,
     bcm_l3_route_group_t grp,
     bcm_l3_alpm_resource_t* resource) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_alpm_resource_get(unit, grp, resource));
+#else
+  return 0;
+#endif
 }
 #endif
 
@@ -2192,8 +2348,12 @@ int __wrap_bcm_field_entry_multi_get(
     int entry_size,
     bcm_field_entry_t* entry_array,
     int* entry_count) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_multi_get(
       unit, group, entry_size, entry_array, entry_count));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_bst_stat_get(
@@ -2203,8 +2363,12 @@ int __wrap_bcm_cosq_bst_stat_get(
     bcm_bst_stat_id_t bid,
     uint32 options,
     uint64* value) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_cosq_bst_stat_get(unit, gport, cosq, bid, options, value));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_bst_stat_extended_get(
@@ -2213,19 +2377,31 @@ int __wrap_bcm_cosq_bst_stat_extended_get(
     bcm_bst_stat_id_t bid,
     uint32 options,
     uint64* value) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_cosq_bst_stat_extended_get(unit, id, bid, options, value));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_udf_hash_config_add(
     int unit,
     uint32 options,
     bcm_udf_hash_config_t* config) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_udf_hash_config_add(unit, options, config));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_udf_hash_config_delete(int unit, bcm_udf_hash_config_t* config) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_udf_hash_config_delete(unit, config));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_udf_create(
@@ -2233,11 +2409,19 @@ int __wrap_bcm_udf_create(
     bcm_udf_alloc_hints_t* hints,
     bcm_udf_t* udf_info,
     bcm_udf_id_t* udf_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_udf_create(unit, hints, udf_info, udf_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_udf_destroy(int unit, bcm_udf_id_t udf_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_udf_destroy(unit, udf_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_udf_pkt_format_create(
@@ -2245,28 +2429,44 @@ int __wrap_bcm_udf_pkt_format_create(
     bcm_udf_pkt_format_options_t options,
     bcm_udf_pkt_format_info_t* pkt_format,
     bcm_udf_pkt_format_id_t* pkt_format_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_udf_pkt_format_create(unit, options, pkt_format, pkt_format_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_udf_pkt_format_destroy(
     int unit,
     bcm_udf_pkt_format_id_t pkt_format_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_udf_pkt_format_destroy(unit, pkt_format_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_udf_pkt_format_add(
     int unit,
     bcm_udf_id_t udf_id,
     bcm_udf_pkt_format_id_t pkt_format_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_udf_pkt_format_add(unit, udf_id, pkt_format_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_udf_pkt_format_delete(
     int unit,
     bcm_udf_id_t udf_id,
     bcm_udf_pkt_format_id_t pkt_format_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_udf_pkt_format_delete(unit, udf_id, pkt_format_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_udf_pkt_format_get(
@@ -2275,20 +2475,32 @@ int __wrap_bcm_udf_pkt_format_get(
     int max,
     bcm_udf_id_t* udf_id_list,
     int* actual) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_udf_pkt_format_get(unit, pkt_format_id, max, udf_id_list, actual));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_udf_hash_config_get(int unit, bcm_udf_hash_config_t* config) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_udf_hash_config_get(unit, config));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_udf_pkt_format_info_get(
     int unit,
     bcm_udf_pkt_format_id_t pkt_format_id,
     bcm_udf_pkt_format_info_t* pkt_format) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_udf_pkt_format_info_get(unit, pkt_format_id, pkt_format));
+#else
+  return 0;
+#endif
 }
 
 void __wrap_bcm_udf_pkt_format_info_t_init(
@@ -2305,15 +2517,85 @@ void __wrap_bcm_udf_t_init(bcm_udf_t* udf_info) {
 }
 
 int __wrap_bcm_udf_init(int unit) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_udf_init(unit));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_udf_get(int unit, bcm_udf_id_t udf_id, bcm_udf_t* udf_info) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_udf_get(unit, udf_id, udf_info));
+#else
+  return 0;
+#endif
 }
 
 void __wrap_bcm_udf_hash_config_t_init(bcm_udf_hash_config_t* config) {
   CALL_WRAPPERS_NO_RV(bcm_udf_hash_config_t_init(config));
+}
+
+int __wrap_bcm_field_qset_id_multi_set(
+    int unit,
+    bcm_field_qualify_t qualifier,
+    int num_objects,
+    int* object_list,
+    bcm_field_qset_t* qset) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
+  CALL_WRAPPERS_RV(bcm_field_qset_id_multi_set(
+      unit, qualifier, num_objects, object_list, qset));
+#else
+  return 0;
+#endif
+}
+
+int __wrap_bcm_field_qualify_UdfClass(
+    int unit,
+    bcm_field_entry_t entry,
+    uint32 data,
+    uint32 mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
+  CALL_WRAPPERS_RV(bcm_field_qualify_UdfClass(unit, entry, data, mask));
+#else
+  return 0;
+#endif
+}
+
+int __wrap_bcm_field_qualify_udf(
+    int unit,
+    bcm_field_entry_t eid,
+    bcm_udf_id_t udf_id,
+    int length,
+    uint8* data,
+    uint8* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
+  CALL_WRAPPERS_RV(
+      bcm_field_qualify_udf(unit, eid, udf_id, length, data, mask));
+#else
+  return 0;
+#endif
+}
+
+int __wrap_bcm_field_qualify_udf_get(
+    int unit,
+    bcm_field_entry_t eid,
+    bcm_udf_id_t udf_id,
+    int max_length,
+    uint8* data,
+    uint8* mask,
+    int* actual_length) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
+  CALL_WRAPPERS_RV(bcm_field_qualify_udf_get(
+      unit, eid, udf_id, max_length, data, mask, actual_length));
+#else
+  return 0;
+#endif
+}
+
+void __wrap_bcm_field_group_config_t_init(
+    bcm_field_group_config_t* group_config) {
+  CALL_WRAPPERS_NO_RV(bcm_field_group_config_t_init(group_config));
 }
 
 int __wrap_bcm_stat_custom_add(
@@ -2321,7 +2603,11 @@ int __wrap_bcm_stat_custom_add(
     bcm_port_t port,
     bcm_stat_val_t type,
     bcm_custom_stat_trigger_t trigger) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_stat_custom_add(unit, port, type, trigger));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_egress_ecmp_get(
@@ -2335,7 +2621,11 @@ int __wrap_bcm_l3_egress_ecmp_get(
 }
 
 int __wrap_bcm_l3_enable_set(int unit, int enable) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_enable_set(unit, enable));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_rx_queue_max_get(int unit, bcm_cos_queue_t* cosq) {
@@ -2346,7 +2636,26 @@ int __wrap_bcm_field_group_get(
     int unit,
     bcm_field_group_t group,
     bcm_field_qset_t* qset) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_group_get(unit, group, qset));
+#else
+  return 0;
+#endif
+}
+
+int __wrap_bcm_field_qset_id_multi_get(
+    int unit,
+    bcm_field_qset_t qset,
+    bcm_field_qualify_t qualifier,
+    int max_objects,
+    int* object_list,
+    int* count_objects) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
+  CALL_WRAPPERS_RV(bcm_field_qset_id_multi_get(
+      unit, qset, qualifier, max_objects, object_list, count_objects));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_control_get(
@@ -2371,8 +2680,12 @@ int __wrap_bcm_port_sample_rate_get(
     bcm_port_t port,
     int* ingress_rate,
     int* egress_rate) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_port_sample_rate_get(unit, port, ingress_rate, egress_rate));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_action_get(
@@ -2381,7 +2694,11 @@ int __wrap_bcm_field_action_get(
     bcm_field_action_t action,
     uint32* param0,
     uint32* param1) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_action_get(unit, entry, action, param0, param1));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_info_get(int unit, bcm_info_t* info) {
@@ -2415,7 +2732,11 @@ int __wrap_bcm_port_ability_advert_set(
     int unit,
     bcm_port_t port,
     bcm_port_ability_t* ability_mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_ability_advert_set(unit, port, ability_mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_autoneg_set(int unit, bcm_port_t port, int autoneg) {
@@ -2423,7 +2744,11 @@ int __wrap_bcm_port_autoneg_set(int unit, bcm_port_t port, int autoneg) {
 }
 
 int __wrap_bcm_port_pause_sym_set(int unit, bcm_port_t port, int pause) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_pause_sym_set(unit, port, pause));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_pause_set(
@@ -2439,8 +2764,12 @@ int __wrap_bcm_port_sample_rate_set(
     bcm_port_t port,
     int ingress_rate,
     int egress_rate) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_port_sample_rate_set(unit, port, ingress_rate, egress_rate));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_control_set(
@@ -2463,7 +2792,11 @@ int __wrap_bcm_cosq_bst_profile_set(
     bcm_cos_queue_t cosq,
     bcm_bst_stat_id_t bid,
     bcm_cosq_bst_profile_t* profile) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_bst_profile_set(unit, gport, cosq, bid, profile));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_rx_cosq_mapping_set(
@@ -2476,6 +2809,7 @@ int __wrap_bcm_rx_cosq_mapping_set(
     uint32 packet_type,
     uint32 packet_type_mask,
     bcm_cos_queue_t cosq) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_rx_cosq_mapping_set(
       unit,
       index,
@@ -2486,6 +2820,9 @@ int __wrap_bcm_rx_cosq_mapping_set(
       packet_type,
       packet_type_mask,
       cosq));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_rx_cosq_mapping_get(
@@ -2498,6 +2835,7 @@ int __wrap_bcm_rx_cosq_mapping_get(
     uint32* packet_type,
     uint32* packet_type_mask,
     bcm_cos_queue_t* cosq) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_rx_cosq_mapping_get(
       unit,
       index,
@@ -2508,34 +2846,57 @@ int __wrap_bcm_rx_cosq_mapping_get(
       packet_type,
       packet_type_mask,
       cosq));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_rx_cosq_mapping_delete(int unit, int index) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_rx_cosq_mapping_delete(unit, index));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_rx_cosq_mapping_extended_add(
     int unit,
     int options,
     bcm_rx_cosq_mapping_t* cosqMap) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_rx_cosq_mapping_extended_add(unit, options, cosqMap));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_rx_cosq_mapping_extended_delete(
     int unit,
     bcm_rx_cosq_mapping_t* cosqMap) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_rx_cosq_mapping_extended_delete(unit, cosqMap));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_rx_cosq_mapping_extended_set(
     int unit,
     uint32 options,
     bcm_rx_cosq_mapping_t* cosqMap) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_rx_cosq_mapping_extended_set(unit, options, cosqMap));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_bst_stat_sync(int unit, bcm_bst_stat_id_t bid) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_bst_stat_sync(unit, bid));
+#else
+  return 0;
+#endif
 }
 
 void __wrap_bcm_cosq_gport_discard_t_init(bcm_cosq_gport_discard_t* discard) {
@@ -2557,8 +2918,12 @@ int __wrap_bcm_cosq_gport_mapping_set(
     uint32_t flags,
     bcm_gport_t gport,
     bcm_cos_queue_t cosq) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_cosq_gport_mapping_set(unit, ing_port, priority, flags, gport, cosq));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_gport_mapping_get(
@@ -2568,8 +2933,12 @@ int __wrap_bcm_cosq_gport_mapping_get(
     uint32_t flags,
     bcm_gport_t* gport,
     bcm_cos_queue_t* cosq) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_cosq_gport_mapping_get(unit, ing_port, priority, flags, gport, cosq));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_gport_discard_get(
@@ -2581,7 +2950,11 @@ int __wrap_bcm_cosq_gport_discard_get(
 }
 
 int __wrap_bcm_cosq_init(int unit) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_init(unit));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_gport_traverse(
@@ -2623,8 +2996,12 @@ int __wrap_bcm_cosq_port_profile_get(
     bcm_gport_t port,
     bcm_cosq_profile_type_t profile_type,
     int* profile_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_cosq_port_profile_get(unit, port, profile_type, profile_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_port_profile_set(
@@ -2632,8 +3009,12 @@ int __wrap_bcm_cosq_port_profile_set(
     bcm_gport_t port,
     bcm_cosq_profile_type_t profile_type,
     int profile_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_cosq_port_profile_set(unit, port, profile_type, profile_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_gport_bandwidth_set(
@@ -2729,11 +3110,19 @@ int __wrap_bcm_qos_port_map_type_get(
 }
 
 int __wrap_bcm_port_dscp_map_mode_get(int unit, bcm_port_t port, int* mode) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_dscp_map_mode_get(unit, port, mode));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_dscp_map_mode_set(int unit, bcm_port_t port, int mode) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_dscp_map_mode_set(unit, port, mode));
+#else
+  return 0;
+#endif
 }
 
 // FP
@@ -2743,7 +3132,11 @@ int __wrap_bcm_field_qualify_IpProtocol(
     bcm_field_entry_t entry,
     uint8 data,
     uint8 mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_IpProtocol(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_DstIp(
@@ -2751,17 +3144,29 @@ int __wrap_bcm_field_qualify_DstIp(
     bcm_field_entry_t entry,
     bcm_ip_t data,
     bcm_ip_t mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_DstIp(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_create_id(
     int unit,
     bcm_field_group_t group,
     bcm_field_entry_t entry) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_create_id(unit, group, entry));
+#else
+  return 0;
+#endif
 }
 int __wrap_bcm_field_init(int unit) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_init(unit));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_group_create_id(
@@ -2769,24 +3174,40 @@ int __wrap_bcm_field_group_create_id(
     bcm_field_qset_t qset,
     int pri,
     bcm_field_group_t group) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_group_create_id(unit, qset, pri, group));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_group_config_create(
     int unit,
     bcm_field_group_config_t* group_config) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_group_config_create(unit, group_config));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_create(
     int unit,
     bcm_field_group_t group,
     bcm_field_entry_t* entry) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_create(unit, group, entry));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_install(int unit, bcm_field_entry_t entry) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_install(unit, entry));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_action_add(
@@ -2795,14 +3216,22 @@ int __wrap_bcm_field_action_add(
     bcm_field_action_t action,
     uint32 param0,
     uint32 param1) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_action_add(unit, entry, action, param0, param1));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_action_remove(
     int unit,
     bcm_field_entry_t entry,
     bcm_field_action_t action) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_action_remove(unit, entry, action));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_action_delete(
@@ -2811,22 +3240,34 @@ int __wrap_bcm_field_action_delete(
     bcm_field_action_t action,
     uint32 param0,
     uint32 param1) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_field_action_delete(unit, entry, action, param0, param1));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_prio_set(
     int unit,
     bcm_field_entry_t entry,
     int prio) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_prio_set(unit, entry, prio));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_enable_set(
     int unit,
     bcm_field_entry_t entry,
     int enable) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_enable_set(unit, entry, enable));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_DstIp6(
@@ -2834,7 +3275,11 @@ int __wrap_bcm_field_qualify_DstIp6(
     bcm_field_entry_t entry,
     bcm_ip6_t data,
     bcm_ip6_t mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_DstIp6(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_SrcIp6(
@@ -2842,7 +3287,11 @@ int __wrap_bcm_field_qualify_SrcIp6(
     bcm_field_entry_t entry,
     bcm_ip6_t data,
     bcm_ip6_t mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_SrcIp6(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_InPorts(
@@ -2850,7 +3299,11 @@ int __wrap_bcm_field_qualify_InPorts(
     bcm_field_entry_t entry,
     bcm_pbmp_t data,
     bcm_pbmp_t mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_InPorts(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_L4DstPort(
@@ -2858,7 +3311,11 @@ int __wrap_bcm_field_qualify_L4DstPort(
     bcm_field_entry_t entry,
     bcm_l4_port_t data,
     bcm_l4_port_t mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_L4DstPort(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_L4SrcPort(
@@ -2866,7 +3323,11 @@ int __wrap_bcm_field_qualify_L4SrcPort(
     bcm_field_entry_t entry,
     bcm_l4_port_t data,
     bcm_l4_port_t mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_L4SrcPort(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_DstMac(
@@ -2874,7 +3335,11 @@ int __wrap_bcm_field_qualify_DstMac(
     bcm_field_entry_t entry,
     bcm_mac_t mac,
     bcm_mac_t macMask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_DstMac(unit, entry, mac, macMask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_SrcMac(
@@ -2882,7 +3347,11 @@ int __wrap_bcm_field_qualify_SrcMac(
     bcm_field_entry_t entry,
     bcm_mac_t mac,
     bcm_mac_t macMask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_SrcMac(unit, entry, mac, macMask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_IcmpTypeCode(
@@ -2890,7 +3359,11 @@ int __wrap_bcm_field_qualify_IcmpTypeCode(
     bcm_field_entry_t entry,
     uint16 data,
     uint16 mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_IcmpTypeCode(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_SrcPort(
@@ -2900,8 +3373,12 @@ int __wrap_bcm_field_qualify_SrcPort(
     bcm_module_t mask_modid,
     bcm_port_t data_port,
     bcm_port_t mask_port) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_SrcPort(
       unit, entry, data_modid, mask_modid, data_port, mask_port));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_DstPort(
@@ -2911,8 +3388,12 @@ int __wrap_bcm_field_qualify_DstPort(
     bcm_module_t mask_modid,
     bcm_port_t data_port,
     bcm_port_t mask_port) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_DstPort(
       unit, entry, data_modid, mask_modid, data_port, mask_port));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_RangeCheck(
@@ -2920,7 +3401,11 @@ int __wrap_bcm_field_qualify_RangeCheck(
     bcm_field_entry_t entry,
     bcm_field_range_t range,
     int invert) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_RangeCheck(unit, entry, range, invert));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_TcpControl(
@@ -2928,26 +3413,46 @@ int __wrap_bcm_field_qualify_TcpControl(
     bcm_field_entry_t entry,
     uint8 data,
     uint8 mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_TcpControl(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_IpFrag(
     int unit,
     bcm_field_entry_t entry,
     bcm_field_IpFrag_t frag_info) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_IpFrag(unit, entry, frag_info));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_range_destroy(int unit, bcm_field_range_t range) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_range_destroy(unit, range));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_destroy(int unit, bcm_field_entry_t entry) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_destroy(unit, entry));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_group_destroy(int unit, bcm_field_group_t group) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_group_destroy(unit, group));
+#else
+  return 0;
+#endif
 }
 
 void __wrap_bcm_field_hint_t_init(bcm_field_hint_t* hint) {
@@ -2955,25 +3460,41 @@ void __wrap_bcm_field_hint_t_init(bcm_field_hint_t* hint) {
 }
 
 int __wrap_bcm_field_hints_create(int unit, bcm_field_hintid_t* hint_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_hints_create(unit, hint_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_hints_add(
     int unit,
     bcm_field_hintid_t hint_id,
     bcm_field_hint_t* hint) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_hints_add(unit, hint_id, hint));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_hints_destroy(int unit, bcm_field_hintid_t hint_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_hints_destroy(unit, hint_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_hints_get(
     int unit,
     bcm_field_hintid_t hint_id,
     bcm_field_hint_t* hint) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_hints_get(unit, hint_id, hint));
+#else
+  return 0;
+#endif
 }
 
 // Switch control
@@ -3005,7 +3526,11 @@ int __wrap_bcm_l3_egress_create(
 }
 
 int __wrap_bcm_l3_egress_find(int unit, bcm_l3_egress_t* egr, bcm_if_t* intf) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_egress_find(unit, egr, intf));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_egress_traverse(
@@ -3021,7 +3546,11 @@ int __wrap_bcm_l3_ecmp_member_add(
     int unit,
     bcm_if_t ecmp_group_id,
     bcm_l3_ecmp_member_t* ecmp_member) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_ecmp_member_add(unit, ecmp_group_id, ecmp_member));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_egress_ecmp_add(
@@ -3035,7 +3564,11 @@ int __wrap_bcm_l3_ecmp_member_delete(
     int unit,
     bcm_if_t ecmp_group_id,
     bcm_l3_ecmp_member_t* ecmp_member) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_ecmp_member_delete(unit, ecmp_group_id, ecmp_member));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_egress_ecmp_delete(
@@ -3047,7 +3580,11 @@ int __wrap_bcm_l3_egress_ecmp_delete(
 
 // Trunks
 int __wrap_bcm_trunk_init(int unit) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_trunk_init(unit));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_trunk_create(int unit, uint32 flags, bcm_trunk_t* tid) {
@@ -3067,7 +3604,11 @@ int __wrap_bcm_trunk_find(
 }
 
 int __wrap_bcm_trunk_bitmap_expand(int unit, bcm_pbmp_t* pbmp_ptr) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_trunk_bitmap_expand(unit, pbmp_ptr));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_trunk_get(
@@ -3137,7 +3678,11 @@ int __wrap_bcm_stat_sync_multi_get(
     int nstat,
     bcm_stat_val_t* types,
     uint64* values) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_stat_sync_multi_get(unit, port, nstat, types, values));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_linkscan_register(int unit, bcm_linkscan_handler_t f) {
@@ -3168,7 +3713,11 @@ int __wrap_bcm_stg_list_destroy(int unit, bcm_stg_t* list, int count) {
 }
 
 int __wrap_bcm_rx_control_set(int unit, bcm_rx_control_t type, int arg) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_rx_control_set(unit, type, arg));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_stg_list(int unit, bcm_stg_t** list, int* count) {
@@ -3176,7 +3725,11 @@ int __wrap_bcm_stg_list(int unit, bcm_stg_t** list, int* count) {
 }
 
 int __wrap_bcm_l3_init(int unit) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_init(unit));
+#else
+  return 0;
+#endif
 }
 
 bcm_ip_t __wrap_bcm_ip_mask_create(int len) {
@@ -3184,14 +3737,22 @@ bcm_ip_t __wrap_bcm_ip_mask_create(int len) {
 }
 
 int __wrap_bcm_port_dtag_mode_get(int unit, bcm_port_t port, int* mode) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_dtag_mode_get(unit, port, mode));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_ability_advert_get(
     int unit,
     bcm_port_t port,
     bcm_port_ability_t* ability_mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_ability_advert_get(unit, port, ability_mask));
+#else
+  return 0;
+#endif
 }
 
 void __wrap_bcm_port_config_t_init(bcm_port_config_t* config) {
@@ -3215,7 +3776,11 @@ int __wrap_bcm_port_learn_get(int unit, bcm_port_t port, uint32* flags) {
 }
 
 int __wrap_bcm_port_queued_count_get(int unit, bcm_port_t port, uint32* count) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_queued_count_get(unit, port, count));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_selective_set(
@@ -3238,7 +3803,11 @@ int __wrap_bcm_vlan_default_set(int unit, bcm_vlan_t vid) {
 }
 
 int __wrap_bcm_l3_route_max_ecmp_set(int unit, int max) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_route_max_ecmp_set(unit, max));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_vlan_destroy_all(int unit) {
@@ -3262,7 +3831,7 @@ int __wrap_soc_shutdown(int unit) {
   if (!facebook::fboss::BcmCinter::getInstance()) {
   }
 // TODO investigate why DNX builds don't include definition for soc_shutdown
-#if BCM_VER_RELEASE != 26 && BCM_VER_RELEASE != 27
+#if BCM_VER_RELEASE < 26
   CALL_WRAPPERS_RV(soc_shutdown(unit));
 #else
   return 0;
@@ -3291,8 +3860,12 @@ int __wrap_bcm_l3_route_multipath_get(
     bcm_l3_route_t* path_array,
     int max_path,
     int* path_count) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_route_multipath_get(
       unit, the_route, path_array, max_path, path_count));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_vlan_list(int unit, bcm_vlan_data_t** listp, int* countp) {
@@ -3300,7 +3873,11 @@ int __wrap_bcm_vlan_list(int unit, bcm_vlan_data_t** listp, int* countp) {
 }
 
 int __wrap_bcm_l3_route_delete_by_interface(int unit, bcm_l3_route_t* info) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_route_delete_by_interface(unit, info));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_interface_set(
@@ -3321,21 +3898,31 @@ int __wrap_bcm_tx(int unit, bcm_pkt_t* tx_pkt, void* cookie) {
 }
 
 int __wrap_bcm_pktio_tx(int unit, bcm_pktio_pkt_t* tx_pkt) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   // The SDK will free the packet data once it executes bcm_pktio_tx, so
   // we call BcmCinter->bcm_pktio_tx here first since BcmCinter requires
   // access to packet data in order to log it.
   CALL_WRAPPERS_RV_CINTER_FIRST(bcm_pktio_tx(unit, tx_pkt));
+#else
+  return 0;
+#endif
 }
 
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_22))
 int __wrap_bcm_pktio_txpmd_stat_attach(int unit, uint32 counter_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_pktio_txpmd_stat_attach(unit, counter_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_pktio_txpmd_stat_detach(int unit) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_pktio_txpmd_stat_detach(unit));
-}
+#else
+  return 0;
 #endif
+}
 
 int __wrap_bcm_rx_stop(int unit, bcm_rx_cfg_t* cfg) {
   CALL_WRAPPERS_RV(bcm_rx_stop(unit, cfg));
@@ -3384,8 +3971,12 @@ int __wrap_bcm_cosq_bst_stat_multi_get(
     int max_values,
     bcm_bst_stat_id_t* id_list,
     uint64* values) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_bst_stat_multi_get(
       unit, gport, cosq, options, max_values, id_list, values));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_rx_unregister(int unit, bcm_rx_cb_f callback, uint8 priority) {
@@ -3455,7 +4046,11 @@ int __wrap_bcm_l3_intf_find_vlan(int unit, bcm_l3_intf_t* intf) {
 }
 
 int __wrap_bcm_l3_egress_multipath_destroy(int unit, bcm_if_t mpintf) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_egress_multipath_destroy(unit, mpintf));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_knet_netif_create(int unit, bcm_knet_netif_t* netif) {
@@ -3489,18 +4084,30 @@ void __wrap_bcm_knet_netif_t_init(bcm_knet_netif_t* netif) {
 }
 
 int __wrap_bcm_port_stat_enable_set(int unit, bcm_gport_t port, int enable) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_stat_enable_set(unit, port, enable));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_stat_attach(int unit, bcm_port_t port, uint32 counterID_) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_stat_attach(unit, port, counterID_));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_stat_detach_with_id(
     int unit,
     bcm_gport_t gPort,
     uint32 counterID) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_stat_detach_with_id(unit, gPort, counterID));
+#else
+  return 0;
+#endif
 }
 
 #if (BCM_SDK_VERSION >= BCM_VERSION(6, 5, 21))
@@ -3542,7 +4149,11 @@ int __wrap_bcm_field_group_traverse(
     int unit,
     bcm_field_group_traverse_cb callback,
     void* user_data) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_group_traverse(unit, callback, user_data));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_stg_default_set(int unit, bcm_stg_t stg) {
@@ -3605,7 +4216,11 @@ int __wrap_bcm_port_enable_get(int unit, bcm_port_t port, int* enable) {
 }
 
 int __wrap_bcm_l3_route_max_ecmp_get(int unit, int* max) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_route_max_ecmp_get(unit, max));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_egress_multipath_find(
@@ -3613,8 +4228,12 @@ int __wrap_bcm_l3_egress_multipath_find(
     int intf_count,
     bcm_if_t* intf_array,
     bcm_if_t* mpintf) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_l3_egress_multipath_find(unit, intf_count, intf_array, mpintf));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_local_get(
@@ -3669,6 +4288,35 @@ int __wrap_bcm_l3_egress_ecmp_create(
       bcm_l3_egress_ecmp_create(unit, ecmp, intf_count, intf_array));
 }
 
+void __wrap_bcm_l3_ecmp_dlb_port_quality_attr_t_init(
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr) {
+  CALL_WRAPPERS_NO_RV(bcm_l3_ecmp_dlb_port_quality_attr_t_init(quality_attr));
+}
+
+int __wrap_bcm_l3_ecmp_dlb_port_quality_attr_set(
+    int unit,
+    bcm_port_t port,
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
+  CALL_WRAPPERS_RV(
+      bcm_l3_ecmp_dlb_port_quality_attr_set(unit, port, quality_attr));
+#else
+  return 0;
+#endif
+}
+
+int __wrap_bcm_l3_ecmp_dlb_port_quality_attr_get(
+    int unit,
+    bcm_port_t port,
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
+  CALL_WRAPPERS_RV(
+      bcm_l3_ecmp_dlb_port_quality_attr_get(unit, port, quality_attr));
+#else
+  return 0;
+#endif
+}
+
 int __wrap_bcm_attach(int unit, char* type, char* subtype, int remunit) {
   CALL_WRAPPERS_RV(bcm_attach(unit, type, subtype, remunit));
 }
@@ -3683,8 +4331,12 @@ int __wrap_bcm_l3_egress_multipath_get(
     int intf_size,
     bcm_if_t* intf_array,
     int* intf_count) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_egress_multipath_get(
       unit, mpintf, intf_size, intf_array, intf_count));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_ip6_mask_create(bcm_ip6_t ip6, int len) {
@@ -3712,7 +4364,11 @@ int __wrap_bcm_linkscan_enable_get(int unit, int* us) {
 }
 
 int __wrap_bcm_port_dtag_mode_set(int unit, bcm_port_t port, int mode) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_dtag_mode_set(unit, port, mode));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_knet_filter_destroy(int unit, int filter_id) {
@@ -3746,7 +4402,11 @@ int __wrap_bcm_l3_egress_multipath_add(
     int unit,
     bcm_if_t mpintf,
     bcm_if_t intf) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_egress_multipath_add(unit, mpintf, intf));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_ecmp_get(
@@ -3755,8 +4415,12 @@ int __wrap_bcm_l3_ecmp_get(
     int ecmp_member_size,
     bcm_l3_ecmp_member_t* ecmp_member_array,
     int* ecmp_member_count) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_ecmp_get(
       unit, ecmp_info, ecmp_member_size, ecmp_member_array, ecmp_member_count));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_egress_ecmp_find(
@@ -3764,7 +4428,11 @@ int __wrap_bcm_l3_egress_ecmp_find(
     int intf_count,
     bcm_if_t* intf_array,
     bcm_l3_egress_ecmp_t* ecmp) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_egress_ecmp_find(unit, intf_count, intf_array, ecmp));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_vlan_port_add(
@@ -3779,11 +4447,19 @@ int __wrap_bcm_port_ability_local_get(
     int unit,
     bcm_port_t port,
     bcm_port_ability_t* local_ability_mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_ability_local_get(unit, port, local_ability_mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_host_delete_by_interface(int unit, bcm_l3_host_t* info) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_host_delete_by_interface(unit, info));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_untagged_vlan_set(
@@ -3798,7 +4474,11 @@ int __wrap_bcm_stat_clear(int unit, bcm_port_t port) {
 }
 
 int __wrap_bcm_l2_age_timer_set(int unit, int age_seconds) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l2_age_timer_set(unit, age_seconds));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_knet_netif_traverse(
@@ -3835,7 +4515,11 @@ int __wrap_bcm_l3_egress_multipath_delete(
     int unit,
     bcm_if_t mpintf,
     bcm_if_t intf) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_egress_multipath_delete(unit, mpintf, intf));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_route_add(int unit, bcm_l3_route_t* info) {
@@ -3862,15 +4546,48 @@ int __wrap_bcm_l3_egress_ecmp_ethertype_set(
     uint32 flags,
     int ethertype_count,
     int* ethertype_array) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_egress_ecmp_ethertype_set(
       unit, flags, ethertype_count, ethertype_array));
+#else
+  return 0;
+#endif
+}
+
+int __wrap_bcm_l3_egress_ecmp_ethertype_get(
+    int unit,
+    uint32* flags,
+    int ethertype_max,
+    int* ethertype_array,
+    int* ethertype_count) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
+  CALL_WRAPPERS_RV(bcm_l3_egress_ecmp_ethertype_get(
+      unit, flags, ethertype_max, ethertype_array, ethertype_count));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_egress_ecmp_member_status_set(
     int unit,
     bcm_if_t intf,
     int status) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_egress_ecmp_member_status_set(unit, intf, status));
+#else
+  return 0;
+#endif
+}
+
+int __wrap_bcm_l3_egress_ecmp_member_status_get(
+    int unit,
+    bcm_if_t intf,
+    int* status) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
+  CALL_WRAPPERS_RV(bcm_l3_egress_ecmp_member_status_get(unit, intf, status));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l2_addr_get(
@@ -3885,7 +4602,11 @@ int __wrap_bcm_l3_egress_multipath_traverse(
     int unit,
     bcm_l3_egress_multipath_traverse_cb trav_fn,
     void* user_data) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_egress_multipath_traverse(unit, trav_fn, user_data));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l2_addr_delete(int unit, bcm_mac_t mac, bcm_vlan_t vid) {
@@ -3910,8 +4631,12 @@ int __wrap_bcm_l3_egress_multipath_create(
     int intf_count,
     bcm_if_t* intf_array,
     bcm_if_t* mpintf) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_egress_multipath_create(
       unit, flags, intf_count, intf_array, mpintf));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_mapping_get(
@@ -3941,11 +4666,19 @@ int __wrap_bcm_l3_intf_create(int unit, bcm_l3_intf_t* intf) {
 }
 
 int __wrap_bcm_rx_control_get(int unit, bcm_rx_control_t type, int* arg) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_rx_control_get(unit, type, arg));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l2_age_timer_get(int unit, int* age_seconds) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l2_age_timer_get(unit, age_seconds));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_host_find(int unit, bcm_l3_host_t* info) {
@@ -3981,7 +4714,11 @@ int __wrap_bcm_field_group_status_get(
     int unit,
     bcm_field_group_t group,
     bcm_field_group_status_t* status) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_group_status_get(unit, group, status));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_stat_create(
@@ -3990,33 +4727,53 @@ int __wrap_bcm_field_stat_create(
     int nstat,
     bcm_field_stat_t* stat_arr,
     int* stat_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_field_stat_create(unit, group, nstat, stat_arr, stat_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_stat_attach(
     int unit,
     bcm_field_entry_t entry,
     int stat_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_stat_attach(unit, entry, stat_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_stat_detach(
     int unit,
     bcm_field_entry_t entry,
     int stat_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_stat_detach(unit, entry, stat_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_stat_get(
     int unit,
     bcm_field_entry_t entry,
     int* stat_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_stat_get(unit, entry, stat_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_stat_destroy(int unit, int stat_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_stat_destroy(unit, stat_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_stat_get(
@@ -4024,11 +4781,19 @@ int __wrap_bcm_field_stat_get(
     int stat_id,
     bcm_field_stat_t stat,
     uint64* value) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_stat_get(unit, stat_id, stat, value));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_stat_size(int unit, int stat_id, int* stat_size) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_stat_size(unit, stat_id, stat_size));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_stat_config_get(
@@ -4036,11 +4801,19 @@ int __wrap_bcm_field_stat_config_get(
     int stat_id,
     int nstat,
     bcm_field_stat_t* stat_arr) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_stat_config_get(unit, stat_id, nstat, stat_arr));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_reinstall(int unit, bcm_field_entry_t entry) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_reinstall(unit, entry));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_RangeCheck_get(
@@ -4050,15 +4823,23 @@ int __wrap_bcm_field_qualify_RangeCheck_get(
     bcm_field_range_t* range,
     int* invert,
     int* count) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_RangeCheck_get(
       unit, entry, max_count, range, invert, count));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_prio_get(
     int unit,
     bcm_field_entry_t entry,
     int* prio) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_prio_get(unit, entry, prio));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_SrcIp6_get(
@@ -4066,7 +4847,11 @@ int __wrap_bcm_field_qualify_SrcIp6_get(
     bcm_field_entry_t entry,
     bcm_ip6_t* data,
     bcm_ip6_t* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_SrcIp6_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_DstIp6_get(
@@ -4074,7 +4859,11 @@ int __wrap_bcm_field_qualify_DstIp6_get(
     bcm_field_entry_t entry,
     bcm_ip6_t* data,
     bcm_ip6_t* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_DstIp6_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_L4SrcPort_get(
@@ -4082,7 +4871,11 @@ int __wrap_bcm_field_qualify_L4SrcPort_get(
     bcm_field_entry_t entry,
     bcm_l4_port_t* data,
     bcm_l4_port_t* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_L4SrcPort_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_L4DstPort_get(
@@ -4090,7 +4883,11 @@ int __wrap_bcm_field_qualify_L4DstPort_get(
     bcm_field_entry_t entry,
     bcm_l4_port_t* data,
     bcm_l4_port_t* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_L4DstPort_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_TcpControl_get(
@@ -4098,7 +4895,11 @@ int __wrap_bcm_field_qualify_TcpControl_get(
     bcm_field_entry_t entry,
     uint8* data,
     uint8* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_TcpControl_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_SrcPort_get(
@@ -4108,8 +4909,12 @@ int __wrap_bcm_field_qualify_SrcPort_get(
     bcm_module_t* mask_modid,
     bcm_port_t* data_port,
     bcm_port_t* mask_port) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_SrcPort_get(
       unit, entry, data_modid, mask_modid, data_port, mask_port));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_DstPort_get(
@@ -4119,15 +4924,23 @@ int __wrap_bcm_field_qualify_DstPort_get(
     bcm_module_t* mask_modid,
     bcm_port_t* data_port,
     bcm_port_t* mask_port) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_DstPort_get(
       unit, entry, data_modid, mask_modid, data_port, mask_port));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_IpFrag_get(
     int unit,
     bcm_field_entry_t entry,
     bcm_field_IpFrag_t* frag_info) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_IpFrag_get(unit, entry, frag_info));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_IpProtocol_get(
@@ -4135,7 +4948,11 @@ int __wrap_bcm_field_qualify_IpProtocol_get(
     bcm_field_entry_t entry,
     uint8* data,
     uint8* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_IpProtocol_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_DSCP_get(
@@ -4143,14 +4960,22 @@ int __wrap_bcm_field_qualify_DSCP_get(
     bcm_field_entry_t entry,
     uint8* data,
     uint8* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_DSCP_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_IpType_get(
     int unit,
     bcm_field_entry_t entry,
     bcm_field_IpType_t* type) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_IpType_get(unit, entry, type));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_EtherType_get(
@@ -4158,7 +4983,11 @@ int __wrap_bcm_field_qualify_EtherType_get(
     bcm_field_entry_t entry,
     uint16* data,
     uint16* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_EtherType_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_Ttl_get(
@@ -4166,7 +4995,11 @@ int __wrap_bcm_field_qualify_Ttl_get(
     bcm_field_entry_t entry,
     uint8* data,
     uint8* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_Ttl_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_DstMac_get(
@@ -4174,7 +5007,11 @@ int __wrap_bcm_field_qualify_DstMac_get(
     bcm_field_entry_t entry,
     bcm_mac_t* data,
     bcm_mac_t* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_DstMac_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_SrcMac_get(
@@ -4182,14 +5019,22 @@ int __wrap_bcm_field_qualify_SrcMac_get(
     bcm_field_entry_t entry,
     bcm_mac_t* data,
     bcm_mac_t* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_SrcMac_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_enable_get(
     int unit,
     bcm_field_entry_t entry,
     int* enable_flag) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_enable_get(unit, entry, enable_flag));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_Ttl(
@@ -4197,14 +5042,22 @@ int __wrap_bcm_field_qualify_Ttl(
     bcm_field_entry_t entry,
     uint8 data,
     uint8 mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_Ttl(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_IpType(
     int unit,
     bcm_field_entry_t entry,
     bcm_field_IpType_t type) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_IpType(unit, entry, type));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_EtherType(
@@ -4212,7 +5065,11 @@ int __wrap_bcm_field_qualify_EtherType(
     bcm_field_entry_t entry,
     uint16 data,
     uint16 mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_EtherType(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_DSCP(
@@ -4220,7 +5077,11 @@ int __wrap_bcm_field_qualify_DSCP(
     bcm_field_entry_t entry,
     uint8 data,
     uint8 mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_DSCP(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_DstClassL2_get(
@@ -4228,7 +5089,11 @@ int __wrap_bcm_field_qualify_DstClassL2_get(
     bcm_field_entry_t entry,
     uint32* data,
     uint32* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_DstClassL2_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_DstClassL3_get(
@@ -4236,7 +5101,11 @@ int __wrap_bcm_field_qualify_DstClassL3_get(
     bcm_field_entry_t entry,
     uint32* data,
     uint32* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_DstClassL3_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_PacketRes_get(
@@ -4244,7 +5113,11 @@ int __wrap_bcm_field_qualify_PacketRes_get(
     bcm_field_entry_t entry,
     uint32* data,
     uint32* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_PacketRes_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_PacketRes(
@@ -4252,7 +5125,11 @@ int __wrap_bcm_field_qualify_PacketRes(
     bcm_field_entry_t entry,
     uint32 data,
     uint32 mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_PacketRes(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_DstClassL2(
@@ -4260,7 +5137,11 @@ int __wrap_bcm_field_qualify_DstClassL2(
     bcm_field_entry_t entry,
     uint32 data,
     uint32 mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_DstClassL2(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_DstClassL3(
@@ -4268,7 +5149,11 @@ int __wrap_bcm_field_qualify_DstClassL3(
     bcm_field_entry_t entry,
     uint32 data,
     uint32 mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_DstClassL3(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_OuterVlanId(
@@ -4276,7 +5161,11 @@ int __wrap_bcm_field_qualify_OuterVlanId(
     bcm_field_entry_t entry,
     bcm_vlan_t data,
     bcm_vlan_t mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_OuterVlanId(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_qualify_OuterVlanId_get(
@@ -4284,17 +5173,29 @@ int __wrap_bcm_field_qualify_OuterVlanId_get(
     bcm_field_entry_t entry,
     bcm_vlan_t* data,
     bcm_vlan_t* mask) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_qualify_OuterVlanId_get(unit, entry, data, mask));
+#else
+  return 0;
+#endif
 }
 
 // MIRRORS
 
 int __wrap_bcm_mirror_init(int unit) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_mirror_init(unit));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_mirror_mode_set(int unit, int mode) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_mirror_mode_set(unit, mode));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_mirror_destination_create(
@@ -4361,13 +5262,21 @@ int __wrap_bcm_mirror_destination_traverse(
 
 // MPLS
 int __wrap_bcm_mpls_init(int unit) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_mpls_init(unit));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_mpls_tunnel_switch_add(
     int unit,
     bcm_mpls_tunnel_switch_t* info) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_mpls_tunnel_switch_add(unit, info));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_mpls_tunnel_switch_delete(
@@ -4394,8 +5303,12 @@ int __wrap_bcm_mpls_tunnel_initiator_set(
     bcm_if_t intf,
     int num_labels,
     bcm_mpls_egress_label_t* label_array) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_mpls_tunnel_initiator_set(unit, intf, num_labels, label_array));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_mpls_tunnel_initiator_clear(int unit, bcm_if_t intf) {
@@ -4449,7 +5362,11 @@ int __wrap_bcm_l3_ingress_create(
 }
 
 int __wrap_bcm_l3_ingress_destroy(int unit, bcm_if_t intf_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_ingress_destroy(unit, intf_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_vlan_control_vlan_set(
@@ -4477,8 +5394,12 @@ int __wrap_bcm_cosq_priority_group_mapping_profile_get(
     int array_max,
     int* arg,
     int* array_count) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_priority_group_mapping_profile_get(
       unit, profile_index, type, array_max, arg, array_count));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_priority_group_mapping_profile_set(
@@ -4487,8 +5408,12 @@ int __wrap_bcm_cosq_priority_group_mapping_profile_set(
     bcm_cosq_priority_group_mapping_profile_type_t type,
     int array_max,
     int* arg) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_priority_group_mapping_profile_set(
       unit, profile_index, type, array_max, arg));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_priority_group_pfc_priority_mapping_profile_get(
@@ -4497,8 +5422,12 @@ int __wrap_bcm_cosq_priority_group_pfc_priority_mapping_profile_get(
     int array_max,
     int* pg_array,
     int* array_count) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_priority_group_pfc_priority_mapping_profile_get(
       unit, profile_index, array_max, pg_array, array_count));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_priority_group_pfc_priority_mapping_profile_set(
@@ -4506,8 +5435,12 @@ int __wrap_bcm_cosq_priority_group_pfc_priority_mapping_profile_set(
     int profile_index,
     int array_count,
     int* pg_array) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_priority_group_pfc_priority_mapping_profile_set(
       unit, profile_index, array_count, pg_array));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_pfc_class_config_profile_set(
@@ -4515,8 +5448,12 @@ int __wrap_bcm_cosq_pfc_class_config_profile_set(
     int profile_index,
     int count,
     bcm_cosq_pfc_class_map_config_t* config_array) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_pfc_class_config_profile_set(
       unit, profile_index, count, config_array));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_pfc_class_config_profile_get(
@@ -4525,8 +5462,12 @@ int __wrap_bcm_cosq_pfc_class_config_profile_get(
     int max_count,
     bcm_cosq_pfc_class_map_config_t* config_array,
     int* count) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_pfc_class_config_profile_get(
       unit, profile_index, max_count, config_array, count));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_priority_group_config_set(
@@ -4534,8 +5475,12 @@ int __wrap_bcm_port_priority_group_config_set(
     bcm_gport_t gport,
     int priority_group,
     bcm_port_priority_group_config_t* prigrp_config) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_priority_group_config_set(
       unit, gport, priority_group, prigrp_config));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_priority_group_config_get(
@@ -4543,8 +5488,12 @@ int __wrap_bcm_port_priority_group_config_get(
     bcm_gport_t gport,
     int priority_group,
     bcm_port_priority_group_config_t* prigrp_config) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_port_priority_group_config_get(
       unit, gport, priority_group, prigrp_config));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_port_priority_group_property_get(
@@ -4553,8 +5502,12 @@ int __wrap_bcm_cosq_port_priority_group_property_get(
     int priority_group_id,
     bcm_cosq_port_prigroup_control_t type,
     int* arg) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_port_priority_group_property_get(
       unit, gport, priority_group_id, type, arg));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_port_priority_group_property_set(
@@ -4563,8 +5516,12 @@ int __wrap_bcm_cosq_port_priority_group_property_set(
     int priority_group_id,
     bcm_cosq_port_prigroup_control_t type,
     int arg) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_cosq_port_priority_group_property_set(
       unit, gport, priority_group_id, type, arg));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_collector_create(
@@ -4572,12 +5529,20 @@ int __wrap_bcm_collector_create(
     uint32 options,
     bcm_collector_t* collector_id,
     bcm_collector_info_t* collector_info) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_collector_create(unit, options, collector_id, collector_info));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_collector_destroy(int unit, bcm_collector_t id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_collector_destroy(unit, id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_collector_export_profile_create(
@@ -4585,15 +5550,23 @@ int __wrap_bcm_collector_export_profile_create(
     uint32 options,
     int* export_profile_id,
     bcm_collector_export_profile_t* export_profile_info) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_collector_export_profile_create(
       unit, options, export_profile_id, export_profile_info));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_collector_export_profile_destroy(
     int unit,
     int export_profile_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_collector_export_profile_destroy(unit, export_profile_id));
+#else
+  return 0;
+#endif
 }
 void __wrap_bcm_collector_export_profile_t_init(
     bcm_collector_export_profile_t* export_profile_info) {
@@ -4646,45 +5619,60 @@ int __wrap_bcm_field_entry_flexctr_attach(
     int unit,
     bcm_field_entry_t entry,
     bcm_field_flexctr_config_t* flexctr_cfg) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_flexctr_attach(unit, entry, flexctr_cfg));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_flexctr_detach(
     int unit,
     bcm_field_entry_t entry,
     bcm_field_flexctr_config_t* flexctr_cfg) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_flexctr_detach(unit, entry, flexctr_cfg));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_field_entry_remove(int unit, bcm_field_entry_t entry) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_field_entry_remove(unit, entry));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_route_stat_attach(
     int unit,
     bcm_l3_route_t* info,
     uint32 stat_counter_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_route_stat_attach(unit, info, stat_counter_id));
+#else
+  return 0;
+#endif
 }
 
-#if defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_20)
 int __wrap_bcm_l3_route_flexctr_object_set(
     int unit,
     bcm_l3_route_t* info,
     uint32 value) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_route_flexctr_object_set(unit, info, value));
-}
 #else
-int __wrap_bcm_l3_route_flexctr_object_set(
-    int /* unit*/,
-    bcm_l3_route_t* /*info*/,
-    uint32 /*value*/) {
   return 0;
-}
 #endif
+}
 
 int __wrap_bcm_l3_route_stat_detach(int unit, bcm_l3_route_t* info) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_route_stat_detach(unit, info));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_stat_custom_group_create(
@@ -4693,12 +5681,20 @@ int __wrap_bcm_stat_custom_group_create(
     bcm_stat_object_t object,
     uint32* stat_counter_id,
     uint32* num_entries) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_stat_custom_group_create(
       unit, mode_id, object, stat_counter_id, num_entries));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_stat_group_destroy(int unit, uint32 stat_counter_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_stat_group_destroy(unit, stat_counter_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_stat_group_create(
@@ -4707,22 +5703,34 @@ int __wrap_bcm_stat_group_create(
     bcm_stat_group_mode_t group_mode,
     uint32* stat_counter_id,
     uint32* num_entries) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_stat_group_create(
       unit, object, group_mode, stat_counter_id, num_entries));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_ingress_stat_attach(
     int unit,
     bcm_if_t intf_id,
     uint32 stat_counter_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_ingress_stat_attach(unit, intf_id, stat_counter_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_l3_egress_stat_attach(
     int unit,
     bcm_if_t intf_id,
     uint32 stat_counter_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_l3_egress_stat_attach(unit, intf_id, stat_counter_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_stat_group_mode_id_create(
@@ -4732,12 +5740,20 @@ int __wrap_bcm_stat_group_mode_id_create(
     uint32 num_selectors,
     bcm_stat_group_mode_attr_selector_t* attr_selectors,
     uint32* mode_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_stat_group_mode_id_create(
       unit, flags, total_counters, num_selectors, attr_selectors, mode_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_stat_group_mode_id_destroy(int unit, uint32 mode_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_stat_group_mode_id_destroy(unit, mode_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_cosq_pfc_deadlock_control_set(
@@ -4781,12 +5797,31 @@ int __wrap_bcm_flexctr_action_create(
     int options,
     bcm_flexctr_action_t* action,
     uint32* stat_counter_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(
       bcm_flexctr_action_create(unit, options, action, stat_counter_id));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_flexctr_action_destroy(int unit, uint32 stat_counter_id) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
   CALL_WRAPPERS_RV(bcm_flexctr_action_destroy(unit, stat_counter_id));
+#else
+  return 0;
+#endif
+}
+
+int __wrap_bcm_flexctr_action_traverse(
+    int unit,
+    bcm_flexctr_action_traverse_cb trav_fn,
+    void* user_data) {
+#ifndef BCM_SDK_TYPE_DNX_ONLY
+  CALL_WRAPPERS_RV(bcm_flexctr_action_traverse(unit, trav_fn, user_data));
+#else
+  return 0;
+#endif
 }
 
 int __wrap_bcm_port_ifg_get(
@@ -4805,6 +5840,14 @@ int __wrap_bcm_port_ifg_set(
     bcm_port_duplex_t duplex,
     int bit_times) {
   CALL_WRAPPERS_RV(bcm_port_ifg_set(unit, port, speed, duplex, bit_times));
+}
+
+int __wrap_bcm_port_control_phy_timesync_set(
+    int unit,
+    bcm_port_t port,
+    bcm_port_control_phy_timesync_t type,
+    uint64 value) {
+  CALL_WRAPPERS_RV(bcm_port_control_phy_timesync_set(unit, port, type, value));
 }
 
 } // extern "C"

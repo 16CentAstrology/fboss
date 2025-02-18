@@ -33,6 +33,15 @@ class BspIOBus : public TransceiverI2CApi {
   bool isPresent(unsigned int module) override;
   void scanPresence(std::map<int32_t, ModulePresence>& presences) override;
   std::vector<I2cControllerStats> getI2cControllerStats() override;
+  folly::EventBase* getEventBase(unsigned int module) override {
+    return systemContainer_->getPimContainerFromTcvrID(module)->getIOEventBase(
+        module);
+  }
+
+  void i2cTimeProfilingStart(unsigned int module) const override;
+  void i2cTimeProfilingEnd(unsigned int module) const override;
+  std::pair<uint64_t, uint64_t> getI2cTimeProfileMsec(
+      unsigned int module) const override;
 
   // Forbidden copy constructor and assignment operator
   BspIOBus(BspIOBus const&) = delete;

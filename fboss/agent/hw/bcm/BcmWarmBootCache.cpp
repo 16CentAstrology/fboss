@@ -15,11 +15,11 @@
 #include <utility>
 
 #include <folly/Conv.h>
-#include <folly/dynamic.h>
-#include <folly/json.h>
+#include <folly/json/dynamic.h>
 #include <folly/logging/xlog.h>
 #include <thrift/lib/cpp/util/EnumUtils.h>
 
+#include "fboss/agent/AgentConfig.h"
 #include "fboss/agent/Constants.h"
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/SysError.h"
@@ -31,12 +31,9 @@
 #include "fboss/agent/hw/bcm/BcmError.h"
 #include "fboss/agent/hw/bcm/BcmExactMatchUtils.h"
 #include "fboss/agent/hw/bcm/BcmFieldProcessorFBConvertors.h"
-#include "fboss/agent/hw/bcm/BcmFieldProcessorUtils.h"
 #include "fboss/agent/hw/bcm/BcmHost.h"
-#include "fboss/agent/hw/bcm/BcmMirrorTable.h"
 #include "fboss/agent/hw/bcm/BcmMirrorUtils.h"
 #include "fboss/agent/hw/bcm/BcmPlatform.h"
-#include "fboss/agent/hw/bcm/BcmPortQueueManager.h"
 #include "fboss/agent/hw/bcm/BcmPtpTcMgr.h"
 #include "fboss/agent/hw/bcm/BcmQosMap.h"
 #include "fboss/agent/hw/bcm/BcmQosUtils.h"
@@ -45,22 +42,16 @@
 #include "fboss/agent/hw/bcm/BcmTrunkTable.h"
 #include "fboss/agent/hw/bcm/BcmTypes.h"
 #include "fboss/agent/hw/bcm/BcmUdfManager.h"
-#include "fboss/agent/hw/bcm/BcmWarmBootHelper.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/state/ArpTable.h"
 #include "fboss/agent/state/Interface.h"
-#include "fboss/agent/state/InterfaceMap.h"
-#include "fboss/agent/state/LoadBalancer.h"
-#include "fboss/agent/state/LoadBalancerMap.h"
 #include "fboss/agent/state/Mirror.h"
-#include "fboss/agent/state/MirrorMap.h"
 #include "fboss/agent/state/NdpTable.h"
 #include "fboss/agent/state/NeighborEntry.h"
 #include "fboss/agent/state/Port.h"
 #include "fboss/agent/state/PortDescriptor.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/state/Vlan.h"
-#include "fboss/agent/state/VlanMap.h"
 
 extern "C" {
 #include <bcm/field.h>
@@ -89,7 +80,6 @@ using namespace facebook::fboss::utility;
 namespace {
 auto constexpr kEcmpObjects = "ecmpObjects";
 auto constexpr kTrunks = "trunks";
-auto constexpr kVlanForCPUEgressEntries = 0;
 
 struct AddrTables {
   AddrTables()
@@ -510,19 +500,19 @@ void BcmWarmBootCache::populateUdfFromWarmBootState(
   }
 }
 
-void BcmWarmBootCache::populateFromWarmBootState(
-    const folly::dynamic& warmBootState,
-    std::optional<state::WarmbootState> thriftState) {
-  if (thriftState) {
-    dumpedSwSwitchState_ =
-        SwitchState::uniquePtrFromThrift(*thriftState->swSwitchState());
-  } else {
-    XLOG(FATAL) << "Thrift switch state not found";
+void BcmWarmBootCache::populateL2LearningModeFromDumpedSwSwitchState() {
+  // populate l2LeraningMode_ from config
+  l2LearningMode_ = cfg::L2LearningMode::HARDWARE;
+  if (auto agentConfig = getHw()->getPlatform()->config()) {
+    l2LearningMode_ =
+        agentConfig->thrift.sw()->switchSettings()->l2LearningMode().value();
   }
-  dumpedSwSwitchState_->publish();
-  CHECK(dumpedSwSwitchState_)
-      << "Was not able to recover software state after warmboot";
+  XLOG(DBG2) << "l2Learning mode recovered as "
+             << apache::thrift::util::enumNameSafe(l2LearningMode_);
+}
 
+void BcmWarmBootCache::populateFromWarmBootState(
+    const folly::dynamic& warmBootState) {
   auto& hwWarmBootState = warmBootState[kHwSwitch];
   // Extract ecmps for dumped host table
   auto& hostTable = hwWarmBootState[kHostTable];
@@ -557,6 +547,8 @@ void BcmWarmBootCache::populateFromWarmBootState(
   populateTeFlowFromWarmBootState(hwWarmBootState);
 
   populateUdfFromWarmBootState(hwWarmBootState);
+
+  populateL2LearningModeFromDumpedSwSwitchState();
 }
 
 BcmWarmBootCache::EgressId2EgressCitr BcmWarmBootCache::findEgressFromHost(
@@ -590,10 +582,8 @@ BcmWarmBootCache::findEgressFromLabeledHostKey(const BcmLabeledHostKey& key) {
       : findEgress(iter->second);
 }
 
-void BcmWarmBootCache::populate(
-    const folly::dynamic& warmBootState,
-    std::optional<state::WarmbootState> thriftState) {
-  populateFromWarmBootState(warmBootState, thriftState);
+void BcmWarmBootCache::populate(const folly::dynamic& warmBootState) {
+  populateFromWarmBootState(warmBootState);
   bcm_vlan_data_t* vlanList = nullptr;
   int vlanCount = 0;
   SCOPE_EXIT {
@@ -1246,7 +1236,6 @@ void BcmWarmBootCache::clear() {
   // since we want to delete entries only after there are no more
   // references to them.
   XLOG(DBG1) << "Warm boot: removing unreferenced entries";
-  dumpedSwSwitchState_.reset();
   hwSwitchEcmp2EgressIds_.clear();
   // First delete routes (fully qualified and others).
   //
@@ -1438,9 +1427,7 @@ void BcmWarmBootCache::programmedMirror(MirrorEgressPath2HandleCitr itr) {
   const auto& tunnel = key.second;
   if (tunnel) {
     XLOG(DBG1) << "Programmed ERSPAN mirror egressing through: " << port
-               << " with "
-               << "proto=" << tunnel->greProtocol
-               << "source ip=" << tunnel->srcIp.str()
+               << " with " << "source ip=" << tunnel->srcIp.str()
                << "source mac=" << tunnel->srcMac.toString()
                << "destination ip=" << tunnel->dstIp.str()
                << "destination mac=" << tunnel->dstMac.toString()
@@ -1754,6 +1741,25 @@ void BcmWarmBootCache::populateTeFlows(
   if (!entryCount) {
     return;
   }
+
+  // If there is a flex counter id and action index mask is not expected value
+  // remove the flex counters and flex counter id
+  // After warm boot, during the first teflow create with counter
+  // a new flex counter id with action index mask will be created
+  if (teFlowFlexCounterId_) {
+    bcm_flexctr_action_t action;
+    bcm_flexctr_action_t_init(&action);
+    rv = bcm_flexctr_action_get(hw_->getUnit(), teFlowFlexCounterId_, &action);
+    bcmCheckError(
+        rv, "Unable to get flex counter action for Id=", teFlowFlexCounterId_);
+    if (action.index_operation.mask_size[0] != kEMActionIndexObj0Mask) {
+      BcmIngressFieldProcessorFlexCounter::removeAllCountersInFpGroup(
+          hw_->getUnit(), getEMGroupID(groupId));
+      teFlowFlexCounterId_ = 0;
+      XLOG(DBG1) << " Removed flex counters for EM group=" << groupId;
+    }
+  }
+
   std::vector<bcm_field_entry_t> bcmEntries(entryCount);
   rv = bcm_field_entry_multi_get(
       hw_->getUnit(),
@@ -2087,13 +2093,16 @@ void BcmWarmBootCache::populateSwitchSettings() {
   //   warmboot or not.
   //   TODO: Check with Broadcom on how to correctly identify the SDK/HW
   //   config for this that would work for all ASIC platforms.
-  if (flags == (BCM_PORT_LEARN_ARL | BCM_PORT_LEARN_FWD)) {
-    l2LearningMode_ = cfg::L2LearningMode::HARDWARE;
-  } else if (flags == (BCM_PORT_LEARN_ARL | BCM_PORT_LEARN_PENDING)) {
-    l2LearningMode_ = cfg::L2LearningMode::SOFTWARE;
-  } else {
-    throw FbossError(
-        "L2 Learning mode is neither SOFTWARE, nor HARDWARE, flags: ", flags);
+  if (hw_->getPlatform()->getAsic()->isSupported(
+          HwAsic::Feature::PENDING_L2_ENTRY)) {
+    if (flags == (BCM_PORT_LEARN_ARL | BCM_PORT_LEARN_FWD)) {
+      l2LearningMode_ = cfg::L2LearningMode::HARDWARE;
+    } else if (flags == (BCM_PORT_LEARN_ARL | BCM_PORT_LEARN_PENDING)) {
+      l2LearningMode_ = cfg::L2LearningMode::SOFTWARE;
+    } else {
+      throw FbossError(
+          "L2 Learning mode is neither SOFTWARE, nor HARDWARE, flags: ", flags);
+    }
   }
 
   XLOG(DBG3) << "Check if PTP TC is enabled to populate warmboot cache";

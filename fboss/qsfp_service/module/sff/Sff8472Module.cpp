@@ -21,52 +21,63 @@ namespace fboss {
 
 static std::map<Ethernet10GComplianceCode, MediaInterfaceCode>
     mediaInterfaceMapping = {
+        {Ethernet10GComplianceCode::CR_10G, MediaInterfaceCode::CR_10G},
         {Ethernet10GComplianceCode::LR_10G, MediaInterfaceCode::LR_10G},
         {Ethernet10GComplianceCode::SR_10G, MediaInterfaceCode::SR_10G},
+};
+
+static std::map<ExtendedSpecComplianceCode, MediaInterfaceCode>
+    mediaInterfaceMappingForExtSpec = {
+        {ExtendedSpecComplianceCode::BASE_T_10G,
+         MediaInterfaceCode::BASE_T_10G},
 };
 
 // As per SFF-8472
 static QsfpFieldInfo<Sff8472Field, Sff8472Pages>::QsfpFieldMap sfpFields = {
     // Fields for reading an entire page
     {Sff8472Field::PAGE_LOWER_A0,
-     {TransceiverI2CApi::ADDR_QSFP, Sff8472Pages::LOWER, 0, 128}},
+     {TransceiverAccessParameter::ADDR_QSFP, Sff8472Pages::LOWER, 0, 128}},
     {Sff8472Field::PAGE_LOWER_A2,
-     {TransceiverI2CApi::ADDR_QSFP_A2, Sff8472Pages::LOWER, 0, 128}},
+     {TransceiverAccessParameter::ADDR_QSFP_A2, Sff8472Pages::LOWER, 0, 128}},
     // Address A0h fields
     {Sff8472Field::IDENTIFIER,
-     {TransceiverI2CApi::ADDR_QSFP, Sff8472Pages::LOWER, 0, 1}},
+     {TransceiverAccessParameter::ADDR_QSFP, Sff8472Pages::LOWER, 0, 1}},
     {Sff8472Field::ETHERNET_10G_COMPLIANCE_CODE,
-     {TransceiverI2CApi::ADDR_QSFP, Sff8472Pages::LOWER, 3, 1}},
+     {TransceiverAccessParameter::ADDR_QSFP, Sff8472Pages::LOWER, 3, 1}},
     {Sff8472Field::VENDOR_NAME,
-     {TransceiverI2CApi::ADDR_QSFP, Sff8472Pages::LOWER, 20, 16}},
+     {TransceiverAccessParameter::ADDR_QSFP, Sff8472Pages::LOWER, 20, 16}},
+    {Sff8472Field::EXTENDED_SPEC_COMPLIANCE_CODE,
+     {TransceiverAccessParameter::ADDR_QSFP, Sff8472Pages::LOWER, 36, 1}},
     {Sff8472Field::VENDOR_OUI,
-     {TransceiverI2CApi::ADDR_QSFP, Sff8472Pages::LOWER, 37, 3}},
+     {TransceiverAccessParameter::ADDR_QSFP, Sff8472Pages::LOWER, 37, 3}},
     {Sff8472Field::VENDOR_PART_NUMBER,
-     {TransceiverI2CApi::ADDR_QSFP, Sff8472Pages::LOWER, 40, 16}},
+     {TransceiverAccessParameter::ADDR_QSFP, Sff8472Pages::LOWER, 40, 16}},
     {Sff8472Field::VENDOR_REVISION_NUMBER,
-     {TransceiverI2CApi::ADDR_QSFP, Sff8472Pages::LOWER, 56, 4}},
+     {TransceiverAccessParameter::ADDR_QSFP, Sff8472Pages::LOWER, 56, 4}},
     {Sff8472Field::VENDOR_SERIAL_NUMBER,
-     {TransceiverI2CApi::ADDR_QSFP, Sff8472Pages::LOWER, 68, 16}},
+     {TransceiverAccessParameter::ADDR_QSFP, Sff8472Pages::LOWER, 68, 16}},
     {Sff8472Field::VENDOR_MFG_DATE,
-     {TransceiverI2CApi::ADDR_QSFP, Sff8472Pages::LOWER, 84, 8}},
+     {TransceiverAccessParameter::ADDR_QSFP, Sff8472Pages::LOWER, 84, 8}},
+    {Sff8472Field::DOM_TYPE,
+     {TransceiverAccessParameter::ADDR_QSFP, Sff8472Pages::LOWER, 92, 1}},
 
     // Address A2h fields
     {Sff8472Field::ALARM_WARNING_THRESHOLDS,
-     {TransceiverI2CApi::ADDR_QSFP_A2, Sff8472Pages::LOWER, 0, 40}},
+     {TransceiverAccessParameter::ADDR_QSFP_A2, Sff8472Pages::LOWER, 0, 40}},
     {Sff8472Field::TEMPERATURE,
-     {TransceiverI2CApi::ADDR_QSFP_A2, Sff8472Pages::LOWER, 96, 2}},
+     {TransceiverAccessParameter::ADDR_QSFP_A2, Sff8472Pages::LOWER, 96, 2}},
     {Sff8472Field::VCC,
-     {TransceiverI2CApi::ADDR_QSFP_A2, Sff8472Pages::LOWER, 98, 2}},
+     {TransceiverAccessParameter::ADDR_QSFP_A2, Sff8472Pages::LOWER, 98, 2}},
     {Sff8472Field::CHANNEL_TX_BIAS,
-     {TransceiverI2CApi::ADDR_QSFP_A2, Sff8472Pages::LOWER, 100, 2}},
+     {TransceiverAccessParameter::ADDR_QSFP_A2, Sff8472Pages::LOWER, 100, 2}},
     {Sff8472Field::CHANNEL_TX_PWR,
-     {TransceiverI2CApi::ADDR_QSFP_A2, Sff8472Pages::LOWER, 102, 2}},
+     {TransceiverAccessParameter::ADDR_QSFP_A2, Sff8472Pages::LOWER, 102, 2}},
     {Sff8472Field::CHANNEL_RX_PWR,
-     {TransceiverI2CApi::ADDR_QSFP_A2, Sff8472Pages::LOWER, 104, 2}},
+     {TransceiverAccessParameter::ADDR_QSFP_A2, Sff8472Pages::LOWER, 104, 2}},
     {Sff8472Field::STATUS_AND_CONTROL_BITS,
-     {TransceiverI2CApi::ADDR_QSFP_A2, Sff8472Pages::LOWER, 110, 1}},
+     {TransceiverAccessParameter::ADDR_QSFP_A2, Sff8472Pages::LOWER, 110, 1}},
     {Sff8472Field::ALARM_WARNING_FLAGS,
-     {TransceiverI2CApi::ADDR_QSFP_A2, Sff8472Pages::LOWER, 112, 6}},
+     {TransceiverAccessParameter::ADDR_QSFP_A2, Sff8472Pages::LOWER, 112, 6}},
 };
 
 void getSfpFieldAddress(
@@ -93,10 +104,11 @@ const uint8_t* Sff8472Module::getSfpValuePtr(
     throw FbossError("Sfp is either not present or the data is not read");
   }
   if (dataAddress == static_cast<int>(Sff8472Pages::LOWER)) {
-    if (transceiverI2CAddress == TransceiverI2CApi::ADDR_QSFP) {
+    if (transceiverI2CAddress == TransceiverAccessParameter::ADDR_QSFP) {
       CHECK_LE(offset + length, sizeof(a0LowerPage_));
       return (a0LowerPage_ + offset);
-    } else if (transceiverI2CAddress == TransceiverI2CApi::ADDR_QSFP_A2) {
+    } else if (
+        transceiverI2CAddress == TransceiverAccessParameter::ADDR_QSFP_A2) {
       CHECK_LE(offset + length, sizeof(a2LowerPage_));
       return (a2LowerPage_ + offset);
     }
@@ -113,7 +125,9 @@ void Sff8472Module::readSff8472Field(Sff8472Field field, uint8_t* data) {
   getSfpFieldAddress(
       field, dataPage, dataOffset, dataLength, transceiverI2CAddress);
   qsfpImpl_->readTransceiver(
-      {transceiverI2CAddress, dataOffset, dataLength}, data);
+      {transceiverI2CAddress, dataOffset, dataLength},
+      data,
+      CAST_TO_INT(field));
 }
 
 void Sff8472Module::writeSff8472Field(Sff8472Field field, uint8_t* data) {
@@ -122,7 +136,10 @@ void Sff8472Module::writeSff8472Field(Sff8472Field field, uint8_t* data) {
   getSfpFieldAddress(
       field, dataPage, dataOffset, dataLength, transceiverI2CAddress);
   qsfpImpl_->writeTransceiver(
-      {transceiverI2CAddress, dataOffset, dataLength}, data);
+      {transceiverI2CAddress, dataOffset, dataLength},
+      data,
+      POST_I2C_WRITE_DELAY_US,
+      CAST_TO_INT(field));
 }
 
 void Sff8472Module::getSfpValue(
@@ -152,9 +169,10 @@ uint8_t Sff8472Module::getSettingsValue(Sff8472Field field, uint8_t mask)
 }
 
 Sff8472Module::Sff8472Module(
-    TransceiverManager* transceiverManager,
-    std::unique_ptr<TransceiverImpl> qsfpImpl)
-    : QsfpModule(transceiverManager, std::move(qsfpImpl)) {}
+    std::set<std::string> portNames,
+    TransceiverImpl* qsfpImpl,
+    std::string tcvrName)
+    : QsfpModule(std::move(portNames), qsfpImpl, std::move(tcvrName)) {}
 
 Sff8472Module::~Sff8472Module() {}
 
@@ -188,7 +206,7 @@ void Sff8472Module::updateQsfpData(bool allPages) {
 
 TransceiverSettings Sff8472Module::getTransceiverSettingsInfo() {
   TransceiverSettings settings = TransceiverSettings();
-  settings.powerControl() = getPowerControlValue();
+  settings.powerControl() = getPowerControlValue(true /* readFromCache */);
   settings.mediaInterface() = std::vector<MediaInterfaceId>(numMediaLanes());
   if (!getMediaInterfaceId(*(settings.mediaInterface()))) {
     settings.mediaInterface().reset();
@@ -207,17 +225,25 @@ bool Sff8472Module::getMediaInterfaceId(
   CHECK_EQ(mediaInterface.size(), numMediaLanes());
 
   auto ethernet10GCompliance = getEthernet10GComplianceCode();
+  auto extSpecComplianceCode = getExtendedSpecComplianceCode();
   for (int lane = 0; lane < mediaInterface.size(); lane++) {
     mediaInterface[lane].lane() = lane;
     MediaInterfaceUnion media;
-    media.ethernet10GComplianceCode_ref() = ethernet10GCompliance;
+
     if (auto it = mediaInterfaceMapping.find(ethernet10GCompliance);
         it != mediaInterfaceMapping.end()) {
       mediaInterface[lane].code() = it->second;
+      media.ethernet10GComplianceCode_ref() = ethernet10GCompliance;
+    } else if (auto it =
+                   mediaInterfaceMappingForExtSpec.find(extSpecComplianceCode);
+               it != mediaInterfaceMappingForExtSpec.end()) {
+      mediaInterface[lane].code() = it->second;
+      media.extendedSpecificationComplianceCode_ref() = extSpecComplianceCode;
     } else {
-      QSFP_LOG(ERR, this) << "Unable to find MediaInterfaceCode for "
-                          << apache::thrift::util::enumNameSafe(
-                                 ethernet10GCompliance);
+      QSFP_LOG(ERR, this)
+          << "Unable to find MediaInterfaceCode for "
+          << apache::thrift::util::enumNameSafe(ethernet10GCompliance) << " or "
+          << apache::thrift::util::enumNameSafe(extSpecComplianceCode);
       mediaInterface[lane].code() = MediaInterfaceCode::UNKNOWN;
     }
     mediaInterface[lane].media() = media;
@@ -226,9 +252,49 @@ bool Sff8472Module::getMediaInterfaceId(
   return true;
 }
 
+MediaInterfaceCode Sff8472Module::getModuleMediaInterface() const {
+  auto ethernet10GCompliance = getEthernet10GComplianceCode();
+
+  if (auto it = mediaInterfaceMapping.find(ethernet10GCompliance);
+      it != mediaInterfaceMapping.end()) {
+    return it->second;
+  }
+
+  auto extSpecComplianceCode = getExtendedSpecComplianceCode();
+  if (auto it = mediaInterfaceMappingForExtSpec.find(extSpecComplianceCode);
+      it != mediaInterfaceMappingForExtSpec.end()) {
+    return it->second;
+  }
+
+  QSFP_LOG(ERR, this)
+      << "Cannot find "
+      << apache::thrift::util::enumNameSafe(ethernet10GCompliance) << " or "
+      << apache::thrift::util::enumNameSafe(extSpecComplianceCode)
+      << " in mediaInterfaceMapping";
+  return MediaInterfaceCode::UNKNOWN;
+}
+
 Ethernet10GComplianceCode Sff8472Module::getEthernet10GComplianceCode() const {
   return Ethernet10GComplianceCode(
       getSettingsValue(Sff8472Field::ETHERNET_10G_COMPLIANCE_CODE));
+}
+
+ExtendedSpecComplianceCode Sff8472Module::getExtendedSpecComplianceCode()
+    const {
+  return ExtendedSpecComplianceCode(
+      getSettingsValue(Sff8472Field::EXTENDED_SPEC_COMPLIANCE_CODE));
+}
+
+TransmitterTechnology Sff8472Module::getQsfpTransmitterTechnology() const {
+  switch (getModuleMediaInterface()) {
+    case MediaInterfaceCode::LR_10G:
+      return TransmitterTechnology::OPTICAL;
+    case MediaInterfaceCode::BASE_T_10G:
+    case MediaInterfaceCode::CR_10G:
+      return TransmitterTechnology::COPPER;
+    default:
+      return TransmitterTechnology::UNKNOWN;
+  }
 }
 
 double Sff8472Module::getSfpSensor(
@@ -244,6 +310,10 @@ double Sff8472Module::getSfpSensor(
 
 GlobalSensors Sff8472Module::getSensorInfo() {
   GlobalSensors info = GlobalSensors();
+  if (!domImplemented()) {
+    QSFP_LOG(INFO, this) << "DOM is not advertised";
+    return info;
+  }
   info.temp()->value() =
       getSfpSensor(Sff8472Field::TEMPERATURE, Sff8472FieldInfo::getTemp);
   info.vcc()->value() =
@@ -252,6 +322,10 @@ GlobalSensors Sff8472Module::getSensorInfo() {
 }
 
 bool Sff8472Module::getSensorsPerChanInfo(std::vector<Channel>& channels) {
+  if (!domImplemented()) {
+    QSFP_LOG(INFO, this) << "DOM is not advertised";
+    return false;
+  }
   int offset;
   int length;
   int dataAddress;
@@ -315,19 +389,33 @@ SignalFlags Sff8472Module::getSignalFlagInfo() {
   return signalFlags;
 }
 
+bool Sff8472Module::domImplemented() const {
+  return getSettingsValue(
+      Sff8472Field::DOM_TYPE, FieldMasks::DOM_IMPLEMENTED_MASK);
+}
+
 /*
  * Iterate through the media channels collecting appropriate data;
  */
 bool Sff8472Module::getSignalsPerMediaLane(
     std::vector<MediaLaneSignals>& signals) {
+  if (!domImplemented()) {
+    QSFP_LOG(INFO, this) << "DOM is not advertised";
+    return false;
+  }
   auto rxLos = getSettingsValue(
       Sff8472Field::STATUS_AND_CONTROL_BITS, FieldMasks::RX_LOS_MASK);
   auto txFault = getSettingsValue(
       Sff8472Field::STATUS_AND_CONTROL_BITS, FieldMasks::TX_FAULT_MASK);
 
-  CHECK_EQ(signals.size(), 1);
-  CHECK_EQ(numMediaLanes(), 1);
+  CHECK_EQ(signals.size(), numMediaLanes());
   auto firstSignal = signals.begin();
+  if (firstSignal == signals.end()) {
+    QSFP_LOG(ERR, this)
+        << "No Media lane signals available due to potentially i2c error";
+    return false;
+  }
+
   firstSignal->lane() = 0;
   firstSignal->rxLos() = rxLos;
   firstSignal->txFault() = txFault;
@@ -337,10 +425,18 @@ bool Sff8472Module::getSignalsPerMediaLane(
 
 bool Sff8472Module::getMediaLaneSettings(
     std::vector<MediaLaneSettings>& laneSettings) {
+  if (!domImplemented()) {
+    QSFP_LOG(INFO, this) << "DOM is not advertised";
+    return false;
+  }
+  if (laneSettings.size() != 1) {
+    QSFP_LOG(ERR, this)
+        << "Lane setting not available due to potentially i2c error";
+    return false;
+  }
   auto txDisable = getSettingsValue(
       Sff8472Field::STATUS_AND_CONTROL_BITS, FieldMasks::TX_DISABLE_STATE_MASK);
 
-  CHECK_EQ(laneSettings.size(), 1);
   auto firstLane = laneSettings.begin();
   firstLane->lane() = 0;
   firstLane->txDisable() = txDisable;
@@ -376,21 +472,28 @@ Vendor Sff8472Module::getVendorInfo() {
   return vendor;
 }
 
-bool Sff8472Module::remediateFlakyTransceiver() {
+void Sff8472Module::remediateFlakyTransceiver(
+    bool /* allPortsDown */,
+    const std::vector<std::string>& /* ports */) {
   QSFP_LOG(INFO, this) << "Performing potentially disruptive remediations";
 
-  // This api accept 1 based module id however the module id in WedgeManager
-  // is 0 based.
   // Note that triggering a hard reset on a SFP module used with a QSFP-to-SFP
   // adapter actually toggles the txDisable line
-  getTransceiverManager()->getQsfpPlatformApi()->triggerQsfpHardReset(
-      static_cast<unsigned int>(getID()) + 1);
+  triggerModuleReset();
 
   // Even though remediation might not trigger, we still need to update the
   // lastRemediateTime_ so that we can use cool down before next remediation
   lastRemediateTime_ = std::time(nullptr);
-  return true;
 }
 
+bool Sff8472Module::tcvrPortStateSupported(
+    TransceiverPortState& portState) const {
+  if (portState.transmitterTech != getQsfpTransmitterTechnology()) {
+    return false;
+  }
+  // Only 10G is supported
+  return (portState.speed == cfg::PortSpeed::XG) &&
+      (portState.startHostLane == 0) && portState.numHostLanes == 1;
+}
 } // namespace fboss
 } // namespace facebook

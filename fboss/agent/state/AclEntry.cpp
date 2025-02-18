@@ -21,37 +21,7 @@
 using apache::thrift::TEnumTraits;
 using folly::IPAddress;
 
-namespace {
-constexpr auto kPriority = "priority";
-constexpr auto kName = "name";
-constexpr auto kActionType = "actionType";
-constexpr auto kSrcIp = "srcIp";
-constexpr auto kDstIp = "dstIp";
-constexpr auto kL4SrcPort = "l4SrcPort";
-constexpr auto kL4DstPort = "l4DstPort";
-constexpr auto kProto = "proto";
-constexpr auto kTcpFlagsBitMap = "tcpFlagsBitMap";
-constexpr auto kSrcPort = "srcPort";
-constexpr auto kDstPort = "dstPort";
-constexpr auto kIpFrag = "ipFrag";
-constexpr auto kIcmpCode = "icmpCode";
-constexpr auto kIcmpType = "icmpType";
-constexpr auto kDscp = "dscp";
-constexpr auto kPortName = "portName";
-constexpr auto kDstMac = "dstMac";
-constexpr auto kIpType = "IpType";
-constexpr auto kTtl = "ttl";
-constexpr auto kTtlValue = "value";
-constexpr auto kTtlMask = "mask";
-constexpr auto kLookupClassL2 = "lookupClassL2";
-constexpr auto kLookupClass = "lookupClass";
-constexpr auto kLookupClassNeighbor = "lookupClassNeighbor";
-constexpr auto kLookupClassRoute = "lookupClassRoute";
-constexpr auto kPacketLookupResult = "packetLookupResult";
-constexpr auto kVlanID = "vlanID";
-constexpr auto kAclAction = "aclAction";
-constexpr auto kEnabled = "enabled";
-} // namespace
+namespace {} // namespace
 
 namespace facebook::fboss {
 
@@ -64,23 +34,6 @@ state::AclTtl AclTtl::toThrift() const {
 
 AclTtl AclTtl::fromThrift(state::AclTtl const& ttl) {
   return AclTtl(ttl.get_value(), ttl.get_mask());
-}
-
-folly::dynamic AclTtl::toFollyDynamic() const {
-  folly::dynamic ttl = folly::dynamic::object;
-  ttl[kTtlValue] = static_cast<uint16_t>(value_);
-  ttl[kTtlMask] = static_cast<uint16_t>(mask_);
-  return ttl;
-}
-
-AclTtl AclTtl::fromFollyDynamic(const folly::dynamic& ttlJson) {
-  if (ttlJson.find(kTtlValue) == ttlJson.items().end()) {
-    throw FbossError("ttl should have a value set");
-  }
-  if (ttlJson.find(kTtlMask) == ttlJson.items().end()) {
-    throw FbossError("ttl should have a mask set");
-  }
-  return AclTtl(ttlJson[kTtlValue].asInt(), ttlJson[kTtlMask].asInt());
 }
 
 std::set<cfg::AclTableQualifier> AclEntry::getRequiredAclTableQualifiers()
@@ -107,7 +60,7 @@ std::set<cfg::AclTableQualifier> AclEntry::getRequiredAclTableQualifiers()
       cfg::AclTableQualifier::DST_IPV6);
 
   if (getProto()) {
-    qualifiers.insert(cfg::AclTableQualifier::IP_PROTOCOL);
+    qualifiers.insert(cfg::AclTableQualifier::IP_PROTOCOL_NUMBER);
   }
   if (getTcpFlagsBitMap()) {
     qualifiers.insert(cfg::AclTableQualifier::TCP_FLAGS);
@@ -162,19 +115,24 @@ std::set<cfg::AclTableQualifier> AclEntry::getRequiredAclTableQualifiers()
   if (getEtherType()) {
     qualifiers.insert(cfg::AclTableQualifier::ETHER_TYPE);
   }
+  if (getUdfGroups()) {
+    qualifiers.insert(cfg::AclTableQualifier::UDF);
+  }
   return qualifiers;
 }
 
-AclEntry* AclEntry::modify(std::shared_ptr<SwitchState>* state) {
+AclEntry* AclEntry::modify(
+    std::shared_ptr<SwitchState>* state,
+    const HwSwitchMatcher& matcher) {
   if (!isPublished()) {
     CHECK(!(*state)->isPublished());
     return this;
   }
 
-  AclMap* acls = (*state)->getAcls()->modify(state);
+  MultiSwitchAclMap* acls = (*state)->getAcls()->modify(state);
   auto newEntry = clone();
   auto* ptr = newEntry.get();
-  acls->updateNode(std::move(newEntry));
+  acls->updateNode(std::move(newEntry), matcher);
   return ptr;
 }
 
@@ -188,6 +146,6 @@ AclEntry::AclEntry(int priority, std::string&& name) {
   set<switch_state_tags::name>(std::move(name));
 }
 
-template class ThriftStructNode<AclEntry, state::AclEntryFields>;
+template struct ThriftStructNode<AclEntry, state::AclEntryFields>;
 
 } // namespace facebook::fboss

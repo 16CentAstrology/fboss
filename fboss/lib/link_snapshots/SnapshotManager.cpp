@@ -14,30 +14,64 @@
 
 using namespace std::chrono;
 
+DEFINE_bool(
+    enable_snapshot_debugs,
+    true,
+    "Print link snapshot debugs on console");
+
 namespace {
-// Default max rsyslog line length is 8k (currently qsfp_service allows up to
+// Default max rsyslog line length is 12k (currently qsfp_service allows up to
 // 16k, but we shouldn't actually have lines that long anymore)
 // Set it a bit lower to account for extra data from logging library
 // (e.g. date+timestamp)
-constexpr auto kMaxLogLineLength = 8000;
+constexpr auto kMaxLogLineLength = 12000;
 } // namespace
 
 namespace facebook::fboss {
+SnapshotManager::SnapshotManager(
+    const std::set<std::string>& portNames,
+    size_t intervalSeconds,
+    size_t timespanSeconds)
+    // Round up the number of snapshots stored (always store at least 1)
+    : buf_(timespanSeconds / intervalSeconds + 1), portNames_(portNames) {}
+
+SnapshotManager::SnapshotManager(
+    const std::set<std::string>& portNames,
+    size_t intervalSeconds)
+    : SnapshotManager(portNames, intervalSeconds, kDefaultTimespanSeconds) {}
+
+void SnapshotManager::addSnapshot(const phy::LinkSnapshot& val) {
+  auto snapshot = SnapshotWrapper(val);
+  buf_.write(snapshot);
+
+  if (numSnapshotsToPublish_ > 0) {
+    snapshot.publish(portNames_);
+  }
+  if (numSnapshotsToPublish_ > 0) {
+    numSnapshotsToPublish_--;
+  }
+}
+
+const RingBuffer<SnapshotWrapper>& SnapshotManager::getSnapshots() const {
+  return buf_;
+}
+
+void SnapshotManager::publishAllSnapshots() {
+  for (auto& snapshot : buf_) {
+    snapshot.publish(portNames_);
+  }
+}
+
+void SnapshotManager::publishFutureSnapshots(int numToPublish) {
+  numSnapshotsToPublish_ = numToPublish;
+}
 
 void SnapshotWrapper::publish(const std::set<std::string>& portNames) {
-  // S309875: Log length is too long now due to the tcvrStats and tcvrState
-  // fields containing lots of duplicate data from other fields. For now lets
-  // just clear these fields so that they aren't included in the log.
-  // TODO(ccpowers): At some point we should de-duplicate the data at its source
-  // rather than just wiping the duplicate data prior to logging it.
-  auto patchedSnapshot = snapshot_;
-  if (patchedSnapshot.transceiverInfo_ref()) {
-    patchedSnapshot.transceiverInfo_ref()->tcvrStats_ref() = TcvrStats();
-    patchedSnapshot.transceiverInfo_ref()->tcvrState_ref() = TcvrState();
+  if (!FLAGS_enable_snapshot_debugs) {
+    return;
   }
   auto serializedSnapshot =
-      apache::thrift::SimpleJSONSerializer::serialize<std::string>(
-          patchedSnapshot);
+      apache::thrift::SimpleJSONSerializer::serialize<std::string>(snapshot_);
   if (!published_) {
     std::stringstream log;
     log << LinkSnapshotAlert() << "Collected snapshot for ports ";
@@ -53,5 +87,4 @@ void SnapshotWrapper::publish(const std::set<std::string>& portNames) {
     published_ = true;
   }
 }
-
 } // namespace facebook::fboss

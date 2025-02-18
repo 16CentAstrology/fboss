@@ -14,12 +14,12 @@
 #include "fboss/agent/hw/bcm/BcmError.h"
 
 #include <folly/String.h>
-#include <folly/experimental/StringKeyedUnorderedMap.h>
 #include <folly/logging/xlog.h>
 #include <glog/logging.h>
 
 extern "C" {
 #include <shared/bslext.h>
+#include <systems/bde/pli/plibde.h>
 } // extern "C"
 
 using folly::StringPiece;
@@ -93,6 +93,20 @@ extern "C" void sal_shell(void) {
   BcmFacebookAPI::printf("%s", "shell access is not supported");
 }
 
-extern "C" void pci_print_all() {
-  XLOG(DBG2) << "pci_print_all() called";
+#if BCM_SDK_VERSION >= BCM_VERSION(6, 5, 28)
+extern "C" int bcm_sim_path_get(void) {
+  if (getenv("BCM_SIM_PATH")) {
+    return 1;
+  }
+  return 0;
 }
+
+extern "C" int intr_int_context(void) {
+  extern int pli_intr_int_context() __attribute__((weak));
+  extern int linux_intr_int_context() __attribute__((weak));
+  if (bcm_sim_path_get()) {
+    return pli_intr_int_context();
+  }
+  return linux_intr_int_context();
+}
+#endif

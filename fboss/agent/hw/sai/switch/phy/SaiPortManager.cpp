@@ -150,7 +150,8 @@ void SaiPortManager::changePortImpl(
  */
 SaiPortTraits::CreateAttributes SaiPortManager::attributesFromSwPort(
     const std::shared_ptr<Port>& swPort,
-    bool lineSide) const {
+    bool lineSide,
+    bool /* basicAttributeOnly */) const {
   // Get the user specified swPortId and portProfileId
   auto speed = swPort->getSpeed();
   auto portId = swPort->getID();
@@ -243,24 +244,53 @@ SaiPortTraits::CreateAttributes SaiPortManager::attributesFromSwPort(
   }
   XLOG(DBG2) << dbgOutput;
 
-  return SaiPortTraits::CreateAttributes {
-    laneList, static_cast<uint32_t>(speed), enabled, fecMode,
+  return SaiPortTraits::CreateAttributes{
+      laneList,       static_cast<uint32_t>(speed),
+      enabled,        fecMode,
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
-        useExtendedFec, extendedFecMode,
+      useExtendedFec, extendedFecMode,
 #endif
-        std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt, std::nullopt, intfType, std::nullopt,
-        std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt,
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+      std::nullopt, // Port Fabric Isolate
+#endif
+      std::nullopt,   std::nullopt,
+      std::nullopt,   std::nullopt,
+      std::nullopt,   std::nullopt,
+      std::nullopt,   std::nullopt,
+      intfType,       std::nullopt,
+      std::nullopt, // TAM Object
+      std::nullopt,   std::nullopt,
+      std::nullopt,   std::nullopt,
+      std::nullopt,   std::nullopt,
+      std::nullopt,   std::nullopt,
+      std::nullopt,   std::nullopt,
+      std::nullopt,   std::nullopt,
+      std::nullopt,   std::nullopt,
 #if !defined(TAJO_SDK)
-        std::nullopt, std::nullopt,
+      std::nullopt,   std::nullopt,
 #endif
-        std::nullopt, std::nullopt,
+      std::nullopt,   std::nullopt,
 #if SAI_API_VERSION >= SAI_VERSION(1, 9, 0)
-        std::nullopt,
+      std::nullopt,
 #endif
-        std::nullopt,
+      std::nullopt, // Link Training Enable
+      std::nullopt, // FDR Enable
+      std::nullopt, // Rx Squelch Enable
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
+      std::nullopt, // PFC Deadlock Detection Interval
+      std::nullopt, // PFC Deadlock Recovery Interval
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+      std::nullopt, // ARS enable
+      std::nullopt, // ARS scaling factor
+      std::nullopt, // ARS port load past weight
+      std::nullopt, // ARS port load future weight
+#endif
+      std::nullopt, // Reachability Group
+      std::nullopt, // CondEntropyRehashEnable
+      std::nullopt, // CondEntropyRehashPeriodUS
+      std::nullopt, // CondEntropyRehashSeed
+      std::nullopt, // ShelEnable
   };
 }
 
@@ -340,7 +370,8 @@ SaiPortSerdesTraits::CreateAttributes
 SaiPortManager::serdesAttributesFromSwPinConfigs(
     PortSaiId portSaiId,
     const std::vector<phy::PinConfig>& pinConfigs,
-    const std::shared_ptr<SaiPortSerdes>& /* serdes */) {
+    const std::shared_ptr<SaiPortSerdes>& /* serdes */,
+    bool /* zeroPreemphasis */) {
   SaiPortSerdesTraits::CreateAttributes attrs;
 
   SaiPortSerdesTraits::Attributes::TxFirPre1::ValueType txPre1;

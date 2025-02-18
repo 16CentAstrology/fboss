@@ -10,9 +10,23 @@
 #pragma once
 
 #include <stdexcept>
+#include "fboss/led_service/if/gen-cpp2/led_structs_types.h"
 #include "fboss/lib/led/gen-cpp2/led_mapping_types.h"
 
 namespace facebook::fboss {
+
+constexpr auto kLedOff = "0";
+constexpr auto kLedMaxBrightnessPath = "/max_brightness";
+constexpr auto kLedBrightnessPath = "/brightness";
+constexpr auto kLedTriggerPath = "/trigger";
+constexpr auto kLedDelayOnPath = "/delay_on";
+constexpr auto kLedDelayOffPath = "/delay_off";
+constexpr auto kLedTimerTrigger = "timer";
+constexpr auto kLedBlinkOff = "0";
+constexpr auto kLedBlinkSlow = "1000";
+constexpr auto kLedBlinkFast = "500";
+constexpr auto kMinBrightness = 1;
+constexpr auto kMaxBrightness = 255;
 
 class LedIOError : public std::runtime_error {
  public:
@@ -26,16 +40,10 @@ class LedIOError : public std::runtime_error {
  */
 class LedIO {
  public:
-  enum class Color {
-    OFF,
-    YELLOW,
-    BLUE,
-  };
-
   explicit LedIO(LedMapping ledMapping);
   ~LedIO() {}
-  void setColor(Color color);
-  Color getColor() const;
+  void setLedState(led::LedState state);
+  led::LedState getLedState() const;
 
   // Forbidden copy constructor and assignment operator
   LedIO(LedIO const&) = delete;
@@ -43,16 +51,24 @@ class LedIO {
 
  private:
   void init();
-  void blueOn();
+  void blueOn(led::Blink blink);
   void blueOff();
-  void yellowOn();
+  void yellowOn(led::Blink blink);
   void yellowOff();
+  void turnOffAllLeds();
   void setLed(const std::string& ledPath, const std::string& ledOp);
+  void setBlink(const std::string& ledPath, led::Blink blink);
 
-  Color currColor_;
-  uint32_t id_;
-  std::optional<std::string> bluePath_;
-  std::optional<std::string> yellowPath_;
+  // Max brightness for the LED is determined by /max_brightness
+  // per LED.
+  void initMaxBrightness(const std::string& path, std::string& maxBrightness);
+
+  led::LedState currState_;
+  const uint32_t id_;
+  std::string bluePath_;
+  std::string blueMaxBrightness_;
+  std::string yellowPath_;
+  std::string yellowMaxBrightness_;
 };
 
 } // namespace facebook::fboss

@@ -469,6 +469,16 @@ TEST_F(SwitchApiTest, setCounterRefreshInterval) {
       20);
 }
 
+TEST_F(SwitchApiTest, setArsProfile) {
+  switchApi->setAttribute(
+      switchId, SaiSwitchTraits::Attributes::ArsProfile{50});
+
+  EXPECT_EQ(
+      switchApi->getAttribute(
+          switchId, SaiSwitchTraits::Attributes::ArsProfile()),
+      50);
+}
+
 TEST_F(SwitchApiTest, testSetFirmwareFile) {
   SaiSwitchTraits::Attributes::FirmwarePathName fwPath =
       std::vector<int8_t>{'f', 'i', 'l', 'e'};
@@ -605,4 +615,49 @@ TEST_F(SwitchApiTest, testWriteFn) {
   auto gotFn = switchApi->getAttribute(
       switchId, SaiSwitchTraits::Attributes::RegisterWriteFn{});
   EXPECT_EQ(writeFunc, gotFn);
+}
+
+TEST_F(SwitchApiTest, getAllStats) {
+  auto stats =
+      switchApi->getStats<SaiSwitchTraits>(switchId, SAI_STATS_MODE_READ);
+  EXPECT_EQ(stats.size(), SaiSwitchTraits::CounterIdsToRead.size());
+}
+
+TEST_F(SwitchApiTest, getSomeStats) {
+  auto stats = switchApi->getStats<SaiSwitchTraits>(
+      switchId, {SAI_SWITCH_STAT_GLOBAL_DROP}, SAI_STATS_MODE_READ);
+  EXPECT_EQ(stats.size(), 1);
+}
+
+TEST_F(SwitchApiTest, setGetCreditWatchdog) {
+  EXPECT_TRUE(switchApi->getAttribute(
+      switchId, SaiSwitchTraits::Attributes::CreditWd{}));
+  EXPECT_EQ(
+      switchApi->getAttribute(
+          switchId, SaiSwitchTraits::Attributes::CreditWdTimer{}),
+      500);
+  SaiSwitchTraits::Attributes::CreditWd wd{false};
+  switchApi->setAttribute(switchId, wd);
+  SaiSwitchTraits::Attributes::CreditWd blank{true};
+  EXPECT_FALSE(switchApi->getAttribute(switchId, blank));
+  SaiSwitchTraits::Attributes::CreditWdTimer wdTimer{10};
+  switchApi->setAttribute(switchId, wdTimer);
+  EXPECT_EQ(
+      switchApi->getAttribute(
+          switchId, SaiSwitchTraits::Attributes::CreditWdTimer{}),
+      10);
+}
+
+TEST_F(SwitchApiTest, setGetPfcDlrPacketAction) {
+  EXPECT_EQ(
+      switchApi->getAttribute(
+          switchId, SaiSwitchTraits::Attributes::PfcDlrPacketAction{}),
+      SAI_PACKET_ACTION_DROP);
+  SaiSwitchTraits::Attributes::PfcDlrPacketAction pktAction{
+      SAI_PACKET_ACTION_FORWARD};
+  switchApi->setAttribute(switchId, pktAction);
+  EXPECT_EQ(
+      switchApi->getAttribute(
+          switchId, SaiSwitchTraits::Attributes::PfcDlrPacketAction{}),
+      SAI_PACKET_ACTION_FORWARD);
 }

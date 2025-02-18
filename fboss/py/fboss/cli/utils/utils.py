@@ -8,6 +8,8 @@
 #  of patent rights can be found in the PATENTS file in the same directory.
 #
 
+# pyre-unsafe
+
 import re
 import socket
 import sys
@@ -40,7 +42,7 @@ TTY_GREEN = "\033[32m"
 TTY_RESET = "\033[m"
 
 
-def get_colors() -> Tuple[str, str, str]:
+def get_colors() -> tuple[str, str, str]:
     if sys.stdout.isatty():
         return (TTY_RED, TTY_GREEN, TTY_RESET)
     return ("", "", "")
@@ -50,10 +52,10 @@ def ip_to_binary(ip):
     for family in (socket.AF_INET, socket.AF_INET6):
         try:
             data = socket.inet_pton(family, ip)
-        except socket.error:
+        except OSError:
             continue
         return BinaryAddress(addr=data)
-    raise socket.error("illegal IP address string: {}".format(ip))
+    raise OSError(f"illegal IP address string: {ip}")
 
 
 def ip_ntop(addr):
@@ -62,7 +64,7 @@ def ip_ntop(addr):
     elif len(addr) == 16:
         return socket.inet_ntop(socket.AF_INET6, addr)
     else:
-        raise ValueError("bad binary address %r" % (addr,))
+        raise ValueError("bad binary address {!r}".format(addr))
 
 
 def port_sort_fn(port):
@@ -95,7 +97,7 @@ def get_status_strs(status, is_present):
     profileID = getattr(status, "profileID", "")
 
     if status.speedMbps:
-        speed = "{}G".format(status.speedMbps // 1000)
+        speed = f"{status.speedMbps // 1000}G"
     padding = 0
 
     color_start = COLOR_GREEN
@@ -139,24 +141,22 @@ def get_qsfp_info_map(qsfp_client, qsfps, continue_on_error=False):
     except Exception as e:
         if not continue_on_error:
             raise
-        print(
-            make_error_string("Could not get qsfp info; continue anyway\n{}".format(e))
-        )
+        print(make_error_string(f"Could not get qsfp info; continue anyway\n{e}"))
         return {}
 
 
 @retryable(num_tries=3, sleep_time=0.1)
 def get_vlan_port_map(
     agent_client, qsfp_client, colors=True, details=True
-) -> DefaultDict[str, DefaultDict[str, List[str]]]:
+) -> DefaultDict[str, DefaultDict[str, list[str]]]:
     """fetch port info and map vlan -> ports"""
     all_port_info_map = agent_client.getAllPortInfo()
     port_status_map = agent_client.getPortStatus()
 
     qsfp_info_map = get_qsfp_info_map(qsfp_client, None, continue_on_error=True)
 
-    vlan_port_map: DefaultDict[str, DefaultDict[str, List[str]]] = defaultdict(
-        lambda: defaultdict(lambda: [])
+    vlan_port_map: DefaultDict[str, DefaultDict[str, list[str]]] = defaultdict(
+        lambda: defaultdict(list)
     )
     for port in all_port_info_map.values():
         # unconfigured ports can be skipped
@@ -188,7 +188,7 @@ def get_vlan_port_map(
 
         # galaxy fab ports have no transceiver
         qsfp_info = qsfp_info_map.get(qsfp_id)
-        qsfp_present = qsfp_info.present if qsfp_info else False
+        qsfp_present = qsfp_info.tcvrState.present if qsfp_info else False
 
         port_summary = get_port_summary(
             port.name,
@@ -205,14 +205,70 @@ def get_vlan_port_map(
         if not port_summary:
             continue
 
+        # pyre-fixme[61]: `root_port` is undefined, or not always defined.
         vlan_port_map[vlan][root_port].append(port_summary)
 
     return vlan_port_map
 
 
+@retryable(num_tries=3, sleep_time=0.1)
+def get_system_port_map(
+    agent_client, qsfp_client, colors=True, details=True
+) -> DefaultDict[str, DefaultDict[str, list[str]]]:
+    """fetch port info and map vlan -> ports"""
+    all_port_info_map = agent_client.getAllPortInfo()
+    port_status_map = agent_client.getPortStatus()
+    sys_ports = agent_client.getSystemPorts()
+    dsf_nodes = agent_client.getDsfNodes()
+    qsfp_info_map = get_qsfp_info_map(qsfp_client, None, continue_on_error=True)
+
+    sys_port_map: DefaultDict[str, DefaultDict[str, list[str]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for sys_port in sys_ports.values():
+        sysPortRange = dsf_nodes[sys_port.switchId].systemPortRange
+        port_id = sys_port.portId - sysPortRange.minimum
+        port = all_port_info_map[port_id]
+        port_status = port_status_map.get(port.portId)
+        enabled = port_status.enabled
+        up = port_status.up
+        speed = int(port_status.speedMbps / 1000)
+        fab_port = "fab" in port.name
+
+        if port_status.transceiverIdx:
+            channels = port_status.transceiverIdx.channels
+            qsfp_id = port_status.transceiverIdx.transceiverId
+        else:
+            channels = []
+            qsfp_id = None
+
+        # galaxy fab ports have no transceiver
+        qsfp_info = qsfp_info_map.get(qsfp_id)
+        qsfp_present = qsfp_info.tcvrState.present if qsfp_info else False
+
+        port_summary = get_port_summary(
+            port.name,
+            channels,
+            qsfp_present,
+            fab_port,
+            enabled,
+            speed,
+            up,
+            colors,
+            details,
+        )
+
+        if not port_summary:
+            continue
+
+        sys_port_map[sys_port.portId][port.name].append(port_summary)
+
+    return sys_port_map
+
+
 def get_port_summary(
     port_name: str,
-    channels: List[int],
+    channels: list[int],
     qsfp_present: bool,
     fab_port: bool,
     enabled: bool,
@@ -223,7 +279,7 @@ def get_port_summary(
 ) -> str:
     """build the port summary output taking into account various state"""
     COLOR_RED, COLOR_GREEN, COLOR_RESET = get_colors() if colors else ("", "", "")
-    port_speed_display = get_port_speed_display(speed, enabled, up) if details else ""
+    port_speed_display = get_port_speed_display(speed) if details else ""
     # port has channels assigned with sfp present or fab port, is enabled/up
     if ((channels and qsfp_present) or fab_port) and enabled and up:
         return f"{COLOR_GREEN}{port_name}{COLOR_RESET} {port_speed_display}"
@@ -237,24 +293,15 @@ def get_port_summary(
     return ""
 
 
-def get_port_speed_display(speed, enabled, up):
-    if not enabled:
-        return ""
-    if enabled and not up:
-        return "()"
-    if enabled and up:
-        return f"({speed}G)"
-
-    raise RuntimeError(
-        f"Invalid port state: speed - {speed}, enabled - {enabled}, up - {up}"
-    )
+def get_port_speed_display(speed):
+    return f"({speed}G)"
 
 
 @retryable(num_tries=3, sleep_time=0.1)
-def get_vlan_aggregate_port_map(client) -> Dict[str, str]:
+def get_vlan_aggregate_port_map(client) -> dict[str, str]:
     """fetch aggregate port table and map vlan -> port channel name"""
     aggregate_port_table = client.getAggregatePortTable()
-    vlan_aggregate_port_map: Dict = {}
+    vlan_aggregate_port_map: dict = {}
     for aggregate_port in aggregate_port_table:
         agg_port_name = aggregate_port.name
         for member_port in aggregate_port.memberPorts:
@@ -274,24 +321,30 @@ def label_forwarding_action_to_str(label_forwarding_action: MplsAction) -> str:
         labels = ": " + str(label_forwarding_action.swapLabel)
     elif label_forwarding_action.action == MplsActionCode.PUSH:
         stack_str = "{{{}}}".format(
+            # pyre-fixme[16]: `Optional` has no attribute `__iter__`.
             ",".join([str(element) for element in label_forwarding_action.pushLabels])
         )
-        labels = ": {}".format(stack_str)
+        labels = f": {stack_str}"
 
-    return " MPLS -> {} {}".format(code, labels)
+    return f" MPLS -> {code} {labels}"
 
 
 def nexthop_to_str(
     nexthop: NextHopThrift,
+    # pyre-fixme[9]: vlan_aggregate_port_map has type `Dict[str, str]`; used as `None`.
     vlan_aggregate_port_map: t.Dict[str, str] = None,
+    # pyre-fixme[9]: vlan_port_map has type `DefaultDict[str, DefaultDict[str,
+    #  List[str]]]`; used as `None`.
     vlan_port_map: t.DefaultDict[str, t.DefaultDict[str, t.List[str]]] = None,
 ) -> str:
     weight_str = ""
     via_str = ""
+    # pyre-fixme[6]: For 1st argument expected `MplsAction` but got
+    #  `Optional[MplsAction]`.
     label_str = label_forwarding_action_to_str(nexthop.mplsAction)
 
     if nexthop.weight:
-        weight_str = " weight {}".format(nexthop.weight)
+        weight_str = f" weight {nexthop.weight}"
 
     nh = nexthop.address
     if nh.ifName:
@@ -301,9 +354,11 @@ def nexthop_to_str(
             # For agg ports it's better to display the agg port name,
             # rather than the phy
             if vlan_id in vlan_aggregate_port_map.keys():
+                # pyre-fixme[6]: For 1st argument expected `str` but got `int`.
                 via_str = vlan_aggregate_port_map[vlan_id]
             else:
                 port_names = []
+                # pyre-fixme[6]: For 1st argument expected `str` but got `int`.
                 for ports in vlan_port_map[vlan_id].values():
                     for port in ports:
                         port_names.append(port)
@@ -350,9 +405,9 @@ def fboss2_deprecate(fboss2_cmd: str, notes="", level=DeprecationLevel.WARN):
                     fboss2_warning.format(
                         fboss2_cmd=fboss2_cmd,
                         notes=extra_notes,
-                        status=f"{TTY_RED}disabled{TTY_RESET}"
-                        if removed
-                        else "deprecated",
+                        status=(
+                            f"{TTY_RED}disabled{TTY_RESET}" if removed else "deprecated"
+                        ),
                     ),
                     file=sys.stderr,
                 )

@@ -10,10 +10,11 @@
 #pragma once
 
 #include <folly/Range.h>
+#include <optional>
 
 namespace facebook::fboss {
 
-struct HwResourceStats;
+class HwResourceStats;
 
 constexpr folly::StringPiece kHwTableStatsStale{"hw_table_stats_stale"};
 constexpr folly::StringPiece kL3HostMax{"l3_host_max"};
@@ -70,13 +71,20 @@ constexpr folly::StringPiece kEmEntriesFree{"em_entries_free"};
 constexpr folly::StringPiece kEmCountersMax{"em_counters_max"};
 constexpr folly::StringPiece kEmCountersUsed{"em_counters_used"};
 constexpr folly::StringPiece kEmCountersFree{"em_counters_free"};
+constexpr folly::StringPiece kSystemPortsFree{"system_ports_free"};
+constexpr folly::StringPiece kVoqsFree{"voqs_free"};
 
 class HwResourceStatsPublisher {
  public:
+  explicit HwResourceStatsPublisher(
+      std::optional<std::string> statsPrefix = std::nullopt)
+      : statsPrefix_{statsPrefix} {}
   void publish(const HwResourceStats& stats) const;
 
  private:
   void publish(folly::StringPiece name, int64_t value) const;
+
+  std::optional<std::string> statsPrefix_;
 };
 
 } // namespace facebook::fboss

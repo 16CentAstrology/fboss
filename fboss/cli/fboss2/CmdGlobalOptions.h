@@ -390,6 +390,11 @@ class CmdGlobalOptions {
     return agentThriftPort_;
   }
 
+  int getHwAgentThriftPort(int switchIndex) const {
+    CHECK_LT(switchIndex, hwAgentThriftPort_.size());
+    return hwAgentThriftPort_[switchIndex];
+  }
+
   int getBgpStreamThriftPort() const {
     return bgpStreamThriftPort_;
   }
@@ -398,12 +403,24 @@ class CmdGlobalOptions {
     return qsfpThriftPort_;
   }
 
+  int getLedThriftPort() const {
+    return ledThriftPort_;
+  }
+
   int getBgpThriftPort() const {
     return bgpThriftPort_;
   }
 
+  int getSmcThriftPort() const {
+    return smcThriftPort_;
+  }
+
   int getFsdbThriftPort() const {
     return fsdbThriftPort_;
+  }
+
+  int getLocalDrainerThriftPort() const {
+    return localDrainerThriftPort_;
   }
 
   int getOpenrThriftPort() const {
@@ -413,6 +430,7 @@ class CmdGlobalOptions {
   int getMkaThriftPort() const {
     return mkaThriftPort_;
   }
+
   int getCoopThriftPort() const {
     return coopThriftPort_;
   }
@@ -423,6 +441,14 @@ class CmdGlobalOptions {
 
   int getSensorServiceThriftPort() const {
     return sensorServiceThriftPort_;
+  }
+
+  int getFanServiceThriftPort() const {
+    return fanServiceThriftPort_;
+  }
+
+  int getTeAgentThriftPort() const {
+    return teAgentThriftPort_;
   }
 
   int getDataCorralServiceThriftPort() const {
@@ -458,6 +484,10 @@ class CmdGlobalOptions {
     bgpThriftPort_ = port;
   }
 
+  void setSmcThriftPort(int port) {
+    smcThriftPort_ = port;
+  }
+
   void setBgpStreamThriftPort(int port) {
     bgpStreamThriftPort_ = port;
   }
@@ -466,12 +496,20 @@ class CmdGlobalOptions {
     openrThriftPort_ = port;
   }
 
+  void setCoopThriftPort(int port) {
+    coopThriftPort_ = port;
+  }
+
   void setVipThriftPort(int port) {
     vipInjectorThriftPort_ = port;
   }
 
   void setFsdbThriftPort(int port) {
     fsdbThriftPort_ = port;
+  }
+
+  void setTeAgentThriftPort(int port) {
+    teAgentThriftPort_ = port;
   }
 
   void setFilterInput(std::string& filter) {
@@ -504,8 +542,11 @@ class CmdGlobalOptions {
   std::string logUsage_{"scuba"};
   int fsdbThriftPort_{5908};
   int agentThriftPort_{5909};
+  std::vector<int> hwAgentThriftPort_{5931, 5932};
   int qsfpThriftPort_{5910};
+  int ledThriftPort_{5930};
   int bgpThriftPort_{6909};
+  int smcThriftPort_{1421};
   int bgpStreamThriftPort_{6910};
   int openrThriftPort_{2018};
   int coopThriftPort_{6969};
@@ -513,12 +554,15 @@ class CmdGlobalOptions {
   int bmcHttpPort_{8443};
   int rackmonThriftPort_{5973};
   int sensorServiceThriftPort_{5970};
+  int fanServiceThriftPort_{5972};
+  int teAgentThriftPort_{2022};
   int dataCorralServiceThriftPort_{5971};
   int vipInjectorThriftPort_{3333};
   std::string color_{"yes"};
   std::string filter_;
   std::string aggregate_;
   bool aggregateAcrossDevices_{false};
+  int localDrainerThriftPort_{10701};
 };
 
 } // namespace facebook::fboss

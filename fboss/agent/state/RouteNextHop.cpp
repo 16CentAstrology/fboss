@@ -13,7 +13,6 @@
 
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/if/gen-cpp2/mpls_types.h"
-#include "fboss/agent/state/RouteNextHop.h"
 #include "folly/IPAddress.h"
 
 namespace facebook::fboss {
@@ -24,6 +23,11 @@ NextHop fromThrift(const NextHopThrift& nht, bool allowV6NonLinkLocal) {
   if (nht.mplsAction()) {
     action = LabelForwardingAction::fromThrift(nht.mplsAction().value_or({}));
   }
+  std::optional<bool> disableTTLDecrement = std::nullopt;
+  if (nht.disableTTLDecrement()) {
+    disableTTLDecrement = *nht.disableTTLDecrement();
+  }
+
   auto address = network::toIPAddress(*nht.address());
   NextHopWeight weight = static_cast<NextHopWeight>(*nht.weight());
   bool v6LinkLocal = address.isV6() and address.isLinkLocal();
@@ -32,8 +36,9 @@ NextHop fromThrift(const NextHopThrift& nht, bool allowV6NonLinkLocal) {
   // next hop and let route resolution populate the interface.
   if (nht.address()->get_ifName() and (v6LinkLocal or allowV6NonLinkLocal)) {
     InterfaceID intfID =
-        util::getIDFromTunIntfName(*(nht.address()->get_ifName()));
-    return ResolvedNextHop(std::move(address), intfID, weight, action);
+        utility::getIDFromTunIntfName(*(nht.address()->get_ifName()));
+    return ResolvedNextHop(
+        std::move(address), intfID, weight, action, disableTTLDecrement);
   } else {
     return UnresolvedNextHop(std::move(address), weight, action);
   }
@@ -94,8 +99,10 @@ bool operator<(const NextHop& a, const NextHop& b) {
     return a.addr() < b.addr();
   } else if (a.labelForwardingAction() != b.labelForwardingAction()) {
     return a.labelForwardingAction() < b.labelForwardingAction();
-  } else {
+  } else if (a.weight() != b.weight()) {
     return a.weight() < b.weight();
+  } else {
+    return a.disableTTLDecrement() < b.disableTTLDecrement();
   }
 }
 
@@ -115,7 +122,8 @@ bool operator==(const NextHop& a, const NextHop& b) {
   return (
       a.intfID() == b.intfID() && a.addr() == b.addr() &&
       a.weight() == b.weight() &&
-      a.labelForwardingAction() == b.labelForwardingAction());
+      a.labelForwardingAction() == b.labelForwardingAction() &&
+      a.disableTTLDecrement() == b.disableTTLDecrement());
 }
 
 bool operator!=(const NextHop& a, const NextHop& b) {
@@ -127,7 +135,7 @@ UnresolvedNextHop::UnresolvedNextHop(
     const NextHopWeight& weight,
     const std::optional<LabelForwardingAction>& action)
     : addr_(addr), weight_(weight), labelForwardingAction_(action) {
-  if (addr.isV6() and addr.isLinkLocal()) {
+  if (addr_.isV6() and addr_.isLinkLocal()) {
     throw FbossError(
         "Missing interface scoping for link-local nexthop ", addr.str());
   }
@@ -140,9 +148,9 @@ UnresolvedNextHop::UnresolvedNextHop(
     : addr_(std::move(addr)),
       weight_(weight),
       labelForwardingAction_(std::move(action)) {
-  if (addr.isV6() and addr.isLinkLocal()) {
+  if (addr_.isV6() and addr_.isLinkLocal()) {
     throw FbossError(
-        "Missing interface scoping for link-local nexthop ", addr.str());
+        "Missing interface scoping for link-local nexthop ", addr_.str());
   }
 }
 

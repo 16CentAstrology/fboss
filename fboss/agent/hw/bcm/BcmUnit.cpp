@@ -21,7 +21,7 @@
 
 #include <folly/FileUtil.h>
 #include <folly/ScopeGuard.h>
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 #include <folly/logging/xlog.h>
 #include <glog/logging.h>
 
@@ -184,9 +184,7 @@ int bdeSpiWrite(soc_cm_dev_t* dev, uint32_t addr, uint8_t* buf, int len) {
 } // unnamed namespace
 
 namespace facebook::fboss {
-void BcmUnit::writeWarmBootState(
-    const folly::dynamic& follySwitchState,
-    const state::WarmbootState& thriftSwitchState) {
+void BcmUnit::writeWarmBootState(const folly::dynamic& follySwitchState) {
   if (!BcmAPI::isHwUsingHSDK()) {
     XLOG(DBG2) << " [Exit] Syncing BRCM switch state to file";
     steady_clock::time_point bcmWarmBootSyncStart = steady_clock::now();
@@ -203,10 +201,7 @@ void BcmUnit::writeWarmBootState(
   // Now write our state to file
   XLOG(DBG2) << " [Exit] Syncing FBOSS switch state to file";
   steady_clock::time_point fbossWarmBootSyncStart = steady_clock::now();
-  if (!warmBootHelper()->storeWarmBootState(
-          follySwitchState, thriftSwitchState)) {
-    XLOG(FATAL) << "Unable to write switch state JSON and Thrift to file";
-  }
+  warmBootHelper()->storeHwSwitchWarmBootState(follySwitchState);
   steady_clock::time_point fbossWarmBootSyncDone = steady_clock::now();
   XLOG(DBG2) << "[Exit] Fboss warm boot sync time "
              << duration_cast<duration<float>>(
@@ -254,16 +249,19 @@ void BcmUnit::deleteBcmUnitImpl() {
         bcmCheckError(
             rv, "failed to clean up SDK state during warm boot shutdown");
       }
+
+#if defined(BCM_SDK_VERSION_GTE_6_5_29)
+      // Starting from SDK 6.5.29, there is no implicit BDE
+      // destroy support in native SDK for non-LTSW devices. So,
+      // application has to destory the BDE once SOC is shutdown.
+      BcmAPI::bdeDestroy();
+#endif
     }
 
     steady_clock::time_point bcmShutdownDone = steady_clock::now();
     XLOG(DBG2)
         << "[Exit] Bcm shut down time "
         << duration_cast<duration<float>>(bcmShutdownDone - begin).count();
-
-    if (warmBootHelper()->warmBootStateWritten()) {
-      warmBootHelper()->setCanWarmBoot();
-    }
 
     destroyHwUnit();
 
@@ -300,7 +298,7 @@ void BcmUnit::attachSDK6(bool warmBoot) {
 
   (static_cast<BcmSwitch*>(platform_->getHwSwitch()))
       ->runBcmScript(
-          platform_->getPersistentStateDir() + "/" +
+          platform_->getDirectoryUtil()->getPersistentStateDir() + "/" +
           FLAGS_script_pre_bcm_attach);
 
   rv = soc_mmu_init(unit_);

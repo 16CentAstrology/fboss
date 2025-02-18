@@ -162,8 +162,20 @@ class BcmInterface {
       int ethertype_count,
       int* ethertype_array) = 0;
 
+  virtual int bcm_l3_egress_ecmp_ethertype_get(
+      int unit,
+      uint32* flags,
+      int ethertype_max,
+      int* ethertype_array,
+      int* ethertype_count) = 0;
+
   virtual int
   bcm_l3_egress_ecmp_member_status_set(int unit, bcm_if_t intf, int status) = 0;
+
+  virtual int bcm_l3_egress_ecmp_member_status_get(
+      int unit,
+      bcm_if_t intf,
+      int* status) = 0;
 
   virtual int
   bcm_vlan_list_destroy(int unit, bcm_vlan_data_t* list, int count) = 0;
@@ -242,7 +254,6 @@ class BcmInterface {
   virtual int
   bcm_port_stat_enable_set(int unit, bcm_gport_t port, int enable) = 0;
 
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_21))
   virtual int bcm_port_fdr_config_set(
       int unit,
       bcm_port_t port,
@@ -257,7 +268,6 @@ class BcmInterface {
       int unit,
       bcm_port_t port,
       bcm_port_fdr_stats_t* fdr_stats) = 0;
-#endif
 
   virtual int bcm_vlan_default_get(int unit, bcm_vlan_t* vid_ptr) = 0;
 
@@ -398,6 +408,39 @@ class BcmInterface {
 
   virtual int
   bcm_udf_get(int unit, bcm_udf_id_t udf_id, bcm_udf_t* udf_info) = 0;
+
+  virtual int bcm_field_qset_id_multi_set(
+      int unit,
+      bcm_field_qualify_t qualifier,
+      int num_objects,
+      int* object_list,
+      bcm_field_qset_t* qset) = 0;
+
+  virtual int bcm_field_qualify_UdfClass(
+      int unit,
+      bcm_field_entry_t entry,
+      uint32 data,
+      uint32 mask) = 0;
+
+  virtual int bcm_field_qualify_udf(
+      int unit,
+      bcm_field_entry_t eid,
+      bcm_udf_id_t udf_id,
+      int length,
+      uint8* data,
+      uint8* mask) = 0;
+
+  virtual int bcm_field_qualify_udf_get(
+      int unit,
+      bcm_field_entry_t eid,
+      bcm_udf_id_t udf_id,
+      int max_length,
+      uint8* data,
+      uint8* mask,
+      int* actual_length) = 0;
+
+  virtual void bcm_field_group_config_t_init(
+      bcm_field_group_config_t* group_config) = 0;
 
   virtual int bcm_stat_clear(int unit, bcm_port_t port) = 0;
 
@@ -753,6 +796,12 @@ class BcmInterface {
       int speed,
       bcm_port_duplex_t duplex,
       int bit_times) = 0;
+
+  virtual int bcm_port_control_phy_timesync_set(
+      int unit,
+      bcm_port_t port,
+      bcm_port_control_phy_timesync_t type,
+      uint64 value) = 0;
 };
 
 } // namespace facebook::fboss

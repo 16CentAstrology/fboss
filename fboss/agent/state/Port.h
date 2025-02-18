@@ -13,6 +13,7 @@
 #include "fboss/agent/gen-cpp2/switch_config_constants.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
+#include "fboss/agent/state/PortFlowletConfig.h"
 #include "fboss/agent/state/PortPgConfig.h"
 #include "fboss/agent/state/PortQueue.h"
 #include "fboss/agent/state/Thrifty.h"
@@ -28,6 +29,8 @@
 namespace facebook::fboss {
 
 class SwitchState;
+
+using PortFlowletCfgPtr = std::shared_ptr<PortFlowletCfg>;
 
 struct PortFields {
   struct VlanInfo {
@@ -52,6 +55,11 @@ struct PortFields {
     UP = 1,
   };
 
+  enum class ActiveState {
+    INACTIVE = 0,
+    ACTIVE = 1,
+  };
+
   struct MKASakKey {
     bool operator<(const MKASakKey& r) const {
       return std::tie(*sci.macAddress(), *sci.port(), associationNum) <
@@ -74,16 +82,19 @@ struct PortFields {
 
 USE_THRIFT_COW(Port);
 
+RESOLVE_STRUCT_MEMBER(Port, switch_state_tags::flowletConfig, PortFlowletCfg);
 /*
  * Port stores state about one of the physical ports on the switch.
  */
 class Port : public ThriftStructNode<Port, state::PortFields> {
  public:
   using BaseT = ThriftStructNode<Port, state::PortFields>;
+  using BaseT::modify;
   using LegacyFields = PortFields;
   using VlanInfo = PortFields::VlanInfo;
   using VlanMembership = PortFields::VlanMembership;
   using OperState = PortFields::OperState;
+  using ActiveState = PortFields::ActiveState;
   using LLDPValidations = PortFields::LLDPValidations;
   using NeighborReachability = PortFields::NeighborReachability;
   using MKASakKey = PortFields::MKASakKey;
@@ -192,12 +203,40 @@ class Port : public ThriftStructNode<Port, state::PortFields> {
     set<switch_state_tags::portOperState>(isUp);
   }
 
+  std::optional<ActiveState> getActiveState() const {
+    if (auto portActiveState = cref<switch_state_tags::portActiveState>()) {
+      return portActiveState->cref() ? ActiveState::ACTIVE
+                                     : ActiveState::INACTIVE;
+    }
+
+    return std::nullopt;
+  }
+
+  void setActiveState(std::optional<bool> isActive) {
+    if (!isActive) {
+      ref<switch_state_tags::portActiveState>().reset();
+      return;
+    }
+    set<switch_state_tags::portActiveState>(isActive.value());
+  }
+
   bool isEnabled() const {
     return getAdminState() == cfg::PortState::ENABLED;
   }
 
+  bool isDrained() const {
+    return getPortDrainState() == cfg::PortDrainState::DRAINED;
+  }
+
   bool isUp() const {
     return cref<switch_state_tags::portOperState>()->cref();
+  }
+
+  std::optional<bool> isActive() const {
+    if (auto portActiveState = cref<switch_state_tags::portActiveState>()) {
+      return portActiveState->cref();
+    }
+    return std::nullopt;
   }
 
   std::optional<mka::MKASak> getTxSak() const {
@@ -217,7 +256,7 @@ class Port : public ThriftStructNode<Port, state::PortFields> {
   // THRIFT_COPY
   RxSaks getRxSaksMap() const {
     RxSaks rxSecureAssociationKeys;
-    for (auto rxSak :
+    for (const auto& rxSak :
          *(safe_cref<switch_state_tags::rxSecureAssociationKeys>())) {
       rxSecureAssociationKeys.emplace(
           PortFields::rxSakFromThrift(rxSak->toThrift()));
@@ -237,6 +276,10 @@ class Port : public ThriftStructNode<Port, state::PortFields> {
   }
   void setMacsecDesired(bool macsecDesired) {
     set<switch_state_tags::macsecDesired>(macsecDesired);
+    if (!macsecDesired) {
+      setRxSaksMap({});
+      setTxSak(std::nullopt);
+    }
   }
 
   bool getDropUnencrypted() const {
@@ -289,8 +332,8 @@ class Port : public ThriftStructNode<Port, state::PortFields> {
   }
   void resetPortQueues(QueueConfig& queues) {
     // TODO(zecheng): change type to ThriftListNode
-    std::vector<state::PortQueueFields> queuesThrift{};
-    for (auto queue : queues) {
+    std::vector<PortQueueFields> queuesThrift{};
+    for (const auto& queue : queues) {
       queuesThrift.push_back(queue->toThrift());
     }
     set<switch_state_tags::queues>(std::move(queuesThrift));
@@ -299,7 +342,7 @@ class Port : public ThriftStructNode<Port, state::PortFields> {
   bool hasValidPortQueues() const {
     constexpr auto kDefaultProbability = 100;
     for (const auto& portQueue : *getPortQueues()) {
-      const auto& aqms = portQueue->get<switch_state_tags::aqms>();
+      const auto& aqms = portQueue->get<ctrl_if_tags::aqms>();
       if (!aqms) {
         continue;
       }
@@ -327,7 +370,7 @@ class Port : public ThriftStructNode<Port, state::PortFields> {
       return;
     }
     std::vector<state::PortPgFields> pgConfigThrift{};
-    for (auto pgConfig : pgConfigs.value()) {
+    for (const auto& pgConfig : pgConfigs.value()) {
       pgConfigThrift.push_back(pgConfig->toThrift());
     }
     set<switch_state_tags::pgConfigs>(std::move(pgConfigThrift));
@@ -389,8 +432,14 @@ class Port : public ThriftStructNode<Port, state::PortFields> {
     set<switch_state_tags::pfc>(pfc.value());
   }
 
-  PfcPriorityList getPfcPriorities() const {
-    return safe_cref<switch_state_tags::pfcPriorities>();
+  std::vector<PfcPriority> getPfcPriorities() const {
+    std::vector<PfcPriority> pfcPriorities{};
+    if (safe_cref<switch_state_tags::pfcPriorities>()) {
+      for (auto pri : *safe_cref<switch_state_tags::pfcPriorities>()) {
+        pfcPriorities.emplace_back(static_cast<PfcPriority>(pri->cref()));
+      }
+    }
+    return pfcPriorities;
   }
   void setPfcPriorities(std::optional<std::vector<int16_t>>& pri) {
     if (!pri) {
@@ -562,17 +611,160 @@ class Port : public ThriftStructNode<Port, state::PortFields> {
     set<switch_state_tags::linePinConfigs>(pinCfgs);
   }
 
-  auto getInterfaceIDs() const {
-    return safe_cref<switch_state_tags::interfaceIDs>();
+  InterfaceID getInterfaceID() const;
+  std::vector<int32_t> getInterfaceIDs() const {
+    return safe_cref<switch_state_tags::interfaceIDs>()->toThrift();
   }
 
   void setInterfaceIDs(const std::vector<int32_t>& interfaceIDs) {
     set<switch_state_tags::interfaceIDs>(interfaceIDs);
   }
 
+  std::optional<std::string> getFlowletConfigName() const {
+    if (auto name = cref<switch_state_tags::flowletConfigName>()) {
+      return name->cref();
+    }
+    return std::nullopt;
+  }
+
+  void setFlowletConfigName(const std::optional<std::string>& name) {
+    if (!name) {
+      ref<switch_state_tags::flowletConfigName>().reset();
+      return;
+    }
+    set<switch_state_tags::flowletConfigName>(name.value());
+  }
+
+  std::optional<PortFlowletCfgPtr> getPortFlowletConfig() const {
+    if (auto flowletConfigPtr = safe_cref<switch_state_tags::flowletConfig>()) {
+      return flowletConfigPtr;
+    }
+    return std::nullopt;
+  }
+
+  void setPortFlowletConfig(PortFlowletCfgPtr flowletConfigPtr) {
+    ref<switch_state_tags::flowletConfig>() = flowletConfigPtr;
+  }
+
+  void setLedPortExternalState(std::optional<PortLedExternalState> state) {
+    if (state.has_value()) {
+      set<switch_state_tags::portLedExternalState>(*state);
+    } else {
+      ref<switch_state_tags::portLedExternalState>().reset();
+    }
+  }
+
+  std::optional<PortLedExternalState> getLedPortExternalState() {
+    if (auto state = cref<switch_state_tags::portLedExternalState>()) {
+      return state->toThrift();
+    }
+    return std::nullopt;
+  }
+
+  bool getRxLaneSquelch() const {
+    return cref<switch_state_tags::rxLaneSquelch>()->cref();
+  }
+
+  void setRxLaneSquelch(bool rxLaneSquelch) {
+    set<switch_state_tags::rxLaneSquelch>(rxLaneSquelch);
+  }
+
+  bool getZeroPreemphasis() const {
+    return cref<switch_state_tags::zeroPreemphasis>()->cref();
+  }
+
+  void setZeroPreemphasis(bool zeroPreemphasis) {
+    set<switch_state_tags::zeroPreemphasis>(zeroPreemphasis);
+  }
+
+  std::optional<bool> getTTLDisableDecrement() const {
+    if (auto value = cref<switch_state_tags::disableTTLDecrement>()) {
+      return value->toThrift();
+    }
+    return std::nullopt;
+  }
+
+  void setTTLDisableDecrement(std::optional<bool> disableTTLDecrement) {
+    if (disableTTLDecrement.has_value()) {
+      set<switch_state_tags::disableTTLDecrement>(*disableTTLDecrement);
+    } else {
+      ref<switch_state_tags::disableTTLDecrement>().reset();
+    }
+  }
+
+  std::optional<bool> getTxEnable() const {
+    if (auto value = cref<switch_state_tags::txEnable>()) {
+      return value->toThrift();
+    }
+    return std::nullopt;
+  }
+
+  void setTxEnable(std::optional<bool> txEnable) {
+    if (txEnable.has_value()) {
+      set<switch_state_tags::txEnable>(*txEnable);
+    } else {
+      ref<switch_state_tags::txEnable>().reset();
+    }
+  }
+
+  std::vector<PortError> getActiveErrors() const {
+    return safe_cref<switch_state_tags::activeErrors>()->toThrift();
+  }
+  void setActiveErrors(const std::set<PortError>& errors);
+
+  void addError(PortError error);
+  void removeError(PortError error);
+
   Port* modify(std::shared_ptr<SwitchState>* state);
 
-  void fillPhyInfo(phy::PhyInfo* phyInfo);
+  void setScope(const cfg::Scope& scope) {
+    set<ctrl_if_tags::scope>(scope);
+  }
+
+  cfg::Scope getScope() const {
+    return cref<ctrl_if_tags::scope>()->cref();
+  }
+
+  std::optional<int32_t> getReachabilityGroupId() const {
+    if (auto reachabilityGroupId =
+            cref<switch_state_tags::reachabilityGroupId>()) {
+      return reachabilityGroupId->toThrift();
+    }
+    return std::nullopt;
+  }
+
+  void setReachabilityGroupId(std::optional<int32_t> reachabilityGroupId) {
+    if (!reachabilityGroupId) {
+      ref<switch_state_tags::reachabilityGroupId>().reset();
+    } else {
+      set<switch_state_tags::reachabilityGroupId>(*reachabilityGroupId);
+    }
+  }
+
+  bool getConditionalEntropyRehash() const {
+    return cref<switch_state_tags::conditionalEntropyRehash>()->cref();
+  }
+  void setConditionalEntropyRehash(bool conditionalEntropyRehash) {
+    set<switch_state_tags::conditionalEntropyRehash>(conditionalEntropyRehash);
+  }
+
+  std::optional<bool> getSelfHealingECMPLagEnable() const {
+    if (auto selfHealingECMPLagEnable =
+            cref<switch_state_tags::selfHealingECMPLagEnable>()) {
+      return selfHealingECMPLagEnable->cref();
+    }
+    return std::nullopt;
+  }
+
+  void setSelfHealingECMPLagEnable(
+      std::optional<bool> selfHealingECMPLagEnable) {
+    if (!selfHealingECMPLagEnable.has_value()) {
+      ref<switch_state_tags::selfHealingECMPLagEnable>().reset();
+    } else {
+      set<switch_state_tags::selfHealingECMPLagEnable>(
+          selfHealingECMPLagEnable.value());
+    }
+  }
 
  private:
   auto getRxSaks() const {

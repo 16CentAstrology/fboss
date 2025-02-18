@@ -14,7 +14,6 @@
 #include "fboss/agent/L2Entry.h"
 #include "fboss/agent/NeighborUpdater.h"
 #include "fboss/agent/StaticL2ForNeighborObserver.h"
-#include "fboss/agent/state/Port.h"
 #include "fboss/agent/state/Vlan.h"
 #include "fboss/agent/test/HwTestHandle.h"
 #include "fboss/agent/test/TestUtils.h"
@@ -22,6 +21,7 @@
 #include <folly/IPAddressV4.h>
 #include <folly/IPAddressV6.h>
 #include <folly/MacAddress.h>
+#include <netinet/icmp6.h>
 
 using folly::IPAddress;
 using folly::IPAddressV4;
@@ -30,13 +30,33 @@ using folly::MacAddress;
 
 namespace facebook::fboss {
 
-template <typename AddrT>
+template <typename AddrType, bool enableIntfNbrTable>
+struct IpAddrAndEnableIntfNbrTableT {
+  using AddrT = AddrType;
+  static constexpr auto intfNbrTable = enableIntfNbrTable;
+};
+
+using TestTypes = ::testing::Types<
+    IpAddrAndEnableIntfNbrTableT<folly::IPAddressV4, false>,
+    IpAddrAndEnableIntfNbrTableT<folly::IPAddressV4, true>,
+    IpAddrAndEnableIntfNbrTableT<folly::IPAddressV6, false>,
+    IpAddrAndEnableIntfNbrTableT<folly::IPAddressV6, true>>;
+
+template <typename IpAddrAndEnableIntfNbrTableT>
 class StaticL2ForNeighorObserverTest : public ::testing::Test {
  public:
   using Func = folly::Function<void()>;
   using StateUpdateFn = SwSwitch::StateUpdateFn;
+  using AddrT = typename IpAddrAndEnableIntfNbrTableT::AddrT;
+  static auto constexpr intfNbrTable =
+      IpAddrAndEnableIntfNbrTableT::intfNbrTable;
+
+  bool isIntfNbrTable() const {
+    return intfNbrTable == true;
+  }
 
   void SetUp() override {
+    FLAGS_intf_nbr_tables = this->isIntfNbrTable();
     handle_ = createTestHandle(testStateAWithPortsUp());
     sw_ = handle_->getSw();
   }
@@ -51,6 +71,10 @@ class StaticL2ForNeighorObserverTest : public ::testing::Test {
 
   VlanID kVlan() const {
     return VlanID(1);
+  }
+
+  InterfaceID kInterfaceID() const {
+    return InterfaceID(1);
   }
 
   PortID kPortID() const {
@@ -78,26 +102,48 @@ class StaticL2ForNeighorObserverTest : public ::testing::Test {
     return MacAddress("01:02:03:04:05:06");
   }
 
-  void resolveNeighbor(IPAddress ipAddress, MacAddress macAddress) {
+  void resolveNeighbor(
+      IPAddress ipAddress,
+      MacAddress macAddress,
+      std::optional<PortID> port = std::nullopt) {
     /*
      * Cause a neighbor entry to resolve by receiving appropriate ARP/NDP, and
      * assert if valid CLASSID is associated with the newly resolved neighbor.
      */
     if (ipAddress.isV4()) {
-      sw_->getNeighborUpdater()->receivedArpMine(
-          kVlan(),
-          ipAddress.asV4(),
-          macAddress,
-          PortDescriptor(kPortID()),
-          ArpOpCode::ARP_OP_REPLY);
+      if (isIntfNbrTable()) {
+        sw_->getNeighborUpdater()->receivedArpMineForIntf(
+            kInterfaceID(),
+            ipAddress.asV4(),
+            macAddress,
+            PortDescriptor(port ? port.value() : this->kPortID()),
+            ArpOpCode::ARP_OP_REPLY);
+      } else {
+        sw_->getNeighborUpdater()->receivedArpMine(
+            kVlan(),
+            ipAddress.asV4(),
+            macAddress,
+            PortDescriptor(port ? port.value() : this->kPortID()),
+            ArpOpCode::ARP_OP_REPLY);
+      }
     } else {
-      sw_->getNeighborUpdater()->receivedNdpMine(
-          kVlan(),
-          ipAddress.asV6(),
-          macAddress,
-          PortDescriptor(kPortID()),
-          ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_ADVERTISEMENT,
-          0);
+      if (isIntfNbrTable()) {
+        sw_->getNeighborUpdater()->receivedNdpMineForIntf(
+            kInterfaceID(),
+            ipAddress.asV6(),
+            macAddress,
+            PortDescriptor(port ? port.value() : this->kPortID()),
+            ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_ADVERTISEMENT,
+            ND_NA_FLAG_OVERRIDE | ND_NA_FLAG_SOLICITED);
+      } else {
+        sw_->getNeighborUpdater()->receivedNdpMine(
+            kVlan(),
+            ipAddress.asV6(),
+            macAddress,
+            PortDescriptor(port ? port.value() : this->kPortID()),
+            ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_ADVERTISEMENT,
+            ND_NA_FLAG_OVERRIDE | ND_NA_FLAG_SOLICITED);
+      }
     }
 
     sw_->getNeighborUpdater()->waitForPendingUpdates();
@@ -108,18 +154,25 @@ class StaticL2ForNeighorObserverTest : public ::testing::Test {
   }
 
   void unresolveNeighbor(IPAddress ipAddress) {
-    sw_->getNeighborUpdater()->flushEntry(kVlan(), ipAddress);
+    if (isIntfNbrTable()) {
+      sw_->getNeighborUpdater()->flushEntryForIntf(kInterfaceID(), ipAddress);
+    } else {
+      sw_->getNeighborUpdater()->flushEntry(kVlan(), ipAddress);
+    }
 
     sw_->getNeighborUpdater()->waitForPendingUpdates();
     waitForBackgroundThread(sw_);
     waitForStateUpdates(sw_);
   }
 
-  void resolve(IPAddress ipAddress, MacAddress macAddress) {
+  void resolve(
+      IPAddress ipAddress,
+      MacAddress macAddress,
+      std::optional<PortID> port = std::nullopt) {
     if constexpr (std::is_same_v<AddrT, folly::MacAddress>) {
-      resolveMac(macAddress);
+      resolveMac(macAddress, port);
     } else {
-      this->resolveNeighbor(ipAddress, macAddress);
+      this->resolveNeighbor(ipAddress, macAddress, port);
     }
   }
 
@@ -177,7 +230,7 @@ class StaticL2ForNeighorObserverTest : public ::testing::Test {
   }
 
   void bringPortDown(PortID portID) {
-    this->sw_->linkStateChanged(portID, false);
+    this->sw_->linkStateChanged(portID, false, cfg::PortType::INTERFACE_PORT);
 
     waitForStateUpdates(this->sw_);
     this->sw_->getNeighborUpdater()->waitForPendingUpdates();
@@ -206,12 +259,12 @@ class StaticL2ForNeighorObserverTest : public ::testing::Test {
 
  private:
   auto getMacEntry() const {
-    auto vlan = sw_->getState()->getVlans()->getVlan(kVlan());
+    auto vlan = sw_->getState()->getVlans()->getNode(kVlan());
     return vlan->getMacTable()->getMacIf(kMacAddress());
   }
   void runInUpdateEventBaseAndWait(Func func) {
     auto* evb = sw_->getUpdateEvb();
-    evb->runInEventBaseThreadAndWait(std::move(func));
+    evb->runInFbossEventBaseThreadAndWait(std::move(func));
   }
 
   void runInUpdateEvbAndWaitAfterNeighborCachePropagation(Func func) {
@@ -227,8 +280,6 @@ class StaticL2ForNeighorObserverTest : public ::testing::Test {
   std::unique_ptr<HwTestHandle> handle_;
   SwSwitch* sw_;
 };
-
-using TestTypes = ::testing::Types<folly::IPAddressV4, folly::IPAddressV6>;
 
 TYPED_TEST_SUITE(StaticL2ForNeighorObserverTest, TestTypes);
 
@@ -361,5 +412,8 @@ TYPED_TEST(StaticL2ForNeighorObserverTest, macMovePostNeighborResolution) {
   this->resolveMac(this->kMacAddress(), this->kPortID2());
   // Neighbor entry port ID trumps MAC learning event
   this->verifyMacEntryExists(MacEntryType::STATIC_ENTRY, this->kPortID());
+  // Neighbor entry move should update mac entry pointing to new port
+  this->resolve(this->getIpAddress(), this->kMacAddress(), this->kPortID2());
+  this->verifyMacEntryExists(MacEntryType::STATIC_ENTRY, this->kPortID2());
 }
 } // namespace facebook::fboss

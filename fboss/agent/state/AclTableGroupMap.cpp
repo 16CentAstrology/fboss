@@ -11,13 +11,14 @@
 
 #include "fboss/agent/state/NodeMap-defs.h"
 
+#include "fboss/agent/HwSwitchMatcher.h"
 #include "fboss/agent/state/SwitchState.h"
 
 namespace facebook::fboss {
 
-AclTableGroupMap::AclTableGroupMap() {}
+AclTableGroupMap::AclTableGroupMap() = default;
 
-AclTableGroupMap::~AclTableGroupMap() {}
+AclTableGroupMap::~AclTableGroupMap() = default;
 
 std::shared_ptr<AclTableGroupMap>
 AclTableGroupMap::createDefaultAclTableGroupMapFromThrift(
@@ -40,6 +41,6 @@ std::shared_ptr<AclMap> AclTableGroupMap::getDefaultAclTableGroupMap(
   }
 }
 
-template class ThriftMapNode<AclTableGroupMap, AclTableGroupMapTraits>;
+template struct ThriftMapNode<AclTableGroupMap, AclTableGroupMapTraits>;
 
 } // namespace facebook::fboss

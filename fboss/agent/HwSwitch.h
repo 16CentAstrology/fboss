@@ -14,10 +14,15 @@
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_types.h"
 #include "fboss/agent/if/gen-cpp2/FbossCtrl.h"
+#include "fboss/agent/if/gen-cpp2/MultiSwitchCtrl.h"
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
+#include "fboss/agent/if/gen-cpp2/multiswitch_ctrl_handlers.h"
 #include "fboss/agent/rib/RoutingInformationBase.h"
 #include "fboss/agent/state/DeltaFunctions.h"
 #include "fboss/agent/types.h"
+#include "fboss/lib/HwWriteBehavior.h"
+
+#include "fboss/agent/HwSwitchCallback.h"
 
 #include <folly/IPAddress.h>
 #include <folly/ThreadLocal.h>
@@ -30,6 +35,9 @@ namespace folly {
 struct dynamic;
 }
 
+DECLARE_bool(flowletStatsEnable);
+DECLARE_int32(update_voq_stats_interval_s);
+
 namespace facebook::fboss {
 
 class SwitchState;
@@ -38,17 +46,7 @@ class StateDelta;
 class RxPacket;
 class TxPacket;
 class L2Entry;
-class HwSwitchStats;
-
-enum class L2EntryUpdateType : uint8_t;
-
-struct HwInitResult {
-  std::shared_ptr<SwitchState> switchState{nullptr};
-  std::unique_ptr<RoutingInformationBase> rib{nullptr};
-  BootType bootType{BootType::UNINITIALIZED};
-  float initializedTime{0.0};
-  float bootTime{0.0};
-};
+class HwSwitchFb303Stats;
 
 template <typename Delta, typename Mgr>
 void checkUnsupportedDelta(const Delta& delta, Mgr& mgr) {
@@ -89,43 +87,9 @@ void checkUnsupportedDelta(const Delta& delta, Mgr& mgr) {
  */
 class HwSwitch {
  public:
-  class Callback {
-   public:
-    virtual ~Callback() {}
-
-    /*
-     * packetReceived() is invoked by the HwSwitch when a trapped packet is
-     * received.
-     */
-    virtual void packetReceived(std::unique_ptr<RxPacket> pkt) noexcept = 0;
-
-    /*
-     * linkStateChanged() is invoked by the HwSwitch whenever the link
-     * status changes on a port.
-     */
-    virtual void linkStateChanged(
-        PortID port,
-        bool up,
-        std::optional<phy::LinkFaultStatus> iPhyFaultStatus = std::nullopt) = 0;
-
-    /*
-     * l2LearningUpdateReceived() is invoked by the HwSwitch when there is
-     * changes l2 table.
-     */
-    virtual void l2LearningUpdateReceived(
-        L2Entry l2Entry,
-        L2EntryUpdateType l2EntryUpdateType) = 0;
-
-    /*
-     * Used to notify the SwSwitch of a fatal error so the implementation can
-     * provide special behavior when a crash occurs.
-     */
-    virtual void exitFatal() const noexcept = 0;
-
-    virtual void pfcWatchdogStateChanged(
-        const PortID& port,
-        const bool deadlock) = 0;
-  };
+  using Callback = HwSwitchCallback;
+  using StateChangedFn =
+      std::function<std::shared_ptr<SwitchState>(const StateDelta& delta)>;
 
   enum FeaturesDesired : uint32_t {
     PACKET_RX_DESIRED = 0x01,
@@ -158,19 +122,23 @@ class HwSwitch {
    */
   HwInitResult init(
       Callback* callback,
-      bool failHwCallsOnWarmboot,
-      cfg::SwitchType switchType = cfg::SwitchType::NPU,
-      std::optional<int64_t> switchId = std::nullopt) {
-    switchType_ = switchType;
-    switchId_ = switchId;
-    return initImpl(callback, failHwCallsOnWarmboot, switchType, switchId);
-  }
+      const std::shared_ptr<SwitchState>& state,
+      bool failHwCallsOnWarmboot);
+
+  /* initialize hardware switch but do not apply warm boot state */
+  HwInitResult initLight(Callback* callback, bool failHwCallsOnWarmboot);
 
   cfg::SwitchType getSwitchType() const {
     return switchType_;
   }
   std::optional<int64_t> getSwitchId() const {
     return switchId_;
+  }
+  SwitchID getSwitchID() const {
+    if (!switchId_) {
+      return SwitchID(0);
+    }
+    return SwitchID(*switchId_);
   }
   /*
    * Tells the hw switch to unregister the callback and to stop calling
@@ -188,11 +156,20 @@ class HwSwitch {
    *
    * @ret   The actual state that was applied in the hardware.
    */
-  virtual std::shared_ptr<SwitchState> stateChanged(
+  std::shared_ptr<SwitchState> stateChanged(
+      const StateDelta& delta,
+      const HwWriteBehaviorRAII& behavior =
+          HwWriteBehaviorRAII(HwWriteBehavior::WRITE));
+
+  virtual std::shared_ptr<SwitchState> stateChangedImpl(
       const StateDelta& delta) = 0;
 
   virtual std::shared_ptr<SwitchState> stateChangedTransaction(
-      const StateDelta& delta) = 0;
+      const StateDelta& delta,
+      const HwWriteBehaviorRAII& behavior =
+          HwWriteBehaviorRAII(HwWriteBehavior::WRITE));
+  virtual void rollback(const StateDelta& delta) noexcept;
+
   virtual bool transactionsSupported() const {
     return false;
   }
@@ -255,15 +232,31 @@ class HwSwitch {
   /*
    * Allows hardware-specific code to record switch statistics.
    */
-  void updateStats(SwitchStats* switchStats);
+  void updateStats();
+
+  multiswitch::HwSwitchStats getHwSwitchStats();
 
   virtual folly::F14FastMap<std::string, HwPortStats> getPortStats() const = 0;
+  virtual CpuPortStats getCpuPortStats() const = 0;
 
   virtual void fetchL2Table(std::vector<L2EntryThrift>* l2Table) const = 0;
 
-  virtual std::map<PortID, phy::PhyInfo> updateAllPhyInfo() = 0;
-  virtual std::map<PortID, FabricEndpoint> getFabricReachability() const = 0;
+  void updateAllPhyInfo();
+  std::map<PortID, phy::PhyInfo> getAllPhyInfo() const {
+    return lastPhyInfo_.copy();
+  }
+  virtual const std::map<PortID, FabricEndpoint>& getFabricConnectivity()
+      const = 0;
+  virtual std::vector<PortID> getSwitchReachability(
+      SwitchID switchId) const = 0;
   virtual std::map<std::string, HwSysPortStats> getSysPortStats() const = 0;
+  virtual FabricReachabilityStats getFabricReachabilityStats() const = 0;
+  virtual TeFlowStats getTeFlowStats() const = 0;
+  virtual HwSwitchDropStats getSwitchDropStats() const = 0;
+  virtual HwFlowletStats getHwFlowletStats() const = 0;
+  virtual std::vector<EcmpDetails> getAllEcmpDetails() const = 0;
+  virtual HwSwitchWatermarkStats getSwitchWatermarkStats() const = 0;
+  virtual HwResourceStats getResourceStats() const = 0;
 
   /*
    * Get latest device watermark bytes
@@ -273,9 +266,7 @@ class HwSwitch {
    * Allow hardware to perform any warm boot related cleanup
    * before we exit the application.
    */
-  void gracefulExit(
-      folly::dynamic& follySwitchState,
-      state::WarmbootState& thriftSwitchState);
+  void gracefulExit();
 
   /*
    * Get Hw Switch state in a folly::dynamic
@@ -330,28 +321,16 @@ class HwSwitch {
   }
 
   /*
-   * Returns true if the arp/ndp entry for the passed in ip/intf has been hit
-   * since the last call to getAndClearNeighborHit.
-   */
-  virtual bool getAndClearNeighborHit(RouterID vrf, folly::IPAddress& ip) = 0;
-
-  /*
    * Clear port stats for specified port
    */
   virtual void clearPortStats(
       const std::unique_ptr<std::vector<int32_t>>& ports) = 0;
 
   virtual std::vector<phy::PrbsLaneStats> getPortAsicPrbsStats(
-      int32_t /*portId*/) {
+      PortID /*portId*/) {
     return std::vector<phy::PrbsLaneStats>();
   }
-  virtual void clearPortAsicPrbsStats(int32_t /*portId*/) {}
-
-  virtual std::vector<phy::PrbsLaneStats> getPortGearboxPrbsStats(
-      int32_t /*portId*/,
-      phy::Side /* side */) {
-    return std::vector<phy::PrbsLaneStats>();
-  }
+  virtual void clearPortAsicPrbsStats(PortID /*portId*/) {}
 
   virtual std::vector<prbs::PrbsPolynomial> getPortPrbsPolynomials(
       int32_t /* portId */) {
@@ -361,10 +340,6 @@ class HwSwitch {
   virtual prbs::InterfacePrbsState getPortPrbsState(PortID /* portId */) {
     return prbs::InterfacePrbsState();
   }
-
-  virtual void clearPortGearboxPrbsStats(
-      int32_t /*portId*/,
-      phy::Side /* side */) {}
 
   virtual BootType getBootType() const = 0;
 
@@ -380,7 +355,7 @@ class HwSwitch {
       const std::vector<HwObjectType>& types,
       bool cached) const = 0;
 
-  HwSwitchStats* getSwitchStats() const;
+  HwSwitchFb303Stats* getSwitchStats() const;
 
   uint32_t generateDeterministicSeed(LoadBalancerID loadBalancerID);
 
@@ -388,20 +363,62 @@ class HwSwitch {
       LoadBalancerID loadBalancerID,
       folly::MacAddress mac) const = 0;
 
+  std::shared_ptr<SwitchState> getProgrammedState() const;
+  fsdb::OperDelta stateChanged(
+      const fsdb::OperDelta& delta,
+      const HwWriteBehaviorRAII& behavior =
+          HwWriteBehaviorRAII(HwWriteBehavior::WRITE));
+  fsdb::OperDelta stateChangedTransaction(
+      const fsdb::OperDelta& delta,
+      const HwWriteBehaviorRAII& behavior =
+          HwWriteBehaviorRAII(HwWriteBehavior::WRITE));
+
+  void ensureConfigured(folly::StringPiece function) const;
+  void ensureVoqOrFabric(folly::StringPiece function) const;
+
+  bool isFullyConfigured() const;
+
+  virtual void syncLinkStates() = 0;
+  virtual void syncLinkActiveStates() = 0;
+  virtual void syncLinkConnectivity() = 0;
+  virtual void syncSwitchReachability() = 0;
+
+  virtual AclStats getAclStats() const = 0;
+
+  virtual std::shared_ptr<SwitchState> reconstructSwitchState() const = 0;
+
+  virtual void injectSwitchReachabilityChangeNotification() = 0;
+
+ protected:
+  void setProgrammedState(const std::shared_ptr<SwitchState>& state);
+
+  virtual void initialStateApplied() = 0;
+
  private:
+  HwInitResult initLightImpl(Callback* callback, bool failHwCallsOnWarmboot);
   virtual HwInitResult initImpl(
       Callback* callback,
-      bool failHwCallsOnWarmboot,
-      cfg::SwitchType switchType,
-      std::optional<int64_t> switchId) = 0;
+      BootType bootType,
+      bool failHwCallsOnWarmboot) = 0;
   virtual void switchRunStateChangedImpl(SwitchRunState newState) = 0;
 
-  virtual void updateStatsImpl(SwitchStats* switchStats) = 0;
+  virtual void updateStatsImpl() = 0;
 
-  virtual void gracefulExitImpl(
-      folly::dynamic& follySwitchState,
-      state::WarmbootState& thriftSwitchState) = 0;
+  virtual void gracefulExitImpl() = 0;
 
+  virtual std::map<PortID, phy::PhyInfo> updateAllPhyInfoImpl() = 0;
+
+  std::shared_ptr<SwitchState> getMinAlpmState(
+      RoutingInformationBase* rib,
+      const std::shared_ptr<SwitchState>& state);
+
+  std::shared_ptr<SwitchState> programMinAlpmState(RoutingInformationBase* rib);
+  std::shared_ptr<SwitchState> programMinAlpmState(
+      RoutingInformationBase* rib,
+      StateChangedFn func);
+
+  HwWriteBehaviorRAII getWarmBootWriteBehavior(
+      bool failHwCallsOnWarmboot) const;
   uint32_t featuresDesired_;
   SwitchRunState runState_{SwitchRunState::UNINITIALIZED};
 
@@ -411,9 +428,17 @@ class HwSwitch {
   // mutable to allow for lazy init from getter. This is needed to
   // create the var in the thread local storage (TLS) of the calling
   // thread and cannot be created up front.
-  mutable folly::ThreadLocalPtr<HwSwitchStats> hwSwitchStats_;
+  mutable folly::ThreadLocalPtr<HwSwitchFb303Stats> hwSwitchStats_;
   cfg::SwitchType switchType_{cfg::SwitchType::NPU};
   std::optional<int64_t> switchId_;
+
+  folly::Synchronized<std::shared_ptr<SwitchState>> programmedState_;
+
+  // Collecting phy Info is currently inefficient on some platforms. Instead of
+  // collecting them every second, tune down the frequency to only collect once
+  // every update_phy_info_interval_s seconds (default to be 10).
+  int phyInfoUpdateTime_{0};
+  folly::Synchronized<std::map<PortID, phy::PhyInfo>> lastPhyInfo_;
 };
 
 } // namespace facebook::fboss

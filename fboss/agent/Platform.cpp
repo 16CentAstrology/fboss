@@ -11,52 +11,16 @@
 #include "fboss/agent/Platform.h"
 
 #include "fboss/agent/AgentConfig.h"
+#include "fboss/agent/AgentDirectoryUtil.h"
 #include "fboss/agent/FbossError.h"
+#include "fboss/agent/SwitchInfoUtils.h"
 #include "fboss/agent/Utils.h"
 #include "fboss/lib/platforms/PlatformProductInfo.h"
 
 #include <folly/logging/xlog.h>
 #include <string>
 
-DEFINE_string(
-    crash_switch_state_file,
-    "crash_switch_state",
-    "File for dumping SwitchState state on crash");
-
-DEFINE_string(
-    crash_thrift_switch_state_file,
-    "crash_thrift_switch_state",
-    "File for dumping SwitchState thrift on crash");
-
-DEFINE_string(
-    crash_hw_state_file,
-    "crash_hw_state",
-    "File for dumping HW state on crash");
-
-DEFINE_string(
-    hw_config_file,
-    "hw_config",
-    "File for dumping HW config on startup");
-
-DEFINE_string(
-    volatile_state_dir,
-    "/dev/shm/fboss",
-    "Directory for storing volatile state");
-DEFINE_string(
-    persistent_state_dir,
-    "/var/facebook/fboss",
-    "Directory for storing persistent state");
-
-DEFINE_string(
-    volatile_state_dir_phy,
-    "/dev/shm/fboss/qsfp_service/phy",
-    "Directory for storing phy volatile state");
-DEFINE_string(
-    persistent_state_dir_phy,
-    "/var/facebook/fboss/qsfp_service/phy",
-    "Directory for storing phy persistent state");
-
-DEFINE_bool(hide_fabric_ports, false, "Elide ports of type fabric");
+DEFINE_int32(switchIndex, 0, "Switch Index for Asic");
 
 namespace facebook::fboss {
 
@@ -66,20 +30,12 @@ Platform::Platform(
     folly::MacAddress localMac)
     : productInfo_(std::move(productInfo)),
       platformMapping_(std::move(platformMapping)),
-      localMac_(localMac) {}
+      localMac_(localMac),
+      scopeResolver_({}),
+      agentDirUtil_(new AgentDirectoryUtil(
+          FLAGS_volatile_state_dir,
+          FLAGS_persistent_state_dir)) {}
 Platform::~Platform() {}
-
-std::string Platform::getCrashHwStateFile() const {
-  return getCrashInfoDir() + "/" + FLAGS_crash_hw_state_file;
-}
-
-std::string Platform::getCrashSwitchStateFile() const {
-  return getCrashInfoDir() + "/" + FLAGS_crash_switch_state_file;
-}
-
-std::string Platform::getCrashThriftSwitchStateFile() const {
-  return getCrashInfoDir() + "/" + FLAGS_crash_thrift_switch_state_file;
-}
 
 const AgentConfig* Platform::config() {
   if (!config_) {
@@ -89,12 +45,16 @@ const AgentConfig* Platform::config() {
 }
 
 const AgentConfig* Platform::reloadConfig() {
-  config_ = AgentConfig::fromDefaultFile();
+  auto agentConfig = AgentConfig::fromDefaultFile();
+  setConfig(std::move(agentConfig));
   return config_.get();
 }
 
 void Platform::setConfig(std::unique_ptr<AgentConfig> config) {
   config_ = std::move(config);
+  auto swConfig = config_->thrift.sw();
+  scopeResolver_ =
+      SwitchIdScopeResolver(getSwitchInfoFromConfig(&(swConfig.value())));
 }
 
 const std::map<int32_t, cfg::PlatformPortEntry>& Platform::getPlatformPorts()
@@ -128,40 +88,78 @@ cfg::PortSpeed Platform::getPortMaxSpeed(PortID portID) const {
 
 void Platform::init(
     std::unique_ptr<AgentConfig> config,
-    uint32_t hwFeaturesDesired) {
+    uint32_t hwFeaturesDesired,
+    int16_t switchIndex) {
   // take ownership of the config if passed in
-  config_ = std::move(config);
+  setConfig(std::move(config));
+  auto macStr = getPlatformAttribute(cfg::PlatformAttributes::MAC);
+  const auto switchSettings = *config_->thrift.sw()->switchSettings();
+
+  auto getSwitchInfo = [&switchSettings](int64_t switchIndex) {
+    for (const auto& [switchId, switchInfo] :
+         *switchSettings.switchIdToSwitchInfo()) {
+      if (switchInfo.switchIndex() == switchIndex) {
+        return std::make_pair(switchId, switchInfo);
+      }
+    }
+    throw FbossError("No SwitchInfo found for switchIndex", switchIndex);
+  };
+
+  std::optional<HwAsic::FabricNodeRole> fabricNodeRole;
+  std::optional<int64_t> switchId;
+  cfg::SwitchInfo switchInfo;
+  switchInfo.switchType() = cfg::SwitchType::NPU;
+  if (switchSettings.switchIdToSwitchInfo()->size()) {
+    auto switchIdAndInfo = getSwitchInfo(switchIndex);
+    switchId = switchIdAndInfo.first;
+    switchInfo = switchIdAndInfo.second;
+    auto switchType = *switchInfo.switchType();
+    if (switchType == cfg::SwitchType::FABRIC) {
+      fabricNodeRole = HwAsic::FabricNodeRole::SINGLE_STAGE_L1;
+      const auto& dsfNodesConfig = *config_->thrift.sw()->dsfNodes();
+      const auto& dsfNodeConfig = dsfNodesConfig.find(*switchId);
+      if (dsfNodeConfig != dsfNodesConfig.end() &&
+          dsfNodeConfig->second.fabricLevel().has_value()) {
+        auto fabricLevel = *dsfNodeConfig->second.fabricLevel();
+        if (fabricLevel == 2) {
+          fabricNodeRole = HwAsic::FabricNodeRole::DUAL_STAGE_L2;
+        } else if (numFabricLevels(*config_->thrift.sw()->dsfNodes()) == 2) {
+          // fabric level can only be 1 or 2
+          CHECK_EQ(fabricLevel, 1);
+          // Dual stage, node fabric level == 1
+          fabricNodeRole = HwAsic::FabricNodeRole::DUAL_STAGE_L1;
+        }
+      }
+    }
+    if (switchInfo.switchMac()) {
+      macStr = *switchInfo.switchMac();
+    }
+  }
+
   // Override local mac from config if set
-  if (auto macStr = getPlatformAttribute(cfg::PlatformAttributes::MAC)) {
+  if (macStr) {
     XLOG(DBG2) << " Setting platform mac to: " << macStr.value();
     localMac_ = folly::MacAddress(*macStr);
   }
-  const auto switchSettings = *config_->thrift.sw()->switchSettings();
-  std::optional<int64_t> switchId;
-  std::optional<cfg::Range64> systemPortRange;
-  if (switchSettings.switchId().has_value()) {
-    switchId = *switchSettings.switchId();
-    const auto& dsfNodesConfig = *config_->thrift.sw()->dsfNodes();
-    const auto& dsfNodeConfig = dsfNodesConfig.find(*switchId);
-    if (dsfNodeConfig != dsfNodesConfig.end() &&
-        (*switchSettings.switchType() == cfg::SwitchType::VOQ)) {
-      systemPortRange = *dsfNodeConfig->second.systemPortRange();
-    }
-  }
-  setupAsic(*switchSettings.switchType(), switchId, systemPortRange);
+  switchInfo.switchMac() = localMac_.toString();
+
+  XLOG(DBG2) << "Initializing Platform with switch ID: " << switchId.value_or(0)
+             << " switch Index: " << switchIndex;
+
+  setupAsic(switchId, switchInfo, fabricNodeRole);
   initImpl(hwFeaturesDesired);
   // We should always initPorts() here instead of leaving the hw/ to call
   initPorts();
 }
 
-void Platform::getProductInfo(ProductInfo& info) {
+void Platform::getProductInfo(ProductInfo& info) const {
   CHECK(productInfo_);
   productInfo_->getInfo(info);
 }
 
-PlatformMode Platform::getMode() const {
+PlatformType Platform::getType() const {
   CHECK(productInfo_);
-  return productInfo_->getMode();
+  return productInfo_->getType();
 }
 
 void Platform::setOverrideTransceiverInfo(
@@ -176,7 +174,7 @@ void Platform::setOverrideTransceiverInfo(
       // Use the overrideTransceiverInfo_ as template to copy a new
       // TransceiverInfo with the corresponding TransceiverID
       auto tcvrInfo = TransceiverInfo(overrideTransceiverInfo);
-      tcvrInfo.port() = *transceiverID;
+      tcvrInfo.tcvrState()->port() = *transceiverID;
       overrideTcvrs.emplace(*transceiverID, tcvrInfo);
     }
   }
@@ -219,6 +217,12 @@ int Platform::getLaneCount(cfg::PortProfileID profile) const {
     case cfg::PortProfileID::PROFILE_25G_1_NRZ_NOFEC_COPPER_RACK_YV3_T1:
     case cfg::PortProfileID::PROFILE_53POINT125G_1_PAM4_RS545_COPPER:
     case cfg::PortProfileID::PROFILE_53POINT125G_1_PAM4_RS545_OPTICAL:
+    case cfg::PortProfileID::PROFILE_106POINT25G_1_PAM4_RS544_COPPER:
+    case cfg::PortProfileID::PROFILE_106POINT25G_1_PAM4_RS544_OPTICAL:
+    case cfg::PortProfileID::PROFILE_100G_1_PAM4_RS544_OPTICAL:
+    case cfg::PortProfileID::PROFILE_50G_1_PAM4_RS544_OPTICAL:
+    case cfg::PortProfileID::PROFILE_50G_1_PAM4_RS544_COPPER:
+    case cfg::PortProfileID::PROFILE_100G_1_PAM4_NOFEC_COPPER:
       return 1;
 
     case cfg::PortProfileID::PROFILE_20G_2_NRZ_NOFEC:
@@ -227,8 +231,11 @@ int Platform::getLaneCount(cfg::PortProfileID profile) const {
     case cfg::PortProfileID::PROFILE_50G_2_NRZ_NOFEC_COPPER:
     case cfg::PortProfileID::PROFILE_50G_2_NRZ_CL74_COPPER:
     case cfg::PortProfileID::PROFILE_50G_2_NRZ_RS528_COPPER:
+    case cfg::PortProfileID::PROFILE_50G_2_NRZ_RS528_OPTICAL:
     case cfg::PortProfileID::PROFILE_20G_2_NRZ_NOFEC_OPTICAL:
     case cfg::PortProfileID::PROFILE_50G_2_NRZ_NOFEC_OPTICAL:
+    case cfg::PortProfileID::PROFILE_100G_2_PAM4_RS544X2N_OPTICAL:
+    case cfg::PortProfileID::PROFILE_100G_2_PAM4_RS544X2N_COPPER:
       return 2;
 
     case cfg::PortProfileID::PROFILE_40G_4_NRZ_NOFEC:
@@ -247,6 +254,7 @@ int Platform::getLaneCount(cfg::PortProfileID profile) const {
     case cfg::PortProfileID::PROFILE_100G_4_NRZ_NOFEC_COPPER:
     case cfg::PortProfileID::PROFILE_100G_4_NRZ_CL91_COPPER_RACK_YV3_T1:
     case cfg::PortProfileID::PROFILE_400G_4_PAM4_RS544X2N_OPTICAL:
+    case cfg::PortProfileID::PROFILE_400G_4_PAM4_RS544X2N_COPPER:
       return 4;
 
     case cfg::PortProfileID::PROFILE_400G_8_PAM4_RS544X2N:

@@ -11,7 +11,6 @@
 #include "fboss/agent/platforms/sai/SaiBcmElbertPlatform.h"
 #include "fboss/agent/platforms/common/elbert/ElbertPlatformMapping.h"
 
-#include <cstdio>
 #include <cstring>
 namespace facebook::fboss {
 
@@ -25,16 +24,16 @@ SaiBcmElbertPlatform::SaiBcmElbertPlatform(
           localMac) {}
 
 void SaiBcmElbertPlatform::setupAsic(
-    cfg::SwitchType switchType,
     std::optional<int64_t> switchId,
-    std::optional<cfg::Range64> systemPortRange) {
-  asic_ =
-      std::make_unique<Tomahawk4Asic>(switchType, switchId, systemPortRange);
+    const cfg::SwitchInfo& switchInfo,
+    std::optional<HwAsic::FabricNodeRole> fabricNodeRole) {
+  CHECK(!fabricNodeRole.has_value());
+  asic_ = std::make_unique<Tomahawk4Asic>(switchId, switchInfo);
 }
 HwAsic* SaiBcmElbertPlatform::getAsic() const {
   return asic_.get();
 }
 
-SaiBcmElbertPlatform::~SaiBcmElbertPlatform() {}
+SaiBcmElbertPlatform::~SaiBcmElbertPlatform() = default;
 
 } // namespace facebook::fboss

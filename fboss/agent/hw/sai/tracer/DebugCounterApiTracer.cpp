@@ -13,17 +13,17 @@
 #include <utility>
 
 #include "fboss/agent/hw/sai/api/DebugCounterApi.h"
-#include "fboss/agent/hw/sai/tracer/DebugCounterApiTracer.h"
 #include "fboss/agent/hw/sai/tracer/Utils.h"
 
 using folly::to;
 
 namespace {
 std::map<int32_t, std::pair<std::string, std::size_t>> _DebugCounterMap{
-    SAI_ATTR_MAP(DebugCounter, Index),
-    SAI_ATTR_MAP(DebugCounter, Type),
-    SAI_ATTR_MAP(DebugCounter, BindMethod),
-    SAI_ATTR_MAP(DebugCounter, InDropReasons),
+    SAI_ATTR_MAP(InPortDebugCounter, Index),
+    SAI_ATTR_MAP(InPortDebugCounter, Type),
+    SAI_ATTR_MAP(InPortDebugCounter, BindMethod),
+    SAI_ATTR_MAP(InPortDebugCounter, DropReasons),
+    SAI_ATTR_MAP(OutPortDebugCounter, DropReasons),
 };
 } // namespace
 

@@ -24,6 +24,7 @@ SaiAclTableManager::SaiAclTableManager(
     : saiStore_(saiStore),
       managerTable_(managerTable),
       platform_(platform),
+      aclStats_(HwFb303Stats(std::nullopt)),
       aclEntryMinimumPriority_(
           (platform->getAsic()->getAsicType() ==
            cfg::AsicType::ASIC_TYPE_SANDIA_PHY)
@@ -57,6 +58,7 @@ std::vector<sai_int32_t> SaiAclTableManager::getActionTypeList(
 }
 
 std::set<cfg::AclTableQualifier> SaiAclTableManager::getQualifierSet(
+    sai_acl_stage_t /*aclStage*/,
     const std::shared_ptr<AclTable>& /* addedAclTable */) {
   return {cfg::AclTableQualifier::DST_MAC, cfg::AclTableQualifier::ETHER_TYPE};
 }
@@ -103,6 +105,18 @@ std::
       std::nullopt, // neighbor meta
       true, // ether type
       std::nullopt, // fieldOuterVlanId
+      std::nullopt, // fieldBthOpcode
+      std::nullopt, // fieldIpv6NextHeader
+#if (                                                                  \
+    (SAI_API_VERSION >= SAI_VERSION(1, 14, 0) ||                       \
+     (defined(BRCM_SAI_SDK_GTE_11_0) && defined(BRCM_SAI_SDK_XGS))) && \
+    !defined(TAJO_SDK))
+      std::nullopt, // UserDefinedFieldGroupMin0
+      std::nullopt, // UserDefinedFieldGroupMin1
+      std::nullopt, // UserDefinedFieldGroupMin2
+      std::nullopt, // UserDefinedFieldGroupMin3
+      std::nullopt, // UserDefinedFieldGroupMin4
+#endif
   };
 
   SaiAclTableTraits::AdapterHostKey adapterHostKey{addedAclTable->getID()};

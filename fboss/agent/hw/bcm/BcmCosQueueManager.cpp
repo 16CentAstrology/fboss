@@ -106,6 +106,16 @@ int cosqGportTraverseCallback(
   return 0l;
 };
 
+int64_t getCumulativeCounter(
+    facebook::fb303::ExportedStatMapImpl* statsMap,
+    const std::string& statName) {
+  auto statPtr = statsMap->getStatPtrNoExport(statName);
+  auto lockedStatPtr = statPtr->lock();
+  auto numLevels = lockedStatPtr->numLevels();
+  // Cumulative (ALLTIME) counters are at (numLevels - 1)
+  return lockedStatPtr->sum(numLevels - 1);
+}
+
 } // unnamed namespace
 
 namespace facebook::fboss {
@@ -344,6 +354,26 @@ void BcmCosQueueManager::updateQueueStats(
           cntr.first, cntr.second.aggregated.get(), now, portStats);
     }
   }
+}
+
+std::map<int32_t, int64_t> BcmCosQueueManager::getQueueStats(
+    BcmCosQueueStatType statType) {
+  std::map<int32_t, int64_t> queueOutPkts;
+  auto queueFlexCounterStatsLock = queueFlexCounterStats_.rlock();
+  if (queueFlexCounterStatsLock) {
+    auto statMap = facebook::fb303::fbData->getStatMap();
+    for (const auto& cntr : queueCounters_) {
+      if (cntr.first.isScopeQueues()) {
+        if (cntr.first.statType == statType) {
+          for (const auto& queue : cntr.second.queues) {
+            queueOutPkts[queue.first] =
+                getCumulativeCounter(statMap, queue.second->getName());
+          }
+        }
+      }
+    }
+  }
+  return queueOutPkts;
 }
 
 void BcmCosQueueManager::updateQueueStat(
@@ -660,6 +690,116 @@ void BcmCosQueueManager::programBandwidth(
       hw_->getUnit(), gport, queueIdx, rateMin, rateMax, flags);
   bcmCheckError(
       rv, "Unable to set pps/kbps for ", portName_, " queue ", queueIdx);
+}
+
+void BcmCosQueueManager::programEgressDynamicSharedEnabled(
+    cfg::StreamType streamType,
+    bcm_gport_t gport,
+    bcm_cos_queue_t cosQ) const {
+  bcm_cosq_control_t cosControl;
+  std::string streamTypeStr;
+
+  if (streamType == cfg::StreamType::MULTICAST) {
+    cosControl = bcmCosqControlEgressMCSharedDynamicEnable;
+    streamTypeStr = "mc";
+  } else {
+    cosControl = bcmCosqControlEgressUCSharedDynamicEnable;
+    streamTypeStr = "uc";
+  }
+
+  auto errorDescr = folly::to<std::string>(
+      "egress ", streamTypeStr, " shared dynamic enable value");
+  int rv = bcm_cosq_control_set(hw_->getUnit(), gport, cosQ, cosControl, 1);
+
+  bcmCheckError(
+      rv, "Unable to set ", errorDescr, " for ", portName_, " cosQ ", cosQ);
+}
+
+bool BcmCosQueueManager::isEgressDynamicSharedEnabled(
+    cfg::StreamType streamType,
+    bcm_gport_t gport,
+    bcm_cos_queue_t cosQ) const {
+  int value = 0;
+  std::string streamTypeStr;
+  bcm_cosq_control_t cosControl;
+
+  if (streamType == cfg::StreamType::MULTICAST) {
+    cosControl = bcmCosqControlEgressMCSharedDynamicEnable;
+    streamTypeStr = "mc";
+  } else {
+    cosControl = bcmCosqControlEgressUCSharedDynamicEnable;
+    streamTypeStr = "uc";
+  }
+
+  auto errorDescr = folly::to<std::string>(
+      "egress ", streamTypeStr, " shared dynamic enable");
+  int rv =
+      bcm_cosq_control_get(hw_->getUnit(), gport, cosQ, cosControl, &value);
+  bcmCheckError(
+      rv, "Unable to get ", errorDescr, " for ", portName_, " cosQ ", cosQ);
+  return (value != 0);
+}
+
+void BcmCosQueueManager::getAlpha(
+    bcm_gport_t gport,
+    bcm_cos_queue_t cosQ,
+    PortQueue* queue) const {
+  // check if EgressMC(UC)SharedDynamicEnable is enabled on the HW
+  // mostly its programmed as enabled by default during sdk init
+  // It causes failures on SIM where default settings may be different
+  cfg::MMUScalingFactor scalingFactor;
+  const auto& defaultQueueSettings =
+      getDefaultQueueSettings(queue->getStreamType());
+  if (isEgressDynamicSharedEnabled(queue->getStreamType(), gport, cosQ)) {
+    auto alpha = getControlValue(
+        queue->getStreamType(), gport, cosQ, BcmCosQueueControlType::ALPHA);
+    scalingFactor = utility::bcmAlphaToCfgAlpha(
+        static_cast<bcm_cosq_control_drop_limit_alpha_value_e>(alpha));
+  } else {
+    // pick the default valaue if not programmed
+    scalingFactor = defaultQueueSettings.getScalingFactor().value();
+  }
+
+  if (scalingFactor != defaultQueueSettings.getScalingFactor().value()) {
+    queue->setScalingFactor(scalingFactor);
+  }
+}
+
+void BcmCosQueueManager::programAlpha(
+    bcm_gport_t gport,
+    bcm_cos_queue_t cosQ,
+    const PortQueue& queue) {
+  const auto& defaultQueueSettings =
+      getDefaultQueueSettings(queue.getStreamType());
+
+  // EgressDynamicShared is mostly enabled by SDK during init
+  // but in some cases its not. Explicitly enable it always when we set
+  // alpha
+  // (1) SIM
+  // (2) mmu_lossless = 1
+  programEgressDynamicSharedEnabled(queue.getStreamType(), gport, cosQ);
+  auto alpha = utility::cfgAlphaToBcmAlpha(
+      defaultQueueSettings.getScalingFactor().value());
+  if (queue.getScalingFactor()) {
+    alpha = utility::cfgAlphaToBcmAlpha(queue.getScalingFactor().value());
+  }
+  auto programmedAlpha = getControlValue(
+      queue.getStreamType(), gport, cosQ, BcmCosQueueControlType::ALPHA);
+  if (programmedAlpha == alpha) {
+    XLOG(DBG2) << "Current programmed queue alpha for gport " << gport
+               << ", queue " << static_cast<int>(queue.getID())
+               << " is the same as target value:" << alpha
+               << ", skip programming alpha";
+  } else {
+    XLOG(DBG1) << "Setting gport " << gport << ", queue "
+               << static_cast<int>(queue.getID()) << " alpha to " << alpha;
+    programControlValue(
+        queue.getStreamType(),
+        gport,
+        cosQ,
+        BcmCosQueueControlType::ALPHA,
+        alpha);
+  }
 }
 
 void BcmCosQueueManager::updateQueueAggregatedStat(

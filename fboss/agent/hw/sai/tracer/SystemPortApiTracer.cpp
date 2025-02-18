@@ -11,7 +11,6 @@
 #include "fboss/agent/hw/sai/tracer/SystemPortApiTracer.h"
 #include <typeindex>
 #include <utility>
-#include "fboss/agent/hw/sai/tracer/SystemPortApiTracer.h"
 
 #include "fboss/agent/hw/sai/api/SystemPortApi.h"
 #include "fboss/agent/hw/sai/tracer/Utils.h"
@@ -23,10 +22,15 @@ std::map<int32_t, std::pair<std::string, std::size_t>> _SystemPortMap{
     SAI_ATTR_MAP(SystemPort, Type),
     SAI_ATTR_MAP(SystemPort, QosNumberOfVoqs),
     SAI_ATTR_MAP(SystemPort, QosVoqList),
+    SAI_ATTR_MAP(SystemPort, Port),
     SAI_ATTR_MAP(SystemPort, AdminState),
     SAI_ATTR_MAP(SystemPort, ConfigInfo),
     SAI_ATTR_MAP(SystemPort, QosTcToQueueMap),
 };
+
+void handleExtensionAttributes() {
+  SAI_EXT_ATTR_MAP(SystemPort, ShelPktDstEnable)
+}
 } // namespace
 
 namespace facebook::fboss {
@@ -37,6 +41,7 @@ WRAP_SET_ATTR_FUNC(system_port, SAI_OBJECT_TYPE_SYSTEM_PORT, systemPort);
 WRAP_GET_ATTR_FUNC(system_port, SAI_OBJECT_TYPE_SYSTEM_PORT, systemPort);
 
 sai_system_port_api_t* wrappedSystemPortApi() {
+  handleExtensionAttributes();
   static sai_system_port_api_t systemPortWrappers;
 
   systemPortWrappers.create_system_port = &wrap_create_system_port;

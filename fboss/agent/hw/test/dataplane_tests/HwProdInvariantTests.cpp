@@ -19,11 +19,8 @@
 #include "fboss/agent/hw/test/dataplane_tests/HwProdInvariantHelper.h"
 
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
-#include "fboss/agent/hw/test/dataplane_tests/HwTestPfcUtils.h"
 #include "fboss/agent/hw/test/dataplane_tests/HwTestQosUtils.h"
-#include "fboss/agent/hw/test/dataplane_tests/HwTestQueuePerHostUtils.h"
-
-#include "fboss/agent/state/Port.h"
+#include "fboss/agent/test/utils/QueuePerHostTestUtils.h"
 
 DEFINE_bool(
     dynamic_config,
@@ -58,7 +55,8 @@ class HwProdInvariantsTest : public HwLinkStateDependentTest {
     // If we're passed a config, there's a high probability that it's a prod
     // config and the ports are not in loopback mode.
     for (auto& port : *config.ports()) {
-      port.loopbackMode() = getAsic()->desiredLoopbackMode();
+      port.loopbackMode() =
+          getAsic()->getDesiredLoopbackMode(port.get_portType());
     }
 
     return config;
@@ -67,7 +65,10 @@ class HwProdInvariantsTest : public HwLinkStateDependentTest {
   virtual cfg::SwitchConfig initConfigHelper() const {
     auto cfg = utility::onePortPerInterfaceConfig(
         getHwSwitch(), masterLogicalPortIds());
-    utility::addProdFeaturesToConfig(cfg, getHwSwitch());
+    utility::addProdFeaturesToConfig(
+        cfg,
+        getHwSwitch()->getPlatform()->getAsic(),
+        getHwSwitchEnsemble()->isSai());
     return cfg;
   }
 
@@ -105,7 +106,10 @@ class HwProdInvariantsRswTest : public HwProdInvariantsTest {
  protected:
   cfg::SwitchConfig initConfigHelper() const override {
     auto config = utility::createProdRswConfig(
-        getHwSwitch(), masterLogicalPortIds(), getHwSwitchEnsemble()->isSai());
+        getHwSwitch(),
+        masterLogicalPortIds(),
+        getHwSwitchEnsemble()->isSai(),
+        false /* Strict priority disabled */);
     return config;
   }
 
@@ -132,11 +136,31 @@ TEST_F(HwProdInvariantsRswTest, verifyInvariants) {
   verifyAcrossWarmBoots([]() {}, verify);
 }
 
+class HwProdInvariantsRswStrictPriorityTest : public HwProdInvariantsRswTest {
+ protected:
+  cfg::SwitchConfig initConfigHelper() const override {
+    auto config = utility::createProdRswConfig(
+        getHwSwitch(),
+        masterLogicalPortIds(),
+        getHwSwitchEnsemble()->isSai(),
+        true /* Strict priority enabled */);
+    return config;
+  }
+};
+
+TEST_F(HwProdInvariantsRswStrictPriorityTest, verifyInvariants) {
+  auto verify = [this]() { this->verifyInvariants(getInvariantOptions()); };
+  verifyAcrossWarmBoots([]() {}, verify);
+}
+
 class HwProdInvariantsFswTest : public HwProdInvariantsTest {
  protected:
   cfg::SwitchConfig initConfigHelper() const override {
     auto config = utility::createProdFswConfig(
-        getHwSwitch(), masterLogicalPortIds(), getHwSwitchEnsemble()->isSai());
+        getHwSwitch(),
+        masterLogicalPortIds(),
+        getHwSwitchEnsemble()->isSai(),
+        false /* Strict priority disabled */);
     return config;
   }
 
@@ -159,6 +183,23 @@ class HwProdInvariantsFswTest : public HwProdInvariantsTest {
 };
 
 TEST_F(HwProdInvariantsFswTest, verifyInvariants) {
+  auto verify = [this]() { this->verifyInvariants(getInvariantOptions()); };
+  verifyAcrossWarmBoots([]() {}, verify);
+}
+
+class HwProdInvariantsFswStrictPriorityTest : public HwProdInvariantsFswTest {
+ protected:
+  cfg::SwitchConfig initConfigHelper() const override {
+    auto config = utility::createProdFswConfig(
+        getHwSwitch(),
+        masterLogicalInterfacePortIds(),
+        getHwSwitchEnsemble()->isSai(),
+        true /* Strict priority enabled */);
+    return config;
+  }
+};
+
+TEST_F(HwProdInvariantsFswStrictPriorityTest, verifyInvariants) {
   auto verify = [this]() { this->verifyInvariants(getInvariantOptions()); };
   verifyAcrossWarmBoots([]() {}, verify);
 }
@@ -230,6 +271,7 @@ class HwProdInvariantsMmuLosslessTest : public HwProdInvariantsTest {
   void SetUp() override {
     FLAGS_mmu_lossless_mode = true;
     FLAGS_qgroup_guarantee_enable = true;
+    FLAGS_skip_buffer_reservation = true;
 
     HwLinkStateDependentTest::SetUp();
     prodInvariants_ = std::make_unique<HwProdRtswInvariantHelper>(
@@ -282,12 +324,12 @@ TEST_F(HwProdInvariantsMmuLosslessTest, ValidateMmuLosslessMode) {
 }
 
 TEST_F(HwProdInvariantsMmuLosslessTest, ValidateWarmBootNoDiscards) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     // run the loop, so traffic continues running
     sendTrafficInLoop();
   };
 
-  auto verify = [=]() { verifyNoDiscards(); };
+  auto verify = [=, this]() { verifyNoDiscards(); };
   verifyAcrossWarmBoots(setup, verify);
 }
 

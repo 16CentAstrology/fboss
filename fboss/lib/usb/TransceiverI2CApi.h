@@ -9,34 +9,18 @@
  */
 #pragma once
 
-#include <folly/io/async/EventBase.h>
-#include "fboss/lib/i2c/gen-cpp2/i2c_controller_stats_types.h"
-
 #include <cstdint>
 #include <map>
 #include <stdexcept>
 #include <string>
 
+#include <folly/io/async/EventBase.h>
+
+#include "fboss/lib/i2c/gen-cpp2/i2c_controller_stats_types.h"
+#include "fboss/lib/usb/TransceiverAccessParameter.h"
+
 namespace facebook::fboss {
 enum class ModulePresence { PRESENT, ABSENT, UNKNOWN };
-
-struct TransceiverAccessParameter {
-  std::optional<uint8_t> i2cAddress;
-  int offset;
-  int len;
-  std::optional<int> page;
-  std::optional<int> bank;
-
-  TransceiverAccessParameter(uint8_t i2cAddress_, int offset_, int len_)
-      : i2cAddress(i2cAddress_), offset(offset_), len(len_) {}
-
-  TransceiverAccessParameter(
-      uint8_t i2cAddress_,
-      int offset_,
-      int len_,
-      int page_)
-      : i2cAddress(i2cAddress_), offset(offset_), len(len_), page(page_) {}
-};
 
 class I2cError : public std::exception {
  public:
@@ -56,8 +40,9 @@ class I2cError : public std::exception {
  */
 class TransceiverI2CApi {
  public:
-  TransceiverI2CApi(){};
-  virtual ~TransceiverI2CApi() {}
+  TransceiverI2CApi() = default;
+  ;
+  virtual ~TransceiverI2CApi() = default;
 
   virtual void open() = 0;
   virtual void close() = 0;
@@ -83,20 +68,20 @@ class TransceiverI2CApi {
    * Function bring transceiver out of reset whenever a transceiver has been
    * detected plugging in.
    */
-  virtual void ensureOutOfReset(unsigned int module){};
+  virtual void ensureOutOfReset(unsigned int module) {};
 
   /* This function does a hard reset to the QSFP through I2C/CPLD interface
    * in the given platform. This is a virtual function at this level and it
    * will be overridden by appropriate platform class like wedge100I2CBus etc.
    */
-  virtual void triggerQsfpHardReset(unsigned int module){};
+  virtual void triggerQsfpHardReset(unsigned int module) {};
 
   /* This function will bring all the transceivers out of reset. This is a
    * virtual function at this level and it will be overridden by appropriate
    * platform class. Some platforms clear transceiver from reset by default.
    * So function we will stay no op for those platforms.
    */
-  virtual void clearAllTransceiverReset(){};
+  virtual void clearAllTransceiverReset() {};
 
   /*
    * Function that returns the eventbase that suppose to execute the I2C txn
@@ -118,11 +103,15 @@ class TransceiverI2CApi {
     return dummyStat;
   }
 
-  // Addresses to be queried by external callers:
-  enum : uint8_t {
-    ADDR_QSFP = 0x50,
-    ADDR_QSFP_A2 = 0x51,
-  };
+  /*
+   * Functions to do i2c operation time profiling
+   */
+  virtual void i2cTimeProfilingStart(unsigned int /* module */) const {}
+  virtual void i2cTimeProfilingEnd(unsigned int /* module */) const {}
+  virtual std::pair<uint64_t, uint64_t> getI2cTimeProfileMsec(
+      unsigned int /* module */) const {
+    return std::make_pair(0, 0);
+  }
 };
 
 } // namespace facebook::fboss

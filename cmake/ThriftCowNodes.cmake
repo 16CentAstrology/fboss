@@ -27,6 +27,7 @@ add_library(
   fboss/thrift_cow/nodes/ThriftUnionNode-inl.h
   fboss/thrift_cow/nodes/Traits.h
   fboss/thrift_cow/nodes/Types.h
+  fboss/thrift_cow/nodes/NodeUtils.h
 )
 
 set_target_properties(thrift_cow_nodes PROPERTIES LINKER_LANGUAGE CXX)
@@ -35,6 +36,7 @@ target_link_libraries(thrift_cow_nodes
   thrift_cow_serializer
   nodebase
   thrift_cow_visitors
+  fsdb_oper_cpp2
   Folly::folly
   FBThrift::thriftcpp2
 )

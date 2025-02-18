@@ -15,7 +15,6 @@
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/TestUtils.h"
 
-#include <boost/container/flat_map.hpp>
 #include <gtest/gtest.h>
 
 using namespace facebook::fboss;
@@ -156,17 +155,17 @@ void checkQosSwState(
     std::shared_ptr<SwitchState> state) {
   auto cfgQosPolicies = *config.qosPolicies();
   EXPECT_NE(nullptr, state);
-  ASSERT_EQ(cfgQosPolicies.size(), state->getQosPolicies()->size());
+  ASSERT_EQ(cfgQosPolicies.size(), state->getQosPolicies()->numNodes());
 
   for (const auto& cfgQosPolicy : cfgQosPolicies) {
-    auto swQosPolicy = state->getQosPolicy(*cfgQosPolicy.name());
+    auto swQosPolicy = state->getQosPolicies()->getNodeIf(*cfgQosPolicy.name());
     checkQosPolicy(cfgQosPolicy, swQosPolicy);
   }
 }
 
 void checkDelta(
-    const shared_ptr<QosPolicyMap>& oldQosPolicies,
-    const shared_ptr<QosPolicyMap>& newQosPolicies,
+    const shared_ptr<MultiSwitchQosPolicyMap>& oldQosPolicies,
+    const shared_ptr<MultiSwitchQosPolicyMap>& newQosPolicies,
     const std::set<std::string>& changedIDs,
     const std::set<std::string>& addedIDs,
     const std::set<std::string>& removedIDs) {
@@ -231,6 +230,10 @@ cfg::QosMap cfgQosMap() {
   qosMap.trafficClassToPgId() = tc2PgId;
   qosMap.pfcPriorityToPgId() = pfc2PgId;
   return qosMap;
+}
+
+HwSwitchMatcher scope() {
+  return HwSwitchMatcher{std::unordered_set<SwitchID>{SwitchID(0)}};
 }
 
 } // namespace
@@ -383,8 +386,8 @@ TEST(QosPolicy, PortDefaultQosPolicy) {
   cfg::SwitchConfig config;
   auto platform = createMockPlatform();
   auto stateV0 = make_shared<SwitchState>();
-  stateV0->registerPort(PortID(1), "port1");
-  stateV0->registerPort(PortID(2), "port2");
+  registerPort(stateV0, PortID(1), "port1", scope());
+  registerPort(stateV0, PortID(2), "port2", scope());
 
   config.ports()->resize(2);
   preparedMockPortConfig(config.ports()[0], 1);
@@ -407,8 +410,8 @@ TEST(QosPolicy, PortQosPolicyOverride) {
   cfg::SwitchConfig config;
   auto platform = createMockPlatform();
   auto stateV0 = make_shared<SwitchState>();
-  stateV0->registerPort(PortID(1), "port1");
-  stateV0->registerPort(PortID(2), "port2");
+  registerPort(stateV0, PortID(1), "port1", scope());
+  registerPort(stateV0, PortID(2), "port2", scope());
 
   config.ports()->resize(2);
   preparedMockPortConfig(config.ports()[0], 1);
@@ -473,18 +476,18 @@ TEST(QosPolicy, QosMap) {
   *policy.name() = "qosPolicy";
   policy.qosMap() = cfgQosMap();
   state = publishAndApplyConfig(state, &config, platform.get());
-  checkQosPolicy(policy, state->getQosPolicy("qosPolicy"));
+  checkQosPolicy(policy, state->getQosPolicies()->getNodeIf("qosPolicy"));
 
   // modiify qos map
   policy.qosMap()->dscpMaps()->pop_back();
   policy.qosMap()->expMaps()->pop_back();
   state = publishAndApplyConfig(state, &config, platform.get());
-  checkQosPolicy(policy, state->getQosPolicy("qosPolicy"));
+  checkQosPolicy(policy, state->getQosPolicies()->getNodeIf("qosPolicy"));
 
   // remove expMaps altogether
   policy.qosMap()->expMaps()->clear();
   state = publishAndApplyConfig(state, &config, platform.get());
-  checkQosPolicy(policy, state->getQosPolicy("qosPolicy"));
+  checkQosPolicy(policy, state->getQosPolicies()->getNodeIf("qosPolicy"));
 
   // allow both qos rule or maps
   *policy.rules() = dscpRules({{2, {36}}, {3, {34, 35}}});
@@ -501,9 +504,13 @@ TEST(QosPolicy, DefaultQosPolicy) {
   *policy.name() = "qosPolicy";
   policy.qosMap() = cfgQosMap();
   state = publishAndApplyConfig(state, &config, platform.get());
-  checkQosPolicy(policy, state->getQosPolicy("qosPolicy"));
+  checkQosPolicy(policy, state->getQosPolicies()->getNodeIf("qosPolicy"));
   // default policy is not set
   EXPECT_EQ(state->getDefaultDataPlaneQosPolicy(), nullptr);
+  EXPECT_EQ(
+      utility::getFirstNodeIf(state->getSwitchSettings())
+          ->getDefaultDataPlaneQosPolicy(),
+      nullptr);
 
   // set default policy
   cfg::TrafficPolicyConfig defaultQosPolicy;
@@ -512,16 +519,24 @@ TEST(QosPolicy, DefaultQosPolicy) {
   state = publishAndApplyConfig(state, &config, platform.get());
 
   EXPECT_NE(state->getDefaultDataPlaneQosPolicy(), nullptr);
+  EXPECT_NE(
+      utility::getFirstNodeIf(state->getSwitchSettings())
+          ->getDefaultDataPlaneQosPolicy(),
+      nullptr);
   checkQosPolicy(policy, state->getDefaultDataPlaneQosPolicy());
-  EXPECT_EQ(state->getQosPolicy("qosPolicy"), nullptr);
+  EXPECT_EQ(
+      state->getDefaultDataPlaneQosPolicy(),
+      utility::getFirstNodeIf(state->getSwitchSettings())
+          ->getDefaultDataPlaneQosPolicy());
+  EXPECT_EQ(state->getQosPolicies()->getNodeIf("qosPolicy"), nullptr);
 }
 
 TEST(QosPolicy, DefaultQosPolicyOnPorts) {
   cfg::SwitchConfig config;
   auto platform = createMockPlatform();
   auto state = make_shared<SwitchState>();
-  state->registerPort(PortID(1), "port1");
-  state->registerPort(PortID(2), "port2");
+  registerPort(state, PortID(1), "port1", scope());
+  registerPort(state, PortID(2), "port2", scope());
 
   config.ports()->resize(2);
   preparedMockPortConfig(config.ports()[0], 1);
@@ -547,8 +562,8 @@ TEST(QosPolicy, QosPolicyPortOverride) {
   cfg::SwitchConfig config;
   auto platform = createMockPlatform();
   auto state = make_shared<SwitchState>();
-  state->registerPort(PortID(1), "port1");
-  state->registerPort(PortID(2), "port2");
+  registerPort(state, PortID(1), "port1", scope());
+  registerPort(state, PortID(2), "port2", scope());
 
   config.ports()->resize(2);
   preparedMockPortConfig(config.ports()[0], 1);
@@ -572,7 +587,7 @@ TEST(QosPolicy, QosPolicyPortOverride) {
   state = publishAndApplyConfig(state, &config, platform.get());
 
   checkQosPolicy(policy0, state->getDefaultDataPlaneQosPolicy());
-  checkQosPolicy(policy1, state->getQosPolicy("qosPolicy1"));
+  checkQosPolicy(policy1, state->getQosPolicies()->getNodeIf("qosPolicy1"));
 
   const auto port0 = state->getPort(PortID(1));
   ASSERT_EQ("qosPolicy1", port0->getQosPolicy().value());
@@ -636,7 +651,7 @@ TEST(QosPolicy, InvalidPortQosPolicy) {
   cfg::SwitchConfig config0;
   auto platform = createMockPlatform();
   auto stateV0 = make_shared<SwitchState>();
-  stateV0->registerPort(PortID(1), "port1");
+  registerPort(stateV0, PortID(1), "port1", scope());
 
   config0.ports()->resize(1);
   preparedMockPortConfig(config0.ports()[0], 1);
@@ -649,7 +664,7 @@ TEST(QosPolicy, InvalidPortQosPolicy) {
 
   cfg::SwitchConfig config1;
   auto stateV1 = make_shared<SwitchState>();
-  stateV1->registerPort(PortID(1), "port1");
+  registerPort(stateV1, PortID(1), "port1", scope());
 
   config1.ports()->resize(1);
   preparedMockPortConfig(config1.ports()[0], 1);
@@ -661,7 +676,7 @@ TEST(QosPolicy, InvalidPortQosPolicy) {
 
   cfg::SwitchConfig config2;
   auto stateV2 = make_shared<SwitchState>();
-  stateV2->registerPort(PortID(1), "port1");
+  registerPort(stateV2, PortID(1), "port1", scope());
 
   cfg::TrafficPolicyConfig cpuPolicy;
   cpuPolicy.defaultQosPolicy() = "qp1";
@@ -815,7 +830,7 @@ TEST(QosPolicy, ValidatePgIdDelta) {
   auto state1 = publishAndApplyConfig(state, &config, platform.get());
   EXPECT_NE(nullptr, state1);
 
-  checkQosPolicy(policy, state1->getQosPolicy("qosPolicy"));
+  checkQosPolicy(policy, state1->getQosPolicies()->getNodeIf("qosPolicy"));
 
   tc2PgId.emplace(3, 3);
   qosMap.pfcPriorityToQueueId() = tc2PgId;
@@ -824,7 +839,7 @@ TEST(QosPolicy, ValidatePgIdDelta) {
   auto state2 = publishAndApplyConfig(state1, &config, platform.get());
   EXPECT_NE(nullptr, state2);
 
-  checkQosPolicy(policy, state2->getQosPolicy("qosPolicy"));
+  checkQosPolicy(policy, state2->getQosPolicies()->getNodeIf("qosPolicy"));
 
   qosMap.trafficClassToPgId().reset();
   policy.qosMap() = qosMap;

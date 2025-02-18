@@ -34,13 +34,28 @@ void setPortLoopbackMode(
       rv, "failed to set loopback mode state for port");
 }
 
-void setPortTxEnable(const HwSwitch* hw, PortID port, bool enable) {
+void setCreditWatchdogAndPortTx(const HwSwitch* hw, PortID port, bool enable) {
+  setPortTx(hw, port, enable);
+  // Credit watchdog needs to be set for VOQ switches
+  CHECK(hw->getPlatform()->getAsic()->getSwitchType() != cfg::SwitchType::VOQ)
+      << " VOQ switch types not supported in BCM layer";
+}
+
+void enableCreditWatchdog(const HwSwitch* /*hw*/, bool /*enable*/) {
+  XLOG(FATAL) << "Credit watchdog not supported bcm platform";
+}
+
+void setPortTx(const HwSwitch* hw, PortID port, bool enable) {
   auto bcmSwitch = static_cast<const BcmSwitch*>(hw);
 
   auto bcmPortId = bcmSwitch->getPortTable()->getBcmPort(port)->getBcmPortId();
   auto rv = bcm_port_control_set(
       bcmSwitch->getUnit(), bcmPortId, bcmPortControlTxEnable, enable ? 1 : 0);
   bcmCheckError(rv, "failed to disable TX");
+}
+
+int getLoopbackMode(cfg::PortLoopbackMode lbMode) {
+  return fbToBcmLoopbackMode(lbMode);
 }
 
 void enableTransceiverProgramming(bool /*enable*/) {}

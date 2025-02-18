@@ -15,7 +15,13 @@
 
 #include <gtest/gtest.h>
 
-namespace {} // namespace
+namespace {
+facebook::fboss::HwSwitchMatcher scope() {
+  return facebook::fboss::HwSwitchMatcher{
+      std::unordered_set<facebook::fboss::SwitchID>{
+          facebook::fboss::SwitchID(0)}};
+}
+} // namespace
 
 using namespace facebook::fboss;
 
@@ -28,7 +34,11 @@ TEST(FlowletSwitching, addUpdate) {
   flowletSwitchingConfig->fromThrift(flowletCfg);
 
   // update the state with flowletCfg
-  state->resetFlowletSwitchingConfig(flowletSwitchingConfig);
+  auto switchSettings = std::make_shared<SwitchSettings>();
+  switchSettings->setFlowletSwitchingConfig(flowletSwitchingConfig);
+  auto multiSwitchSwitchSettings = std::make_shared<MultiSwitchSettings>();
+  multiSwitchSwitchSettings->addNode(scope().matcherString(), switchSettings);
+  state->resetSwitchSettings(multiSwitchSwitchSettings);
   auto flowletCfg1 = state->getFlowletSwitchingConfig();
   EXPECT_TRUE(flowletCfg1);
   EXPECT_FALSE(flowletCfg1->isPublished());
@@ -36,6 +46,8 @@ TEST(FlowletSwitching, addUpdate) {
   EXPECT_EQ(
       flowletCfg1->getFlowletTableSize(),
       cfg::switch_config_constants::DEFAULT_FLOWLET_TABLE_SIZE());
+  EXPECT_EQ(
+      flowletCfg1->getSwitchingMode(), cfg::SwitchingMode::FLOWLET_QUALITY);
 
   flowletCfg.inactivityIntervalUsecs() = 60;
   flowletCfg.flowletTableSize() = 1024;
@@ -44,12 +56,18 @@ TEST(FlowletSwitching, addUpdate) {
   flowletCfg.dynamicQueueMinThresholdBytes() = 0x5D44;
   flowletCfg.dynamicQueueMaxThresholdBytes() = 0xFE00;
   flowletCfg.dynamicSampleRate() = 62500;
-  flowletCfg.portScalingFactor() = 400;
-  flowletCfg.portLoadWeight() = 50;
-  flowletCfg.portQueueWeight() = 40;
+  flowletCfg.dynamicEgressMinThresholdBytes() = 1000;
+  flowletCfg.dynamicEgressMaxThresholdBytes() = 10000;
+  flowletCfg.dynamicPhysicalQueueExponent() = 3;
+  flowletCfg.maxLinks() = 9;
+  flowletCfg.switchingMode() = cfg::SwitchingMode::PER_PACKET_QUALITY;
 
   flowletSwitchingConfig->fromThrift(flowletCfg);
-  state->resetFlowletSwitchingConfig(flowletSwitchingConfig);
+  switchSettings = std::make_shared<SwitchSettings>();
+  switchSettings->setFlowletSwitchingConfig(flowletSwitchingConfig);
+  multiSwitchSwitchSettings = std::make_shared<MultiSwitchSettings>();
+  multiSwitchSwitchSettings->addNode(scope().matcherString(), switchSettings);
+  state->resetSwitchSettings(multiSwitchSwitchSettings);
   auto flowletCfg2 = state->getFlowletSwitchingConfig();
   EXPECT_TRUE(flowletCfg2);
   EXPECT_FALSE(flowletCfg2->isPublished());
@@ -60,9 +78,25 @@ TEST(FlowletSwitching, addUpdate) {
   EXPECT_EQ(flowletCfg2->getDynamicQueueMinThresholdBytes(), 0x5D44);
   EXPECT_EQ(flowletCfg2->getDynamicQueueMaxThresholdBytes(), 0xFE00);
   EXPECT_EQ(flowletCfg2->getDynamicSampleRate(), 62500);
-  EXPECT_EQ(flowletCfg2->getPortScalingFactor(), 400);
-  EXPECT_EQ(flowletCfg2->getPortLoadWeight(), 50);
-  EXPECT_EQ(flowletCfg2->getPortQueueWeight(), 40);
+  EXPECT_EQ(flowletCfg2->getDynamicEgressMinThresholdBytes(), 1000);
+  EXPECT_EQ(flowletCfg2->getDynamicEgressMaxThresholdBytes(), 10000);
+  EXPECT_EQ(flowletCfg2->getDynamicPhysicalQueueExponent(), 3);
+  EXPECT_EQ(flowletCfg2->getMaxLinks(), 9);
+  EXPECT_EQ(
+      flowletCfg2->getSwitchingMode(), cfg::SwitchingMode::PER_PACKET_QUALITY);
+
+  flowletCfg.switchingMode() = cfg::SwitchingMode::FIXED_ASSIGNMENT;
+  flowletSwitchingConfig->fromThrift(flowletCfg);
+  switchSettings = std::make_shared<SwitchSettings>();
+  switchSettings->setFlowletSwitchingConfig(flowletSwitchingConfig);
+  multiSwitchSwitchSettings = std::make_shared<MultiSwitchSettings>();
+  multiSwitchSwitchSettings->addNode(scope().matcherString(), switchSettings);
+  state->resetSwitchSettings(multiSwitchSwitchSettings);
+  flowletCfg2 = state->getFlowletSwitchingConfig();
+  EXPECT_TRUE(flowletCfg2);
+  EXPECT_FALSE(flowletCfg2->isPublished());
+  EXPECT_EQ(
+      flowletCfg2->getSwitchingMode(), cfg::SwitchingMode::FIXED_ASSIGNMENT);
 }
 
 TEST(FlowletSwitching, publish) {
@@ -72,7 +106,11 @@ TEST(FlowletSwitching, publish) {
 
   // convert to state
   flowletSwitchingConfig->fromThrift(flowletCfg);
-  state->resetFlowletSwitchingConfig(flowletSwitchingConfig);
+  auto switchSettings = std::make_shared<SwitchSettings>();
+  switchSettings->setFlowletSwitchingConfig(flowletSwitchingConfig);
+  auto multiSwitchSwitchSettings = std::make_shared<MultiSwitchSettings>();
+  multiSwitchSwitchSettings->addNode(scope().matcherString(), switchSettings);
+  state->resetSwitchSettings(multiSwitchSwitchSettings);
   // update the state with flowletCfg
   state->publish();
   EXPECT_TRUE(state->getFlowletSwitchingConfig()->isPublished());
@@ -91,14 +129,20 @@ TEST(FlowletSwitching, serDeserSwitchState) {
   flowletCfg.dynamicQueueMinThresholdBytes() = 0x5D44;
   flowletCfg.dynamicQueueMaxThresholdBytes() = 0xFE00;
   flowletCfg.dynamicSampleRate() = 62500;
-  flowletCfg.portScalingFactor() = 400;
-  flowletCfg.portLoadWeight() = 50;
-  flowletCfg.portQueueWeight() = 40;
+  flowletCfg.dynamicEgressMinThresholdBytes() = 1000;
+  flowletCfg.dynamicEgressMaxThresholdBytes() = 10000;
+  flowletCfg.dynamicPhysicalQueueExponent() = 3;
+  flowletCfg.maxLinks() = 7;
+  flowletCfg.switchingMode() = cfg::SwitchingMode::PER_PACKET_QUALITY;
 
   // convert to state
   flowletSwitchingConfig->fromThrift(flowletCfg);
   // update the state with flowletCfg
-  state->resetFlowletSwitchingConfig(flowletSwitchingConfig);
+  auto switchSettings = std::make_shared<SwitchSettings>();
+  switchSettings->setFlowletSwitchingConfig(flowletSwitchingConfig);
+  auto multiSwitchSwitchSettings = std::make_shared<MultiSwitchSettings>();
+  multiSwitchSwitchSettings->addNode(scope().matcherString(), switchSettings);
+  state->resetSwitchSettings(multiSwitchSwitchSettings);
 
   auto serialized = state->toThrift();
   auto stateBack = SwitchState::fromThrift(serialized);
@@ -129,6 +173,8 @@ TEST(FlowletSwitching, applyConfig) {
   EXPECT_EQ(
       flowletCfg1->getFlowletTableSize(),
       cfg::switch_config_constants::DEFAULT_FLOWLET_TABLE_SIZE());
+  EXPECT_EQ(
+      flowletCfg1->getSwitchingMode(), cfg::SwitchingMode::FLOWLET_QUALITY);
 
   // change config
   flowletCfg.inactivityIntervalUsecs() = 60;
@@ -138,9 +184,10 @@ TEST(FlowletSwitching, applyConfig) {
   flowletCfg.dynamicQueueMinThresholdBytes() = 0x5D44;
   flowletCfg.dynamicQueueMaxThresholdBytes() = 0xFE00;
   flowletCfg.dynamicSampleRate() = 62500;
-  flowletCfg.portScalingFactor() = 400;
-  flowletCfg.portLoadWeight() = 50;
-  flowletCfg.portQueueWeight() = 40;
+  flowletCfg.dynamicEgressMinThresholdBytes() = 1000;
+  flowletCfg.dynamicEgressMaxThresholdBytes() = 10000;
+  flowletCfg.dynamicPhysicalQueueExponent() = 3;
+  flowletCfg.switchingMode() = cfg::SwitchingMode::PER_PACKET_QUALITY;
 
   config.flowletSwitchingConfig() = flowletCfg;
   auto stateV3 = publishAndApplyConfig(stateV2, &config, platform.get());
@@ -155,13 +202,33 @@ TEST(FlowletSwitching, applyConfig) {
   EXPECT_EQ(flowletCfg2->getDynamicQueueMinThresholdBytes(), 0x5D44);
   EXPECT_EQ(flowletCfg2->getDynamicQueueMaxThresholdBytes(), 0xFE00);
   EXPECT_EQ(flowletCfg2->getDynamicSampleRate(), 62500);
-  EXPECT_EQ(flowletCfg2->getPortScalingFactor(), 400);
-  EXPECT_EQ(flowletCfg2->getPortLoadWeight(), 50);
-  EXPECT_EQ(flowletCfg2->getPortQueueWeight(), 40);
+  EXPECT_EQ(flowletCfg2->getDynamicEgressMinThresholdBytes(), 1000);
+  EXPECT_EQ(flowletCfg2->getDynamicEgressMaxThresholdBytes(), 10000);
+  EXPECT_EQ(flowletCfg2->getDynamicPhysicalQueueExponent(), 3);
+  EXPECT_EQ(
+      flowletCfg2->getSwitchingMode(), cfg::SwitchingMode::PER_PACKET_QUALITY);
+
+  flowletCfg.switchingMode() = cfg::SwitchingMode::FIXED_ASSIGNMENT;
+
+  config.flowletSwitchingConfig() = flowletCfg;
+  auto stateV4 = publishAndApplyConfig(stateV2, &config, platform.get());
+  ASSERT_NE(nullptr, stateV4);
+  flowletCfg2 = stateV4->getFlowletSwitchingConfig();
+  EXPECT_TRUE(flowletCfg2);
+  EXPECT_FALSE(flowletCfg2->isPublished());
+  EXPECT_EQ(
+      flowletCfg2->getSwitchingMode(), cfg::SwitchingMode::FIXED_ASSIGNMENT);
+
+  // Ensure that the global and switchSettings field are set for
+  // backward/forward compatibility
+  EXPECT_EQ(
+      stateV2->getFlowletSwitchingConfig(),
+      utility::getFirstNodeIf(stateV2->getSwitchSettings())
+          ->getFlowletSwitchingConfig());
 
   // undo flowlet switching cfg
   config.flowletSwitchingConfig().reset();
-  auto stateV4 = publishAndApplyConfig(stateV3, &config, platform.get());
+  auto stateV5 = publishAndApplyConfig(stateV3, &config, platform.get());
   ASSERT_NE(nullptr, stateV4);
-  EXPECT_EQ(stateV4->getFlowletSwitchingConfig(), nullptr);
+  EXPECT_EQ(stateV5->getFlowletSwitchingConfig(), nullptr);
 }

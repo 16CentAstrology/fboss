@@ -19,9 +19,9 @@ extern "C" {
 }
 
 #include <folly/MapUtil.h>
-#include <folly/io/async/EventBase.h>
 #include <folly/lang/CString.h>
 #include <folly/logging/xlog.h>
+#include "fboss/agent/AgentFeatures.h"
 #include "fboss/agent/NlError.h"
 #include "fboss/agent/RxPacket.h"
 #include "fboss/agent/SwSwitch.h"
@@ -40,10 +40,9 @@ const int kDefaultMtu = 1500;
 
 namespace facebook::fboss {
 
-using folly::EventBase;
 using folly::IPAddress;
 
-TunManager::TunManager(SwSwitch* sw, EventBase* evb) : sw_(sw), evb_(evb) {
+TunManager::TunManager(SwSwitch* sw, FbossEventBase* evb) : sw_(sw), evb_(evb) {
   DCHECK(sw) << "NULL pointer to SwSwitch.";
   DCHECK(evb) << "NULL pointer to EventBase";
 
@@ -85,7 +84,7 @@ void TunManager::stateUpdated(const StateDelta& delta) {
   // with that.
 
   auto state = delta.newState();
-  evb_->runInEventBaseThread([this, state]() { this->sync(state); });
+  evb_->runInFbossEventBaseThread([this, state]() { this->sync(state); });
 }
 
 bool TunManager::sendPacketToHost(
@@ -102,7 +101,7 @@ bool TunManager::sendPacketToHost(
 }
 
 void TunManager::addExistingIntf(const std::string& ifName, int ifIndex) {
-  InterfaceID ifID = util::getIDFromTunIntfName(ifName);
+  InterfaceID ifID = utility::getIDFromTunIntfName(ifName);
   auto ret = intfs_.emplace(ifID, nullptr);
   if (!ret.second) {
     throw FbossError("Duplicate interface ", ifName);
@@ -233,9 +232,7 @@ void TunManager::setIntfStatus(
 
 int TunManager::getTableId(InterfaceID ifID) const {
   int tableId;
-  auto switchType = sw_->getState()->getSwitchSettings()->getSwitchType();
-
-  switch (switchType) {
+  switch (sw_->getSwitchInfoTable().l3SwitchType()) {
     case cfg::SwitchType::NPU:
       tableId = getTableIdForNpu(ifID);
       break;
@@ -285,21 +282,60 @@ int TunManager::getTableIdForVoq(InterfaceID ifID) const {
   // use range 1-253 for our usecase.
   //
   // VOQ systems use port based RIFs.
-  // Port based RIF IDs are assigned starting minimum system port range.
-  // Thus, map ifID to 1-253 with ifID - sysPortMin + 1
-  // In practice, [sysPortMin, sysPortMax] range is << 253, so no risk of
-  // overflow. Moreover, getTableID asserts that the computed ID is <= 253
-  if (!sw_->getState()->getSwitchSettings()->getSystemPortRange()) {
-    throw FbossError("No system port range in SwitchSettings for VOQ switch");
-  }
-  auto sysPortMin =
-      *sw_->getState()->getSwitchSettings()->getSystemPortRange()->minimum();
+  // Port based RIF IDs are assigned starting minimum system port range of the
+  // first switch. Thus, map ifID to 1-253 with ifID - firstSwitchSysPortMin
+  // In practice, [firstSwitchSysPortMin, lastSwitchSysPortUsed] range is <<
+  // 253. Moreover, getTableID asserts that the computed ID is <= 253
 
-  return ifID - sysPortMin;
+  const auto& switchIdToSwitchInfo =
+      utility::getFirstNodeIf(sw_->getState()->getSwitchSettings())
+          ->getSwitchIdToSwitchInfo();
+  if (isDualStage3Q2QMode()) {
+    if (switchIdToSwitchInfo.size() > 1) {
+      throw FbossError(
+          "No Tun intf support for - multi asic support for 2 stage scale setup");
+    }
+    auto intf = sw_->getState()->getInterfaces()->getNode(ifID);
+    auto constexpr kLocalIntfTableStart = 1;
+    auto constexpr kLower16KIntfTableStart = 25;
+    auto constexpr kHigher16KIntfTableStart = 125;
+    if (intf->getScope() == cfg::Scope::LOCAL) {
+      auto tableId = kLocalIntfTableStart + ifID;
+      CHECK(
+          tableId >= kLocalIntfTableStart && tableId < kLower16KIntfTableStart)
+          << "Local interface IDs must be in range 1-24";
+      return tableId;
+    }
+    auto sysPortRange = getCoveringSysPortRange(ifID, switchIdToSwitchInfo);
+    auto offset = ifID - *sysPortRange.minimum();
+    if (*sysPortRange.minimum() < 16 * 1024) {
+      // lower 16K range
+      auto tableId = kLower16KIntfTableStart + offset;
+      CHECK(
+          tableId >= kLower16KIntfTableStart &&
+          tableId < kHigher16KIntfTableStart)
+          << " Lower 16K range RIF table IDs should be within ["
+          << kLocalIntfTableStart << ", " << kHigher16KIntfTableStart << ")";
+      return tableId;
+    } else {
+      // Higher 16K range
+      auto tableId = kHigher16KIntfTableStart + offset;
+      CHECK(
+          tableId >= kHigher16KIntfTableStart &&
+          tableId < kHigher16KIntfTableStart + 100)
+          << " Higher 16K range RIF table IDs should be within ["
+          << kHigher16KIntfTableStart << ", " << kHigher16KIntfTableStart + 100
+          << ")";
+      return tableId;
+    }
+  }
+  auto firstSwitchSysPortRange =
+      getFirstSwitchSystemPortIdRange(switchIdToSwitchInfo);
+  return ifID - *firstSwitchSysPortRange.minimum();
 }
 
 int TunManager::getInterfaceMtu(InterfaceID ifID) const {
-  auto interface = sw_->getState()->getInterfaces()->getInterfaceIf(ifID);
+  auto interface = sw_->getState()->getInterfaces()->getNodeIf(ifID);
   return interface ? interface->getMtu() : kDefaultMtu;
 }
 
@@ -416,19 +452,27 @@ void TunManager::addRemoveSourceRouteRule(
   } else {
     error = rtnl_rule_delete(sock_, rule, 0);
   }
-  nlCheckError(
-      error,
-      "Failed to ",
-      add ? "add" : "remove",
-      " rule for address ",
-      addr,
-      " to lookup table ",
-      getTableId(ifID),
-      " for interface ",
-      ifID);
-  XLOG(DBG2) << (add ? "Added" : "Removed") << " rule for address " << addr
-             << " to lookup table " << getTableId(ifID) << " for interface "
-             << ifID;
+  // There are scenarios where the rule has already been deleted and we try to
+  // delete it again. In that case, we can ignore the error.
+  if (!add && (error == -NLE_OBJ_NOTFOUND)) {
+    XLOG(WARNING) << "Rule not existing for address " << addr
+                  << " to lookup table " << getTableId(ifID)
+                  << " for interface " << ifID;
+  } else {
+    nlCheckError(
+        error,
+        "Failed to ",
+        add ? "add" : "remove",
+        " rule for address ",
+        addr,
+        " to lookup table ",
+        getTableId(ifID),
+        " for interface ",
+        ifID);
+    XLOG(DBG2) << (add ? "Added" : "Removed") << " rule for address " << addr
+               << " to lookup table " << getTableId(ifID) << " for interface "
+               << ifID;
+  }
 }
 
 void TunManager::addRemoveTunAddress(
@@ -502,7 +546,7 @@ void TunManager::addTunAddress(
   SCOPE_FAIL {
     try {
       addRemoveSourceRouteRule(ifID, addr, false);
-    } catch (const std::exception& ex) {
+    } catch (const std::exception&) {
       XLOG(ERR) << "Failed to removed partially added source rule on "
                 << "interface " << ifName;
     }
@@ -520,7 +564,7 @@ void TunManager::removeTunAddress(
   SCOPE_FAIL {
     try {
       addRemoveSourceRouteRule(ifID, addr, true);
-    } catch (const std::exception& ex) {
+    } catch (const std::exception&) {
       XLOG(ERR) << "Failed to add partially added source rule on "
                 << "interface " << ifName;
     }
@@ -553,7 +597,7 @@ void TunManager::linkProcessor(struct nl_object* obj, void* data) {
   }
 
   // Only add interface if it is a Tun interface
-  if (!util::isTunIntfName(name)) {
+  if (!utility::isTunIntfName(name)) {
     XLOG(DBG3) << "Ignore interface " << name
                << " because it is not a tun interface";
     return;
@@ -642,35 +686,51 @@ boost::container::flat_map<InterfaceID, bool> TunManager::getInterfaceStatus(
   boost::container::flat_map<InterfaceID, bool> statusMap;
 
   // Declare all virtual or state_sync disabled interfaces as up
-  for (auto iter : std::as_const(*state->getInterfaces())) {
-    const auto& intf = iter.second;
-    if (intf->isVirtual() || intf->isStateSyncDisabled()) {
-      statusMap.emplace(intf->getID(), true);
+  for (const auto& [_, intfMap] : std::as_const(*state->getInterfaces())) {
+    for (auto iter : std::as_const(*intfMap)) {
+      const auto& intf = iter.second;
+      if (intf->isVirtual() || intf->isStateSyncDisabled()) {
+        statusMap.emplace(intf->getID(), true);
+      }
     }
   }
 
   // Derive interface status from all ports
-  auto portMap = state->getPorts();
+  auto portMaps = state->getPorts();
   auto vlanMap = state->getVlans();
-  for (const auto& port : std::as_const(*portMap)) {
-    bool isPortUp = port.second->isPortUp();
-    for (const auto& vlanIDToInfo : port.second->getVlans()) {
-      auto vlan = vlanMap->getVlanIf(vlanIDToInfo.first);
-      if (!vlan) {
-        XLOG(ERR) << "Vlan " << vlanIDToInfo.first << " not found in state.";
-        continue;
-      }
+  for (const auto& portMap : std::as_const(*portMaps)) {
+    for (const auto& port : std::as_const(*portMap.second)) {
+      bool isPortUp = port.second->isPortUp();
+      for (const auto& vlanIDToInfo : port.second->getVlans()) {
+        auto vlan = vlanMap->getNodeIf(vlanIDToInfo.first);
+        if (!vlan) {
+          XLOG(ERR) << "Vlan " << vlanIDToInfo.first << " not found in state.";
+          continue;
+        }
 
-      auto intfID = vlan->getInterfaceID();
-      statusMap[intfID] |= isPortUp; // NOTE: We are applying `OR` operator
-    } // for vlanIDToInfo
-  } // for portIDToObj
+        auto intfID = vlan->getInterfaceID();
+        statusMap[intfID] |= isPortUp; // NOTE: We are applying `OR` operator
+      } // for vlanIDToInfo
+    } // for portIDToObj
+  }
 
   return statusMap;
 }
 
+bool TunManager::isValidNlSocket() {
+  return sock_ ? true : false;
+}
+
+bool TunManager::getIntfStatus(
+    std::shared_ptr<SwitchState> state,
+    InterfaceID ifID) {
+  // Get interface status map
+  auto intfStatusMap = getInterfaceStatus(state);
+  return folly::get_default(intfStatusMap, ifID, false);
+}
+
 void TunManager::forceInitialSync() {
-  evb_->runInEventBaseThread([this]() {
+  evb_->runInFbossEventBaseThread([this]() {
     if (numSyncs_ == 0) {
       // no syncs occurred yet. Force initial sync. The initial sync is done
       // with applied state, and subsequent sync's will also be done with the
@@ -693,18 +753,20 @@ void TunManager::sync(std::shared_ptr<SwitchState> state) {
 
   // prepare new addresses
   IntfToAddrsMap newIntfToInfo;
-  auto intfMap = state->getInterfaces();
-  for (auto iter : std::as_const(*intfMap)) {
-    const auto& intf = iter.second;
-    auto addrs = intf->getAddressesCopy();
+  for (const auto& [_, intfMap] : std::as_const(*state->getInterfaces())) {
+    for (auto iter : std::as_const(*intfMap)) {
+      const auto& intf = iter.second;
+      auto addrs = intf->getAddressesCopy();
 
-    // Ideally all interfaces should be present in intfStatusMap as either
-    // interface will be virtual or will have atleast one port. Keeping default
-    // status of interface to be DOWN incase if interface is not virtual and is
-    // not assocaited with any physical port
-    const auto status = folly::get_default(intfStatusMap, intf->getID(), false);
+      // Ideally all interfaces should be present in intfStatusMap as either
+      // interface will be virtual or will have at least one port. Keeping
+      // default status of interface to be DOWN in case if interface is not
+      // virtual and is not associated with any physical port
+      const auto status =
+          folly::get_default(intfStatusMap, intf->getID(), false);
 
-    newIntfToInfo[intf->getID()] = {status, addrs};
+      newIntfToInfo[intf->getID()] = {status, addrs};
+    }
   }
 
   // Hold mutex while changing interfaces
@@ -721,7 +783,7 @@ void TunManager::sync(std::shared_ptr<SwitchState> state) {
     oldIntfToInfo[intf.first] = {status, addrs};
 
     // Change MTU if it has altered
-    auto interface = intfMap->getInterfaceIf(intf.first);
+    auto interface = state->getInterfaces()->getNodeIf(intf.first);
     if (interface && interface->getMtu() != intf.second->getMtu()) {
       intf.second->setMtu(interface->getMtu());
     }

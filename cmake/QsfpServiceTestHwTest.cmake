@@ -28,7 +28,8 @@ target_link_libraries(hw_transceiver_utils
 )
 
 add_executable(qsfp_hw_test
-  fboss/qsfp_service/test/hw_test/HwFirmwareTest.cpp
+  fboss/qsfp_service/test/hw_test/EmptyHwTest.cpp
+  fboss/qsfp_service/test/hw_test/HwXphyFirmwareTest.cpp
   fboss/qsfp_service/test/hw_test/HwPimTest.cpp
   fboss/qsfp_service/test/hw_test/HwPortProfileTest.cpp
   fboss/qsfp_service/test/hw_test/HwPortUtils.cpp
@@ -42,15 +43,20 @@ add_executable(qsfp_hw_test
   fboss/qsfp_service/test/hw_test/HwI2cSelectTest.cpp
   fboss/qsfp_service/test/hw_test/HwStateMachineTest.cpp
   fboss/qsfp_service/test/hw_test/HwTransceiverTest.cpp
+  fboss/qsfp_service/test/hw_test/OpticsFwUpgradeTest.cpp
   fboss/agent/test/oss/Main.cpp
 )
 
 target_link_libraries(qsfp_hw_test
   hw_qsfp_ensemble
   hw_transceiver_utils
+  port_test_utils
   ${GTEST}
   ${LIBGMOCK_LIBRARIES}
   FBThrift::thriftcpp2
   fb303::fb303
   hw_test_main
+  qsfp_production_features_cpp2
 )
+
+install(TARGETS qsfp_hw_test)

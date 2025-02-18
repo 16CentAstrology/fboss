@@ -9,7 +9,7 @@
  */
 #pragma once
 
-#include <folly/experimental/TestUtil.h>
+#include <folly/testing/TestUtil.h>
 
 #include "fboss/agent/platforms/tests/utils/BcmTestPlatform.h"
 
@@ -31,8 +31,6 @@ class FakeBcmTestPlatform : public BcmTestPlatform {
         FlexPortMode::FOURX10G};
   }
 
-  std::string getVolatileStateDir() const override;
-  std::string getPersistentStateDir() const override;
   bool hasLinkScanCapability() const override {
     return false;
   }
@@ -59,11 +57,15 @@ class FakeBcmTestPlatform : public BcmTestPlatform {
 
   HwAsic* getAsic() const override;
 
+  const AgentDirectoryUtil* getDirectoryUtil() const override {
+    return agentDirUtil_.get();
+  }
+
  private:
   void setupAsic(
-      cfg::SwitchType switchType,
       std::optional<int64_t> switchId,
-      std::optional<cfg::Range64> systemPortRange) override;
+      const cfg::SwitchInfo& switchInfo,
+      std::optional<HwAsic::FabricNodeRole> fabricNodeRole) override;
   // Forbidden copy constructor and assignment operator
   FakeBcmTestPlatform(FakeBcmTestPlatform const&) = delete;
   FakeBcmTestPlatform& operator=(FakeBcmTestPlatform const&) = delete;
@@ -72,6 +74,7 @@ class FakeBcmTestPlatform : public BcmTestPlatform {
 
   folly::test::TemporaryDirectory tmpDir_;
   std::unique_ptr<FakeAsic> asic_;
+  std::unique_ptr<AgentDirectoryUtil> agentDirUtil_;
 };
 
 } // namespace facebook::fboss

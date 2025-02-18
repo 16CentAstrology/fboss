@@ -78,16 +78,16 @@ bool isHwRouteToCpu(
   return nhop == cpuPortId;
 }
 bool isHwRouteHit(
-    FOLLY_MAYBE_UNUSED const HwSwitch* hwSwitch,
-    FOLLY_MAYBE_UNUSED RouterID /*rid*/,
-    FOLLY_MAYBE_UNUSED const folly::CIDRNetwork& cidrNetwork) {
+    [[maybe_unused]] const HwSwitch* hwSwitch,
+    [[maybe_unused]] RouterID /*rid*/,
+    [[maybe_unused]] const folly::CIDRNetwork& cidrNetwork) {
   throw FbossError("L3 entry hitbit is unsupported for SAI");
 }
 
 void clearHwRouteHit(
-    FOLLY_MAYBE_UNUSED const HwSwitch* hwSwitch,
-    FOLLY_MAYBE_UNUSED RouterID /*rid*/,
-    FOLLY_MAYBE_UNUSED const folly::CIDRNetwork& cidrNetwork) {
+    [[maybe_unused]] const HwSwitch* hwSwitch,
+    [[maybe_unused]] RouterID /*rid*/,
+    [[maybe_unused]] const folly::CIDRNetwork& cidrNetwork) {
   throw FbossError("L3 entry hitbit is unsupported for SAI");
 }
 
@@ -105,7 +105,7 @@ bool isHwRouteMultiPath(
     SaiApiTable::getInstance()->nextHopGroupApi().getAttribute(
         static_cast<NextHopGroupSaiId>(nhop),
         SaiNextHopGroupTraits::Attributes::NextHopMemberList{});
-  } catch (const SaiApiError& err) {
+  } catch (const SaiApiError&) {
     // its not next hop group
     return false;
   }
@@ -119,6 +119,13 @@ bool isHwRouteToNextHop(
     folly::IPAddress ip,
     std::optional<uint64_t> weight) {
   const auto saiSwitch = static_cast<const SaiSwitch*>(hwSwitch);
+  auto classId = getHwRouteClassID(hwSwitch, rid, cidrNetwork);
+  if (classId.has_value() &&
+      (classId.value() == cfg::AclLookupClass::DST_CLASS_L3_LOCAL_1 ||
+       classId.value() == cfg::AclLookupClass::DST_CLASS_L3_LOCAL_2)) {
+    XLOG(DBG2) << "resolved route has class ID 1 or 2";
+    return false;
+  }
 
   auto routeAdapterKey = getSaiRouteAdapterKey(saiSwitch, rid, cidrNetwork);
   sai_object_id_t nhop = SaiApiTable::getInstance()->routeApi().getAttribute(
@@ -144,7 +151,7 @@ bool isHwRouteToNextHop(
               static_cast<NextHopGroupMemberSaiId>(member),
               SaiNextHopGroupMemberTraits::Attributes::Weight{});
     }
-  } catch (const SaiApiError& err) {
+  } catch (const SaiApiError&) {
     return isEgressToIp(ip, nhop);
   }
   return false;
@@ -178,7 +185,7 @@ bool isHwRoutePresent(
   try {
     SaiApiTable::getInstance()->routeApi().getAttribute(
         routeAdapterKey, SaiRouteTraits::Attributes::NextHopId());
-  } catch (const SaiApiError& err) {
+  } catch (const SaiApiError&) {
     return false;
   }
 
@@ -188,9 +195,18 @@ bool isHwRoutePresent(
 bool isRouteCounterSupported(const HwSwitch* hwSwitch) {
   bool routeCountersSupported = hwSwitch->getPlatform()->getAsic()->isSupported(
       HwAsic::Feature::ROUTE_COUNTERS);
-#if defined(TAJO_SDK_VERSION_1_42_1) || defined(TAJO_SDK_VERSION_1_42_8)
+#if defined(TAJO_SDK_VERSION_1_42_8)
   routeCountersSupported = false;
 #endif
   return routeCountersSupported;
+}
+
+bool isRouteUnresolvedToCpuClassId(
+    const HwSwitch* hwSwitch,
+    RouterID rid,
+    const folly::CIDRNetwork& cidrNetwork) {
+  auto classId = getHwRouteClassID(hwSwitch, rid, cidrNetwork);
+  return classId.has_value() &&
+      classId.value() == cfg::AclLookupClass::DST_CLASS_L3_LOCAL_2;
 }
 } // namespace facebook::fboss::utility

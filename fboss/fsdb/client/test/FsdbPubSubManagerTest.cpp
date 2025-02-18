@@ -8,19 +8,21 @@
 #include "fboss/fsdb/client/FsdbPubSubManager.h"
 #include "fboss/fsdb/common/Flags.h"
 #include "fboss/lib/CommonUtils.h"
+#include "fboss/lib/thrift_service_client/ConnectionOptions.h"
 
-#include <folly/experimental/coro/AsyncGenerator.h>
-#include <folly/experimental/coro/AsyncPipe.h>
+#include <folly/coro/AsyncPipe.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
-#include <folly/logging/xlog.h>
 
 #include <algorithm>
-#include <atomic>
 
 namespace facebook::fboss::fsdb {
 void stateChangeCb(
     FsdbStreamClient::State /*old*/,
     FsdbStreamClient::State /*new*/) {}
+void subscriptionStateChangeCb(
+    SubscriptionState /*old*/,
+    SubscriptionState /*new*/,
+    std::optional<bool> /*initialSyncHasData*/) {}
 void operDeltaCb(OperDelta /*delta*/) {}
 void operStateCb(OperState /*state*/) {}
 
@@ -30,25 +32,37 @@ class PubSubManagerTest : public ::testing::Test {
       const std::vector<std::string>& path,
       const std::string& host = "::1") {
     pubSubManager_.addStateDeltaSubscription(
-        path, stateChangeCb, operDeltaCb, host);
+        path,
+        subscriptionStateChangeCb,
+        operDeltaCb,
+        utils::ConnectionOptions(host, FLAGS_fsdbPort));
   }
   void addStatDeltaSubscription(
       const std::vector<std::string>& path,
       const std::string& host = "::1") {
     pubSubManager_.addStatDeltaSubscription(
-        path, stateChangeCb, operDeltaCb, host);
+        path,
+        subscriptionStateChangeCb,
+        operDeltaCb,
+        utils::ConnectionOptions(host, FLAGS_fsdbPort));
   }
   void addStatePathSubscription(
       const std::vector<std::string>& path,
       const std::string& host = "::1") {
     pubSubManager_.addStatePathSubscription(
-        path, stateChangeCb, operStateCb, host);
+        path,
+        subscriptionStateChangeCb,
+        operStateCb,
+        utils::ConnectionOptions(host, FLAGS_fsdbPort));
   }
   void addStatPathSubscription(
       const std::vector<std::string>& path,
       const std::string& host = "::1") {
     pubSubManager_.addStatPathSubscription(
-        path, stateChangeCb, operStateCb, host);
+        path,
+        subscriptionStateChangeCb,
+        operStateCb,
+        utils::ConnectionOptions(host, FLAGS_fsdbPort));
   }
   FsdbPubSubManager pubSubManager_{"testMgr"};
 };
@@ -61,12 +75,18 @@ TEST_F(PubSubManagerTest, createStateAndStatDeltaPublisher) {
   EXPECT_THROW(
       pubSubManager_.createStatePathPublisher({}, stateChangeCb),
       std::runtime_error);
+  EXPECT_THROW(
+      pubSubManager_.createStatePatchPublisher({}, stateChangeCb),
+      std::runtime_error);
   pubSubManager_.createStatDeltaPublisher({}, stateChangeCb);
   EXPECT_THROW(
       pubSubManager_.createStatDeltaPublisher({}, stateChangeCb),
       std::runtime_error);
   EXPECT_THROW(
       pubSubManager_.createStatPathPublisher({}, stateChangeCb),
+      std::runtime_error);
+  EXPECT_THROW(
+      pubSubManager_.createStatPatchPublisher({}, stateChangeCb),
       std::runtime_error);
 }
 
@@ -78,12 +98,18 @@ TEST_F(PubSubManagerTest, createStateAndStatPathPublisher) {
   EXPECT_THROW(
       pubSubManager_.createStateDeltaPublisher({}, stateChangeCb),
       std::runtime_error);
+  EXPECT_THROW(
+      pubSubManager_.createStatePatchPublisher({}, stateChangeCb),
+      std::runtime_error);
   pubSubManager_.createStatPathPublisher({}, stateChangeCb);
   EXPECT_THROW(
       pubSubManager_.createStatPathPublisher({}, stateChangeCb),
       std::runtime_error);
   EXPECT_THROW(
       pubSubManager_.createStatDeltaPublisher({}, stateChangeCb),
+      std::runtime_error);
+  EXPECT_THROW(
+      pubSubManager_.createStatPatchPublisher({}, stateChangeCb),
       std::runtime_error);
 }
 
@@ -100,9 +126,11 @@ TEST_F(PubSubManagerTest, publishPathStatState) {
   pubSubManager_.createStatePathPublisher({}, stateChangeCb);
   pubSubManager_.publishState(OperState{});
   EXPECT_THROW(pubSubManager_.publishState(OperDelta{}), std::runtime_error);
+  EXPECT_THROW(pubSubManager_.publishState(Patch{}), std::runtime_error);
   pubSubManager_.createStatPathPublisher({}, stateChangeCb);
   pubSubManager_.publishStat(OperState{});
   EXPECT_THROW(pubSubManager_.publishStat(OperDelta{}), std::runtime_error);
+  EXPECT_THROW(pubSubManager_.publishStat(Patch{}), std::runtime_error);
 }
 
 TEST_F(PubSubManagerTest, addRemoveSubscriptions) {
@@ -136,6 +164,19 @@ TEST_F(PubSubManagerTest, addRemoveSubscriptions) {
   addStatePathSubscription({}, "::2");
   addStatPathSubscription({}, "::2");
   EXPECT_EQ(pubSubManager_.numSubscriptions(), 8);
+
+  // Verify getSubscriptionInfo
+  const auto subscriptionInfoList = pubSubManager_.getSubscriptionInfo();
+  EXPECT_EQ(subscriptionInfoList.size(), 8);
+  for (const auto& subscriptionInfo : subscriptionInfoList) {
+    EXPECT_TRUE(
+        subscriptionInfo.server == "::1" || subscriptionInfo.server == "::2");
+    EXPECT_EQ(subscriptionInfo.state, FsdbStreamClient::State::DISCONNECTED);
+    if (subscriptionInfo.paths.size()) {
+      EXPECT_EQ(subscriptionInfo.paths.size(), 1);
+      EXPECT_EQ(subscriptionInfo.paths[0], "foo");
+    }
+  }
 }
 
 TEST_F(PubSubManagerTest, passEvbOrNot) {
@@ -162,6 +203,28 @@ TEST_F(PubSubManagerTest, passEvbOrNot) {
   EXPECT_NE(localThreadManager.subscriberEvbThread_, nullptr);
   EXPECT_NE(localThreadManager.statsPublisherStreamEvbThread_, nullptr);
   EXPECT_NE(localThreadManager.statePublisherStreamEvbThread_, nullptr);
+}
+
+TEST_F(PubSubManagerTest, removeAllSubscriptions) {
+  addStateDeltaSubscription({"foo"});
+  addStatDeltaSubscription({"foo"});
+  EXPECT_THROW(addStateDeltaSubscription({"foo"}), std::runtime_error);
+  EXPECT_THROW(addStatDeltaSubscription({"foo"}), std::runtime_error);
+
+  pubSubManager_.clearStateSubscriptions();
+  // resub should succeed
+  addStateDeltaSubscription({"foo"});
+  // still have stat sub registered
+  EXPECT_THROW(addStatDeltaSubscription({"foo"}), std::runtime_error);
+
+  pubSubManager_.clearStatSubscriptions();
+  addStatDeltaSubscription({"foo"});
+}
+
+TEST_F(PubSubManagerTest, TestSubscriptionInfo) {
+  EXPECT_EQ(FsdbPatchSubscriber::subscriptionType(), SubscriptionType::PATCH);
+  EXPECT_EQ(FsdbStateSubscriber::subscriptionType(), SubscriptionType::PATH);
+  EXPECT_EQ(FsdbDeltaSubscriber::subscriptionType(), SubscriptionType::DELTA);
 }
 
 } // namespace facebook::fboss::fsdb

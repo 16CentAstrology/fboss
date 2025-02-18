@@ -2,281 +2,490 @@
 
 #pragma once
 
-#include "fboss/agent/TxPacket.h"
 #include "fboss/agent/packet/Ethertype.h"
 #include "fboss/agent/types.h"
 
+#include "fboss/agent/packet/ArpHdr.h"
 #include "fboss/agent/packet/EthHdr.h"
-#include "fboss/agent/packet/IPv4Hdr.h"
-#include "fboss/agent/packet/IPv6Hdr.h"
-#include "fboss/agent/packet/MPLSHdr.h"
-#include "fboss/agent/packet/UDPHeader.h"
+#include "fboss/agent/packet/PTPHeader.h"
+#include "fboss/agent/packet/SflowStructs.h"
 
 #include <optional>
 
 namespace facebook::fboss {
 
 class HwSwitch;
+class TxPacket;
 
 namespace utility {
-class UDPDatagram {
- public:
-  // read entire udp datagram, and populate payloads, useful to parse RxPacket
-  explicit UDPDatagram(folly::io::Cursor& cursor);
 
-  // set header fields, useful to construct TxPacket
-  UDPDatagram(const UDPHeader& udpHdr, std::vector<uint8_t> payload)
-      : udpHdr_(udpHdr), payload_(payload) {
-    udpHdr_.length = udpHdr_.size() + payload_.size();
-  }
+using AllocatePktFn = std::function<std::unique_ptr<TxPacket>(uint32_t)>;
 
-  size_t length() const {
-    return UDPHeader::size() + payload_.size();
-  }
-
-  UDPHeader header() const {
-    return udpHdr_;
-  }
-
-  std::vector<uint8_t> payload() const {
-    return payload_;
-  }
-
-  // construct TxPacket by encapsulating rabdom byte payload
-  std::unique_ptr<facebook::fboss::TxPacket> getTxPacket(
-      const HwSwitch* hw) const;
-
-  void serialize(folly::io::RWPrivateCursor& cursor) const;
-
-  bool operator==(const UDPDatagram& that) const {
-    /* ignore checksum, */
-    return std::tie(
-               udpHdr_.srcPort, udpHdr_.dstPort, udpHdr_.length, payload_) ==
-        std::tie(
-               that.udpHdr_.srcPort,
-               that.udpHdr_.dstPort,
-               that.udpHdr_.length,
-               that.payload_);
-  }
-
- private:
-  UDPHeader udpHdr_;
-  std::vector<uint8_t> payload_{};
-};
-
-template <typename AddrT>
-class IPPacket {
- public:
-  using HdrT = std::conditional_t<
-      std::is_same<AddrT, folly::IPAddressV4>::value,
-      IPv4Hdr,
-      IPv6Hdr>;
-  // read entire ip packet, and populate payloads, useful to parse RxPacket
-  explicit IPPacket(folly::io::Cursor& cursor);
-
-  // set header fields, useful to construct TxPacket
-  explicit IPPacket(const HdrT& hdr) : hdr_{hdr} {}
-
-  IPPacket(const HdrT& hdr, UDPDatagram payload)
-      : hdr_{hdr}, udpPayLoad_(payload) {
-    if constexpr (std::is_same_v<HdrT, IPv4Hdr>) {
-      hdr_.version = 4;
-      hdr_.length = length();
-      if (!hdr_.ttl) {
-        hdr_.ttl = 128;
-      }
-      hdr_.ihl = (5 > hdr_.ihl) ? 5 : hdr_.ihl;
-      hdr_.computeChecksum();
-      hdr_.protocol = 17; /* udp */
-    } else {
-      hdr_.version = 6;
-      hdr_.payloadLength = udpPayLoad_->length();
-      if (!hdr_.hopLimit) {
-        hdr_.hopLimit = 128;
-      }
-      hdr_.nextHeader = 17; /* udp */
-    }
-  }
-
-  size_t length() const {
-    return hdr_.size() + (udpPayLoad_ ? udpPayLoad_->length() : 0);
-  }
-
-  HdrT header() const {
-    return hdr_;
-  }
-
-  std::optional<UDPDatagram> payload() const {
-    return udpPayLoad_;
-  }
-
-  // construct TxPacket by encapsulating udp payload
-  std::unique_ptr<facebook::fboss::TxPacket> getTxPacket(
-      const HwSwitch* hw) const;
-
-  void serialize(folly::io::RWPrivateCursor& cursor) const;
-
-  bool operator==(const IPPacket<AddrT>& that) const {
-    return std::tie(hdr_, udpPayLoad_) == std::tie(that.hdr_, that.udpPayLoad_);
-  }
-
- private:
-  void setUDPCheckSum(folly::IOBuf* buffer) const;
-  HdrT hdr_;
-  std::optional<UDPDatagram> udpPayLoad_;
-  // TODO: support TCP segment
-};
-
-using IPv4Packet = IPPacket<folly::IPAddressV4>;
-using IPv6Packet = IPPacket<folly::IPAddressV6>;
-
-class MPLSPacket {
- public:
-  // read entire label stack, and populate payloads, useful to parse RxPacket
-  explicit MPLSPacket(folly::io::Cursor& cursor);
-
-  // set header fields, useful to construct TxPacket
-  explicit MPLSPacket(MPLSHdr hdr) : hdr_(std::move(hdr)) {}
-  template <typename AddrT>
-  MPLSPacket(MPLSHdr hdr, IPPacket<AddrT> payload) : hdr_(std::move(hdr)) {
-    setPayLoad(payload);
-  }
-
-  MPLSHdr header() const {
-    return hdr_;
-  }
-
-  size_t length() const {
-    return hdr_.size() +
-        (v4PayLoad_ ? v4PayLoad_->length()
-                    : (v6PayLoad_ ? v6PayLoad_->length() : 0));
-  }
-
-  std::optional<IPPacket<folly::IPAddressV4>> v4PayLoad() const {
-    return v4PayLoad_;
-  }
-
-  std::optional<IPPacket<folly::IPAddressV6>> v6PayLoad() const {
-    return v6PayLoad_;
-  }
-
-  // construct TxPacket by encapsulating l3 payload
-  std::unique_ptr<facebook::fboss::TxPacket> getTxPacket(
-      const HwSwitch* hw) const;
-
-  void serialize(folly::io::RWPrivateCursor& cursor) const;
-
-  bool operator==(const MPLSPacket& that) const {
-    return std::tie(hdr_, v4PayLoad_, v6PayLoad_) ==
-        std::tie(that.hdr_, that.v4PayLoad_, that.v6PayLoad_);
-  }
-
- private:
-  void setPayLoad(IPPacket<folly::IPAddressV6> payload) {
-    v6PayLoad_ = payload;
-  }
-
-  void setPayLoad(IPPacket<folly::IPAddressV4> payload) {
-    v4PayLoad_ = payload;
-  }
-
-  MPLSHdr hdr_{MPLSHdr::Label{0, 0, 0, 0}};
-  std::optional<IPPacket<folly::IPAddressV4>> v4PayLoad_;
-  std::optional<IPPacket<folly::IPAddressV6>> v6PayLoad_;
-};
-
-class EthFrame {
- public:
-  // read entire ethernet frame, and populate payloads, useful to parse RxPacket
-  explicit EthFrame(folly::io::Cursor& cursor);
-
-  // set header fields, useful to construct TxPacket
-  explicit EthFrame(EthHdr hdr) : hdr_(std::move(hdr)) {}
-
-  EthFrame(EthHdr hdr, MPLSPacket payload) : hdr_(std::move(hdr)) {
-    mplsPayLoad_ = std::move(payload);
-    hdr_.etherType = static_cast<uint16_t>(ETHERTYPE::ETHERTYPE_MPLS);
-  }
-
-  EthFrame(EthHdr hdr, IPPacket<folly::IPAddressV4> payload)
-      : hdr_(std::move(hdr)), v4PayLoad_(payload) {
-    hdr_.etherType = static_cast<uint16_t>(ETHERTYPE::ETHERTYPE_IPV4);
-  }
-
-  EthFrame(EthHdr hdr, IPPacket<folly::IPAddressV6> payload)
-      : hdr_(std::move(hdr)), v6PayLoad_(payload) {
-    hdr_.etherType = static_cast<uint16_t>(ETHERTYPE::ETHERTYPE_IPV6);
-  }
-
-  EthHdr header() const {
-    return hdr_;
-  }
-
-  size_t length() const {
-    auto len = 0;
-    if (v4PayLoad_) {
-      len += v4PayLoad_->length();
-    } else if (v6PayLoad_) {
-      len += v6PayLoad_->length();
-    } else if (mplsPayLoad_) {
-      len += mplsPayLoad_->length();
-    }
-    len += hdr_.size();
-    return len;
-  }
-  // construct TxPacket by encapsulating payload
-  std::unique_ptr<facebook::fboss::TxPacket> getTxPacket(
-      const HwSwitch* hw) const;
-
-  std::optional<IPPacket<folly::IPAddressV4>> v4PayLoad() const {
-    return v4PayLoad_;
-  }
-
-  std::optional<IPPacket<folly::IPAddressV6>> v6PayLoad() const {
-    return v6PayLoad_;
-  }
-
-  std::optional<MPLSPacket> mplsPayLoad() const {
-    return mplsPayLoad_;
-  }
-
-  void serialize(folly::io::RWPrivateCursor& cursor) const;
-
-  bool operator==(const EthFrame& that) const {
-    return std::tie(hdr_, v4PayLoad_, v6PayLoad_, mplsPayLoad_) ==
-        std::tie(
-               that.hdr_, that.v4PayLoad_, that.v6PayLoad_, that.mplsPayLoad_);
-  }
-
- private:
-  EthHdr hdr_;
-  std::optional<IPPacket<folly::IPAddressV4>> v4PayLoad_;
-  std::optional<IPPacket<folly::IPAddressV6>> v6PayLoad_;
-  std::optional<MPLSPacket> mplsPayLoad_;
-};
-
-template <typename AddrT>
-EthFrame getEthFrame(
+template <typename SwitchT>
+AllocatePktFn makeAllocator(const SwitchT* sw) {
+  return [sw](uint32_t size) { return sw->allocatePacket(size); };
+}
+std::unique_ptr<TxPacket> makeEthTxPacket(
+    const AllocatePktFn& allocateTxPkt,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
-    AddrT srcIp,
-    AddrT dstIp,
-    uint16_t sPort,
-    uint16_t dPort,
-    VlanID vlanId,
-    size_t payloadSize = 256);
+    facebook::fboss::ETHERTYPE etherType,
+    std::optional<std::vector<uint8_t>> payload);
 
-template <typename AddrT>
-EthFrame getEthFrame(
+std::unique_ptr<facebook::fboss::TxPacket> makeARPTxPacket(
+    const AllocatePktFn& allocatePkt,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
-    std::vector<MPLSHdr::Label> labels,
-    AddrT srcIp,
-    AddrT dstIp,
-    uint16_t sPort,
-    uint16_t dPort,
-    VlanID vlanId = VlanID(1));
+    const folly::IPAddress& srcIp,
+    const folly::IPAddress& dstIp,
+    ARP_OPER type,
+    std::optional<folly::MacAddress> targetMac = std::nullopt);
+
+std::unique_ptr<facebook::fboss::TxPacket> makeNeighborSolicitation(
+    const AllocatePktFn& allocatePkt,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    const folly::IPAddressV6& srcIp,
+    const folly::IPAddressV6& neighborIp);
+
+std::unique_ptr<facebook::fboss::TxPacket> makeNeighborAdvertisement(
+    const AllocatePktFn& allocatePkt,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddressV6& srcIp,
+    folly::IPAddressV6 dstIp);
+
+std::unique_ptr<facebook::fboss::TxPacket> makeIpTxPacket(
+    AllocatePktFn allocatePkt,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddressV6& srcIp,
+    const folly::IPAddressV6& dstIp,
+    uint8_t trafficClass = 0,
+    uint8_t hopLimit = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>());
+
+std::unique_ptr<facebook::fboss::TxPacket> makeIpTxPacket(
+    AllocatePktFn allocatePkt,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddressV4& srcIp,
+    const folly::IPAddressV4& dstIp,
+    uint8_t dscp = 0,
+    uint8_t ttl = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>());
+
+std::unique_ptr<facebook::fboss::TxPacket> makeIpTxPacket(
+    AllocatePktFn allocatePkt,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddress& srcIp,
+    const folly::IPAddress& dstIp,
+    uint8_t trafficClass = 0,
+    uint8_t hopLimit = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>());
+
+std::unique_ptr<facebook::fboss::TxPacket> makeIpInIpTxPacket(
+    const AllocatePktFn& allocatePkt,
+    VlanID vlan,
+    folly::MacAddress outerSrcMac,
+    folly::MacAddress outerDstMac,
+    const folly::IPAddressV6& outerSrcIp,
+    const folly::IPAddressV6& outerDstIp,
+    const folly::IPAddressV6& innerSrcIp,
+    const folly::IPAddressV6& innerDstIp,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t outerTrafficClass = 0,
+    uint8_t innerTrafficClass = 0,
+    uint8_t hopLimit = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>());
+
+std::unique_ptr<facebook::fboss::TxPacket> makeUDPTxPacket(
+    const AllocatePktFn& allocatePkt,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddressV6& srcIp,
+    const folly::IPAddressV6& dstIp,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t trafficClass = 0,
+    uint8_t hopLimit = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>());
+
+std::unique_ptr<facebook::fboss::TxPacket> makeUDPTxPacket(
+    const AllocatePktFn& allocatePkt,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddressV4& srcIp,
+    const folly::IPAddressV4& dstIp,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t dscp = 0,
+    uint8_t ttl = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>());
+
+std::unique_ptr<facebook::fboss::TxPacket> makeUDPTxPacket(
+    const AllocatePktFn& allocatePkt,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddress& srcIp,
+    const folly::IPAddress& dstIp,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t trafficClass = 0,
+    uint8_t hopLimit = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>());
+
+std::unique_ptr<facebook::fboss::TxPacket> makeTCPTxPacket(
+    const AllocatePktFn& allocatePkt,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddressV6& srcIp,
+    const folly::IPAddressV6& dstIp,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t trafficClass = 0,
+    uint8_t hopLimit = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>());
+
+std::unique_ptr<facebook::fboss::TxPacket> makeTCPTxPacket(
+    const AllocatePktFn& allocatePkt,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddressV4& srcIp,
+    const folly::IPAddressV4& dstIp,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t dscp = 0,
+    uint8_t ttl = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>());
+
+std::unique_ptr<facebook::fboss::TxPacket> makeTCPTxPacket(
+    const AllocatePktFn& allocatePkt,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddress& srcIp,
+    const folly::IPAddress& dstIp,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t trafficClass = 0,
+    uint8_t hopLimit = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>());
+
+std::unique_ptr<TxPacket> makeTCPTxPacket(
+    const AllocatePktFn& allocatePktSwitch,
+    std::optional<VlanID> vlanId,
+    folly::MacAddress dstMac,
+    const folly::IPAddress& dstIpAddress,
+    int l4SrcPort,
+    int l4DstPort,
+    uint8_t trafficClass = 0,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>());
+
+std::unique_ptr<TxPacket> makePTPTxPacket(
+    const AllocatePktFn& allocatePktSwitch,
+    VlanID vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddressV6& srcIp,
+    const folly::IPAddressV6& dstIp,
+    uint8_t trafficClass,
+    uint8_t hopLimit,
+    PTPMessageType ptpPktType);
+
+// Template wrappers to wrap Sw/HwSwitch allocations
+template <typename SwitchT>
+std::unique_ptr<facebook::fboss::TxPacket> makeEthTxPacket(
+    const SwitchT* switchT,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    facebook::fboss::ETHERTYPE etherType,
+    std::optional<std::vector<uint8_t>> payload = std::nullopt) {
+  return makeEthTxPacket(
+
+      makeAllocator(switchT), vlan, srcMac, dstMac, etherType, payload);
+}
+
+template <typename SwitchT>
+std::unique_ptr<facebook::fboss::TxPacket> makeARPTxPacket(
+    const SwitchT* switchT,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddress& srcIp,
+    const folly::IPAddress& dstIp,
+    ARP_OPER type,
+    std::optional<folly::MacAddress> targetMac = std::nullopt) {
+  return makeARPTxPacket(
+      makeAllocator(switchT),
+      vlan,
+      srcMac,
+      dstMac,
+      srcIp,
+      dstIp,
+      type,
+      targetMac);
+}
+
+template <typename SwitchT>
+std::unique_ptr<facebook::fboss::TxPacket> makeNeighborSolicitation(
+    const SwitchT* switchT,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    const folly::IPAddressV6& srcIp,
+    const folly::IPAddressV6& neighborIp) {
+  return makeNeighborSolicitation(
+      makeAllocator(switchT), vlan, srcMac, srcIp, neighborIp);
+}
+
+template <typename SwitchT>
+std::unique_ptr<facebook::fboss::TxPacket> makeNeighborAdvertisement(
+    const SwitchT* switchT,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddressV6& srcIp,
+    folly::IPAddressV6 dstIp) {
+  return makeNeighborAdvertisement(
+      makeAllocator(switchT), vlan, srcMac, dstMac, srcIp, dstIp);
+}
+
+template <typename SwitchT, typename IPAddrT>
+std::unique_ptr<facebook::fboss::TxPacket> makeIpTxPacket(
+    const SwitchT* switchT,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const IPAddrT& srcIp,
+    const IPAddrT& dstIp,
+    uint8_t trafficClass = 0,
+    uint8_t hopLimit = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>()) {
+  return makeIpTxPacket(
+      makeAllocator(switchT),
+      vlan,
+      srcMac,
+      dstMac,
+      srcIp,
+      dstIp,
+      trafficClass,
+      hopLimit,
+      payload);
+}
+
+template <typename SwitchT>
+std::unique_ptr<facebook::fboss::TxPacket> makeIpInIpTxPacket(
+    const SwitchT* switchT,
+    VlanID vlan,
+    folly::MacAddress outerSrcMac,
+    folly::MacAddress outerDstMac,
+    const folly::IPAddressV6& outerSrcIp,
+    const folly::IPAddressV6& outerDstIp,
+    const folly::IPAddressV6& innerSrcIp,
+    const folly::IPAddressV6& innerDstIp,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t outerTrafficClass = 0,
+    uint8_t innerTrafficClass = 0,
+    uint8_t hopLimit = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>()) {
+  return makeIpInIpTxPacket(
+      makeAllocator(switchT),
+      vlan,
+      outerSrcMac,
+      outerDstMac,
+      outerSrcIp,
+      outerDstIp,
+      innerSrcIp,
+      innerDstIp,
+      srcPort,
+      dstPort,
+      outerTrafficClass,
+      innerTrafficClass,
+      hopLimit,
+      payload);
+}
+
+template <typename SwitchT, typename IPAddrT>
+std::unique_ptr<facebook::fboss::TxPacket> makeUDPTxPacket(
+    const SwitchT* switchT,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const IPAddrT& srcIp,
+    const IPAddrT& dstIp,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t trafficClass = 0,
+    uint8_t hopLimit = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>()) {
+  return makeUDPTxPacket(
+      makeAllocator(switchT),
+      vlan,
+      srcMac,
+      dstMac,
+      srcIp,
+      dstIp,
+      srcPort,
+      dstPort,
+      trafficClass,
+      hopLimit,
+      payload);
+}
+
+template <typename SwitchT>
+std::unique_ptr<TxPacket> makePTPTxPacket(
+    const SwitchT* switchT,
+    VlanID vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddressV6& srcIp,
+    const folly::IPAddressV6& dstIp,
+    uint8_t trafficClass,
+    uint8_t hopLimit,
+    PTPMessageType ptpPktType) {
+  return makePTPTxPacket(
+      makeAllocator(switchT),
+      vlan,
+      srcMac,
+      dstMac,
+      srcIp,
+      dstIp,
+      trafficClass,
+      hopLimit,
+      ptpPktType);
+}
+
+template <typename SwitchT, typename IPAddrT>
+std::unique_ptr<facebook::fboss::TxPacket> makeTCPTxPacket(
+    const SwitchT* switchT,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const IPAddrT& srcIp,
+    const IPAddrT& dstIp,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t trafficClass = 0,
+    uint8_t hopLimit = 255,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>()) {
+  return makeTCPTxPacket(
+      makeAllocator(switchT),
+      vlan,
+      srcMac,
+      dstMac,
+      srcIp,
+      dstIp,
+      srcPort,
+      dstPort,
+      trafficClass,
+      hopLimit,
+      payload);
+}
+
+template <typename SwitchT>
+std::unique_ptr<TxPacket> makeTCPTxPacket(
+    const SwitchT* switchT,
+    std::optional<VlanID> vlanId,
+    folly::MacAddress dstMac,
+    const folly::IPAddress& dstIpAddress,
+    int l4SrcPort,
+    int l4DstPort,
+    uint8_t trafficClass = 0,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>()) {
+  return makeTCPTxPacket(
+      makeAllocator(switchT),
+      vlanId,
+      dstMac,
+      dstIpAddress,
+      l4SrcPort,
+      l4DstPort,
+      trafficClass,
+      payload);
+}
+
+std::unique_ptr<facebook::fboss::TxPacket> makeSflowV5Packet(
+    const AllocatePktFn& allocator,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddress& srcIp,
+    const folly::IPAddress& dstIp,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t trafficClass,
+    uint8_t hopLimit,
+    uint32_t ingressInterface,
+    uint32_t egressInterface,
+    uint32_t samplingRate,
+    bool computeChecksum,
+    std::optional<std::vector<uint8_t>> payload);
+
+template <typename SwitchT>
+std::unique_ptr<facebook::fboss::TxPacket> makeSflowV5Packet(
+    const SwitchT* switchT,
+    std::optional<VlanID> vlan,
+    folly::MacAddress srcMac,
+    folly::MacAddress dstMac,
+    const folly::IPAddress& srcIp,
+    const folly::IPAddress& dstIp,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t trafficClass,
+    uint8_t hopLimit,
+    uint32_t ingressInterface,
+    uint32_t egressInterface,
+    uint32_t samplingRate,
+    bool computeChecksum,
+    std::optional<std::vector<uint8_t>> payload =
+        std::optional<std::vector<uint8_t>>()) {
+  return makeSflowV5Packet(
+      makeAllocator(switchT),
+      vlan,
+      srcMac,
+      dstMac,
+      srcIp,
+      dstIp,
+      srcPort,
+      dstPort,
+      trafficClass,
+      hopLimit,
+      ingressInterface,
+      egressInterface,
+      samplingRate,
+      computeChecksum,
+      payload);
+}
 
 } // namespace utility
-
 } // namespace facebook::fboss

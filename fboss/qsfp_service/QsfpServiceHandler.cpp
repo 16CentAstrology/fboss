@@ -2,6 +2,8 @@
 
 #include "fboss/qsfp_service/QsfpServiceHandler.h"
 #include "fboss/agent/FbossError.h"
+#include "fboss/fsdb/client/FsdbPubSubManager.h"
+#include "fboss/fsdb/common/Flags.h"
 #include "fboss/lib/phy/gen-cpp2/phy_types.h"
 #include "fboss/lib/phy/gen-cpp2/prbs_types.h"
 
@@ -47,8 +49,20 @@ QsfpServiceHandler::QsfpServiceHandler(
   XLOG(INFO) << "FbossPhyMacsecService inside QsfpServiceHandler Started";
 }
 
+QsfpServiceHandler::~QsfpServiceHandler() {
+  if (fsdbSubscriber_) {
+    fsdbSubscriber_->removeSwitchStatePortMapSubscription();
+  }
+}
+
 void QsfpServiceHandler::init() {
   manager_->init();
+  if (FLAGS_subscribe_to_state_from_fsdb) {
+    fsdbPubSubMgr_ = std::make_unique<fsdb::FsdbPubSubManager>("qsfp_service");
+    fsdbSubscriber_ =
+        std::make_unique<QsfpFsdbSubscriber>(fsdbPubSubMgr_.get());
+    fsdbSubscriber_->subscribeToSwitchStatePortMap(manager_.get());
+  }
 }
 
 facebook::fb303::cpp2::fb_status QsfpServiceHandler::getStatus() {
@@ -67,13 +81,25 @@ void QsfpServiceHandler::getTransceiverInfo(
   manager_->getTransceiversInfo(info, std::move(ids));
 }
 
-void QsfpServiceHandler::customizeTransceiver(
-    int32_t idx,
-    cfg::PortSpeed speed) {
+void QsfpServiceHandler::getPortsRequiringOpticsFwUpgrade(
+    std::map<std::string, FirmwareUpgradeData>& ports) {
   auto log = LOG_THRIFT_CALL(INFO);
-  XLOG(INFO) << "customizeTransceiver request for " << idx << " to speed "
-             << apache::thrift::util::enumNameSafe(speed);
-  manager_->customizeTransceiver(idx, speed);
+  ports = manager_->getPortsRequiringOpticsFwUpgrade();
+}
+
+void QsfpServiceHandler::triggerAllOpticsFwUpgrade(
+    std::map<std::string, FirmwareUpgradeData>& ports) {
+  auto log = LOG_THRIFT_CALL(INFO);
+  ports = manager_->triggerAllOpticsFwUpgrade();
+}
+
+void QsfpServiceHandler::getTransceiverConfigValidationInfo(
+    std::map<int32_t, std::string>& info,
+    std::unique_ptr<std::vector<int32_t>> ids,
+    bool getConfigString) {
+  auto log = LOG_THRIFT_CALL(INFO);
+  manager_->getAllTransceiversValidationInfo(
+      info, std::move(ids), getConfigString);
 }
 
 void QsfpServiceHandler::getTransceiverRawDOMData(
@@ -112,11 +138,32 @@ void QsfpServiceHandler::pauseRemediation(
   manager_->setPauseRemediation(timeout, std::move(portList));
 }
 
+void QsfpServiceHandler::unpauseRemediation(
+    std::unique_ptr<std::vector<std::string>> portList) {
+  auto log = LOG_THRIFT_CALL(INFO);
+  manager_->setPauseRemediation(0, std::move(portList));
+}
+
 void QsfpServiceHandler::getRemediationUntilTime(
     std::map<std::string, int32_t>& info,
     std::unique_ptr<std::vector<std::string>> portList) {
   auto log = LOG_THRIFT_CALL(INFO);
   manager_->getPauseRemediationUntil(info, std::move(portList));
+}
+
+void QsfpServiceHandler::getSymbolErrorHistogram(
+    CdbDatapathSymErrHistogram& symErr,
+    std::unique_ptr<std::string> portName) {
+  auto log = LOG_THRIFT_CALL(INFO);
+  manager_->getSymbolErrorHistogram(symErr, *portName);
+}
+
+void QsfpServiceHandler::getAllPortSupportedProfiles(
+    std::map<std::string, std::vector<cfg::PortProfileID>>&
+        supportedPortProfiles,
+    bool checkOptics) {
+  auto log = LOG_THRIFT_CALL(INFO);
+  manager_->getAllPortSupportedProfiles(supportedPortProfiles, checkOptics);
 }
 
 void QsfpServiceHandler::readTransceiverRegister(
@@ -159,6 +206,11 @@ void QsfpServiceHandler::writeTransceiverRegister(
   manager_->writeTransceiverRegister(response, std::move(request));
 }
 
+QsfpServiceRunState QsfpServiceHandler::getQsfpServiceRunState() {
+  auto log = LOG_THRIFT_CALL(INFO);
+  return manager_->getRunState();
+}
+
 void QsfpServiceHandler::programXphyPort(
     int32_t portId,
     cfg::PortProfileID portProfileId) {
@@ -195,6 +247,13 @@ void QsfpServiceHandler::getInterfacePrbsState(
   manager_->getInterfacePrbsState(prbsState, *portName, component);
 }
 
+void QsfpServiceHandler::getAllInterfacePrbsStates(
+    std::map<std::string, prbs::InterfacePrbsState>& prbsStates,
+    phy::PortComponent component) {
+  auto log = LOG_THRIFT_CALL(INFO);
+  manager_->getAllInterfacePrbsStates(prbsStates, component);
+}
+
 void QsfpServiceHandler::getInterfacePrbsStats(
     phy::PrbsStats& response,
     std::unique_ptr<std::string> portName,
@@ -203,11 +262,36 @@ void QsfpServiceHandler::getInterfacePrbsStats(
   response = manager_->getInterfacePrbsStats(*portName, component);
 }
 
+void QsfpServiceHandler::getAllInterfacePrbsStats(
+    std::map<std::string, phy::PrbsStats>& prbsStats,
+    phy::PortComponent component) {
+  auto log = LOG_THRIFT_CALL(INFO);
+  manager_->getAllInterfacePrbsStats(prbsStats, component);
+}
+
 void QsfpServiceHandler::clearInterfacePrbsStats(
     std::unique_ptr<std::string> portName,
     phy::PortComponent component) {
   auto log = LOG_THRIFT_CALL(INFO);
   manager_->clearInterfacePrbsStats(*portName, component);
+}
+
+void QsfpServiceHandler::bulkClearInterfacePrbsStats(
+    std::unique_ptr<std::vector<std::string>> interfaces,
+    phy::PortComponent component) {
+  auto log = LOG_THRIFT_CALL(INFO);
+  manager_->bulkClearInterfacePrbsStats(std::move(interfaces), component);
+}
+
+void QsfpServiceHandler::dumpTransceiverI2cLog(
+    std::unique_ptr<std::string> portName) {
+  auto log = LOG_THRIFT_CALL(INFO);
+  auto ret = manager_->dumpTransceiverI2cLog(*portName);
+  // if the header of the log has size 0, logging is not enabled.
+  if (ret.first == 0) {
+    throw FbossError(
+        fmt::format("Failed to dump transceiver {} I2c log", *portName));
+  }
 }
 
 void QsfpServiceHandler::setPortPrbs(
@@ -282,6 +366,13 @@ void QsfpServiceHandler::setPortAdminState(
   manager_->setPortAdminState(*portName, component, setAdminUp);
 }
 
+void QsfpServiceHandler::setInterfaceTxRx(
+    std::vector<phy::TxRxEnableResponse>& txRxEnableResponse,
+    std::unique_ptr<std::vector<phy::TxRxEnableRequest>> txRxEnableRequests) {
+  auto log = LOG_THRIFT_CALL(INFO);
+  txRxEnableResponse = manager_->setInterfaceTxRx(*txRxEnableRequests);
+}
+
 void QsfpServiceHandler::saiPhyRegisterAccess(
     std::string& out,
     std::unique_ptr<std::string> portName,
@@ -300,13 +391,13 @@ void QsfpServiceHandler::saiPhySerdesRegisterAccess(
     std::unique_ptr<std::string> portName,
     bool opRead,
     int16_t mdioAddr,
-    bool lineSide,
+    phy::Side side,
     int serdesLane,
     int64_t regOffset,
     int64_t data) {
   auto log = LOG_THRIFT_CALL(INFO);
   out = manager_->saiPhySerdesRegisterAccess(
-      *portName, opRead, mdioAddr, lineSide, serdesLane, regOffset, data);
+      *portName, opRead, mdioAddr, side, serdesLane, regOffset, data);
 }
 
 void QsfpServiceHandler::phyConfigCheckHw(
@@ -322,6 +413,12 @@ void QsfpServiceHandler::publishLinkSnapshots(
   for (const auto& portName : *portNames) {
     manager_->publishLinkSnapshots(portName);
   }
+}
+
+void QsfpServiceHandler::getAllInterfacePhyInfo(
+    std::map<std::string, phy::PhyInfo>& phyInfos) {
+  auto log = LOG_THRIFT_CALL(INFO);
+  manager_->getAllInterfacePhyInfo(phyInfos);
 }
 
 void QsfpServiceHandler::getInterfacePhyInfo(

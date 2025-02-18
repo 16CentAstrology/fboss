@@ -13,6 +13,7 @@
 #include <memory>
 #include "configerator/structs/neteng/fboss/bgp/if/gen-cpp2/bgp_attr_types.h"
 #include "fboss/agent/IPv6Handler.h"
+#include "fboss/agent/SwitchIdScopeResolver.h"
 #include "fboss/agent/ThriftHandler.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
@@ -20,6 +21,7 @@
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/RouteScaleGenerators.h"
 #include "fboss/agent/test/integration_tests/AgentIntegrationTest.h"
+#include "fboss/fsdb/common/Flags.h"
 #include "fboss/lib/CommonUtils.h"
 #include "neteng/fboss/bgp/cpp/BgpServiceUtil.h"
 #include "neteng/fboss/bgp/if/gen-cpp2/TBgpService.h"
@@ -38,12 +40,18 @@ auto constexpr kTestPrefixLength = 120;
 
 using namespace facebook::neteng::fboss::bgp::thrift;
 using namespace facebook::neteng::fboss::bgp_attr;
+using namespace std::chrono;
 
 using StateUpdateFn = facebook::fboss::SwSwitch::StateUpdateFn;
 
 namespace facebook::fboss {
 class BgpIntegrationTest : public AgentIntegrationTest {
  protected:
+  void setCmdLineFlagOverrides() const override {
+    FLAGS_publish_stats_to_fsdb = true;
+    FLAGS_publish_state_to_fsdb = true;
+    AgentIntegrationTest::setCmdLineFlagOverrides();
+  }
   uint64_t bgpAliveSince() {
     uint64_t aliveSince{0};
     auto clientParams = servicerouter::ClientParams();
@@ -56,7 +64,7 @@ class BgpIntegrationTest : public AgentIntegrationTest {
                                   "", clientParams);
             aliveSince = client->sync_aliveSince();
             return true;
-          } catch (const std::exception& e) {
+          } catch (const std::exception&) {
             return false;
           }
         },
@@ -120,7 +128,7 @@ class BgpIntegrationTest : public AgentIntegrationTest {
   void setPortState(PortID port, bool up) {
     updateState(up ? "set port up" : "set port down", [&](const auto& state) {
       auto newState = state->clone();
-      auto newPort = newState->getPorts()->getPort(port)->modify(&newState);
+      auto newPort = newState->getPorts()->getNodeIf(port)->modify(&newState);
       newPort->setLoopbackMode(
           up ? cfg::PortLoopbackMode::MAC : cfg::PortLoopbackMode::NONE);
       newPort->setAdminState(
@@ -163,7 +171,7 @@ class BgpIntegrationTest : public AgentIntegrationTest {
   void checkRoute(TIpAddress prefix, uint8_t length, bool exists) {
     WITH_RETRIES({
       const auto& fibContainer =
-          sw()->getState()->getFibs()->getFibContainer(RouterID(0));
+          sw()->getState()->getFibs()->getNode(RouterID(0));
       auto fib = fibContainer->template getFib<TIpAddress>();
       auto testRoute = fib->getRouteIf({prefix, length});
       if (exists) {
@@ -329,8 +337,7 @@ TEST_F(BgpIntegrationTest, bgpRestart) {
 }
 
 TEST_F(BgpIntegrationTest, routeScaleTest) {
-  Platform* platform = sw()->getPlatform();
-  auto hw = platform->getAsic();
+  auto hw = platform()->getAsic();
   auto npu = hw->getAsicType();
   switch (npu) {
     case cfg::AsicType::ASIC_TYPE_TOMAHAWK:
