@@ -13,7 +13,6 @@
 #include "fboss/agent/hw/switch_asics/Tomahawk5Asic.h"
 #include "fboss/agent/platforms/common/montblanc/MontblancPlatformMapping.h"
 
-#include <cstdio>
 #include <cstring>
 namespace facebook::fboss {
 
@@ -29,17 +28,17 @@ SaiBcmMontblancPlatform::SaiBcmMontblancPlatform(
           localMac) {}
 
 void SaiBcmMontblancPlatform::setupAsic(
-    cfg::SwitchType switchType,
     std::optional<int64_t> switchId,
-    std::optional<cfg::Range64> systemPortRange) {
-  asic_ =
-      std::make_unique<Tomahawk5Asic>(switchType, switchId, systemPortRange);
+    const cfg::SwitchInfo& switchInfo,
+    std::optional<HwAsic::FabricNodeRole> fabricNodeRole) {
+  CHECK(!fabricNodeRole.has_value());
+  asic_ = std::make_unique<Tomahawk5Asic>(switchId, switchInfo);
 }
 
 HwAsic* SaiBcmMontblancPlatform::getAsic() const {
   return asic_.get();
 }
 
-SaiBcmMontblancPlatform::~SaiBcmMontblancPlatform() {}
+SaiBcmMontblancPlatform::~SaiBcmMontblancPlatform() = default;
 
 } // namespace facebook::fboss

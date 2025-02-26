@@ -51,7 +51,7 @@ class SaiMirrorManager {
       SaiStore* saiStore,
       SaiManagerTable* managerTable,
       SaiPlatform* platform);
-  void addMirror(const std::shared_ptr<Mirror>& mirror);
+  void addNode(const std::shared_ptr<Mirror>& mirror);
   void removeMirror(const std::shared_ptr<Mirror>& mirror);
   void changeMirror(
       const std::shared_ptr<Mirror>& oldMirror,
@@ -64,13 +64,14 @@ class SaiMirrorManager {
  private:
   SaiMirrorHandle* FOLLY_NULLABLE
   getMirrorHandleImpl(const std::string& mirrorId) const;
-  SaiMirrorHandle::SaiMirror addMirrorSpan(PortSaiId monitorPort);
-  SaiMirrorHandle::SaiMirror addMirrorErSpan(
+  SaiMirrorHandle::SaiMirror addNodeSpan(sai_object_id_t monitorPort);
+  SaiMirrorHandle::SaiMirror addNodeErSpan(
       const std::shared_ptr<Mirror>& mirror,
-      PortSaiId monitorPort);
-  SaiMirrorHandle::SaiMirror addMirrorSflow(
+      sai_object_id_t monitorPort);
+  SaiMirrorHandle::SaiMirror addNodeSflow(
       const std::shared_ptr<Mirror>& mirror,
-      PortSaiId monitorPort);
+      sai_object_id_t monitorPort);
+  sai_object_id_t getMonitorPort(const PortDescriptor& portDesc);
 
   SaiStore* saiStore_;
   SaiManagerTable* managerTable_;

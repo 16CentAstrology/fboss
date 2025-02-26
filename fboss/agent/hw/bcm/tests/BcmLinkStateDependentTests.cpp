@@ -11,7 +11,6 @@
 
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/hw/test/HwSwitchEnsemble.h"
-#include "fboss/agent/state/Port.h"
 
 namespace facebook::fboss {
 
@@ -25,18 +24,18 @@ void BcmLinkStateDependentTests::SetUp() {
   }
 }
 
-HwLinkStateToggler* BcmLinkStateDependentTests::getLinkToggler() {
+LinkStateToggler* BcmLinkStateDependentTests::getLinkToggler() {
   return getHwSwitchEnsemble()->getLinkToggler();
 }
 
 void BcmLinkStateDependentTests::bringUpPorts(
     const std::vector<PortID>& ports) {
-  getLinkToggler()->bringUpPorts(getProgrammedState(), ports);
+  getLinkToggler()->bringUpPorts(ports);
 }
 
 void BcmLinkStateDependentTests::bringDownPorts(
     const std::vector<PortID>& ports) {
-  getLinkToggler()->bringDownPorts(getProgrammedState(), ports);
+  getLinkToggler()->bringDownPorts(ports);
 }
 
 } // namespace facebook::fboss

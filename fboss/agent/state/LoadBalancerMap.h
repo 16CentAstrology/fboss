@@ -40,11 +40,12 @@ class LoadBalancerMap
     : public ThriftMapNode<LoadBalancerMap, LoadBalancerMapTraits> {
  public:
   using Base = ThriftMapNode<LoadBalancerMap, LoadBalancerMapTraits>;
+  using Traits = LoadBalancerMapTraits;
 
   using Base::Base;
 
-  LoadBalancerMap() {}
-  ~LoadBalancerMap() override {}
+  LoadBalancerMap() = default;
+  ~LoadBalancerMap() override = default;
   std::shared_ptr<LoadBalancer> getLoadBalancerIf(LoadBalancerID id) const;
 
   void addLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer);
@@ -52,6 +53,42 @@ class LoadBalancerMap
 
  private:
   // Inherit the constructors required for clone()
+  friend class CloneAllocator;
+};
+
+using MultiSwitchLoadBalancerMapTypeClass = apache::thrift::type_class::
+    map<apache::thrift::type_class::string, LoadBalancerMapTypeClass>;
+using MultiSwitchLoadBalancerMapThriftType =
+    std::map<std::string, LoadBalancerMapThriftType>;
+
+class MultiSwitchLoadBalancerMap;
+
+using MultiSwitchLoadBalancerMapTraits = ThriftMultiSwitchMapNodeTraits<
+    MultiSwitchLoadBalancerMap,
+    MultiSwitchLoadBalancerMapTypeClass,
+    MultiSwitchLoadBalancerMapThriftType,
+    LoadBalancerMap>;
+
+class HwSwitchMatcher;
+
+class MultiSwitchLoadBalancerMap : public ThriftMultiSwitchMapNode<
+                                       MultiSwitchLoadBalancerMap,
+                                       MultiSwitchLoadBalancerMapTraits> {
+ public:
+  using Traits = MultiSwitchLoadBalancerMapTraits;
+  using BaseT = ThriftMultiSwitchMapNode<
+      MultiSwitchLoadBalancerMap,
+      MultiSwitchLoadBalancerMapTraits>;
+  using BaseT::modify;
+
+  MultiSwitchLoadBalancerMap() = default;
+  virtual ~MultiSwitchLoadBalancerMap() = default;
+
+  MultiSwitchLoadBalancerMap* modify(std::shared_ptr<SwitchState>* state);
+
+ private:
+  // Inherit the constructors required for clone()
+  using BaseT::BaseT;
   friend class CloneAllocator;
 };
 

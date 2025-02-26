@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "fboss/agent/hw/CounterUtils.h"
 #include "fboss/agent/hw/HwFb303Stats.h"
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_types.h"
 
@@ -23,13 +24,16 @@ namespace facebook::fboss {
 class HwCpuFb303Stats {
  public:
   using QueueId2Name = folly::F14FastMap<int, std::string>;
-  explicit HwCpuFb303Stats(QueueId2Name queueId2Name = {})
-      : queueId2Name_(queueId2Name) {
+  HwCpuFb303Stats(
+      QueueId2Name queueId2Name = {},
+      std::optional<std::string> statsPrefix = std::nullopt)
+      : queueCounters_(HwFb303Stats(statsPrefix)), queueId2Name_(queueId2Name) {
     setupStats();
   }
   void updateStats(
       const HwPortStats& latestStats,
       const std::chrono::seconds& retrievedAt);
+  void updateStats(const CpuPortStats& latestStats);
 
   void queueChanged(int queueId, const std::string& queueName);
   void queueRemoved(int queueId);
@@ -45,8 +49,11 @@ class HwCpuFb303Stats {
       int queueuId,
       folly::StringPiece queueName);
 
-  static std::array<folly::StringPiece, 2> kQueueStatKeys();
+  static std::array<folly::StringPiece, 2> kQueueMonotonicCounterStatKeys();
   int64_t getCounterLastIncrement(folly::StringPiece statKey) const;
+  int64_t getCounter(const folly::StringPiece statKey) const;
+  CpuPortStats getCpuPortStats() const;
+  int64_t getCumulativeValueIf(const folly::StringPiece statKey) const;
 
  private:
   void setupStats();

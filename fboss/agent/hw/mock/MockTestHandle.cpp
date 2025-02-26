@@ -10,7 +10,6 @@
 #include "fboss/agent/hw/mock/MockTestHandle.h"
 
 #include <folly/io/IOBuf.h>
-#include <gmock/gmock.h>
 
 #include "fboss/agent/hw/mock/MockRxPacket.h"
 
@@ -18,21 +17,26 @@ namespace facebook::fboss {
 
 void MockTestHandle::rxPacket(
     std::unique_ptr<folly::IOBuf> buf,
-    PortID srcPort,
+    const PortDescriptor& srcPort,
     std::optional<VlanID> srcVlan) {
+  auto len = buf->computeChainDataLength();
   auto pkt = std::make_unique<MockRxPacket>(std::move(buf));
-  pkt->padToLength(68);
-  pkt->setSrcPort(srcPort);
+  // The minimum required frame length for ethernet is 64 bytes
+  pkt->padToLength(std::max((int)len, 68)); // pad to min packet size if needed
+  if (srcPort.isAggregatePort()) {
+    pkt->setSrcAggregatePort(srcPort.aggPortID());
+  }
+  pkt->setSrcPort(PortID(srcPort.intID()));
   pkt->setSrcVlan(srcVlan);
   getSw()->packetReceived(std::move(pkt));
 }
 
 void MockTestHandle::forcePortDown(PortID port) {
-  getSw()->linkStateChanged(port, false);
+  getSw()->linkStateChanged(port, false, cfg::PortType::INTERFACE_PORT);
 }
 
 void MockTestHandle::forcePortUp(PortID port) {
-  getSw()->linkStateChanged(port, true);
+  getSw()->linkStateChanged(port, true, cfg::PortType::INTERFACE_PORT);
 }
 
 void MockTestHandle::forcePortFlap(PortID port) {

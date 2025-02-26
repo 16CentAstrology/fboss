@@ -3,10 +3,13 @@
 # In general, libraries and binaries in fboss/foo/bar are built by
 # cmake/FooBar.cmake
 
+if(BUILD_SAI_FAKE)
 add_executable(switch_test
     fboss/agent/test/oss/Main.cpp
     fboss/agent/hw/sai/switch/tests/AclTableGroupManagerTest.cpp
     fboss/agent/hw/sai/switch/tests/AclTableManagerTest.cpp
+    fboss/agent/hw/sai/switch/tests/ArsManagerTest.cpp
+    fboss/agent/hw/sai/switch/tests/ArsProfileManagerTest.cpp
     fboss/agent/hw/sai/switch/tests/BridgeManagerTest.cpp
     fboss/agent/hw/sai/switch/tests/FdbManagerTest.cpp
     fboss/agent/hw/sai/switch/tests/InSegEntryManagerTest.cpp
@@ -24,17 +27,20 @@ add_executable(switch_test
     fboss/agent/hw/sai/switch/tests/SwitchManagerTest.cpp
     fboss/agent/hw/sai/switch/tests/SystemPortManagerTest.cpp
     fboss/agent/hw/sai/switch/tests/UnsupportedFeatureTest.cpp
+    fboss/agent/hw/sai/switch/tests/UdfManagerTest.cpp
     fboss/agent/hw/sai/switch/tests/VirtualRouterManagerTest.cpp
     fboss/agent/hw/sai/switch/tests/VlanManagerTest.cpp
     fboss/agent/hw/sai/switch/tests/TunnelManagerTest.cpp
 )
 
 target_link_libraries(switch_test
+    agent_test_utils
+    switchid_scope_resolver
     sai_platform
     sai_store
     sai_switch
     fake_sai
-    hw_switch_stats
+    hw_switch_fb303_stats
     manager_test_base
     ${GTEST}
     ${LIBGMOCK_LIBRARIES}
@@ -46,6 +52,7 @@ add_library(manager_test_base
 
 target_link_libraries(manager_test_base
   core
+  switchid_scope_resolver
   sai_store
   sai_switch
   fake_sai
@@ -66,4 +73,10 @@ set_target_properties(switch_test PROPERTIES COMPILE_FLAGS
   -DSAI_VER_RELEASE=${SAI_VER_RELEASE}"
 )
 
+# switch_test can't run on devservers because of some library loading error,
+# but gtest_discover_tests will attempt to execute the binary, so disable it.
+if(NOT DEFINED ENV{DEVSERVER})
 gtest_discover_tests(switch_test)
+endif()
+
+endif()

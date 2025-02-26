@@ -23,7 +23,7 @@ template <typename SaiObjectTraits>
 class SaiObjectWithCounters : public SaiObject<SaiObjectTraits> {
  public:
   friend class SaiObjectStore<SaiObjectTraits>;
-  friend class ::SaiStoreTest;
+  friend class SaiStoreTest;
   // Load from adapter key
   explicit SaiObjectWithCounters(
       const typename SaiObjectTraits::AdapterKey& adapterKey)
@@ -69,6 +69,19 @@ class SaiObjectWithCounters : public SaiObject<SaiObjectTraits> {
     return counterId2Value_;
   }
 
+  template <typename T = SaiObjectTraits>
+  const StatsMap getStats(const std::vector<sai_stat_id_t>& counterIds) const {
+    static_assert(SaiObjectHasStats<T>::value, "invalid traits for the api");
+    StatsMap toRet;
+    for (auto counterId : counterIds) {
+      auto citr = counterId2Value_.find(counterId);
+      if (citr == counterId2Value_.end()) {
+        throw FbossError("Could not find counterId: ", counterId);
+      }
+      toRet.insert(*citr);
+    }
+    return toRet;
+  }
   template <typename T = SaiObjectTraits>
   void clearStats(const std::vector<sai_stat_id_t>& counterIds) const {
     static_assert(SaiObjectHasStats<T>::value, "invalid traits for the api");

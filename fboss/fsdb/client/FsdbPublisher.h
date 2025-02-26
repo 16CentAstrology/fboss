@@ -5,8 +5,8 @@
 #include <folly/Format.h>
 #include <folly/String.h>
 #include <folly/concurrency/DynamicBoundedQueue.h>
-#include <folly/experimental/coro/AsyncGenerator.h>
-#include <folly/experimental/coro/AsyncPipe.h>
+#include <folly/coro/AsyncGenerator.h>
+#include <folly/coro/AsyncPipe.h>
 #include "fboss/fsdb/client/FsdbStreamClient.h"
 #include "fboss/fsdb/if/gen-cpp2/fsdb_oper_types.h"
 
@@ -26,9 +26,7 @@ class FsdbPublisher : public FsdbStreamClient {
     return std::make_unique<GenPipeT>(PipeT::create(kPubQueueCapacity));
   }
 #endif
-  std::string typeStr() {
-    return std::is_same_v<PubUnit, OperDelta> ? "Delta" : "Path";
-  }
+  std::string typeStr();
 
  public:
   FsdbPublisher(
@@ -48,6 +46,7 @@ class FsdbPublisher : public FsdbStreamClient {
                 typeStr(),
                 (publishStats ? "Stat" : "State"),
                 folly::join('_', publishPath)),
+            publishStats,
             [this, stateChangeCb](State oldState, State newState) {
               if (newState == State::CONNECTED) {
                 // For CONNECTED, first setup internal state and
@@ -65,11 +64,10 @@ class FsdbPublisher : public FsdbStreamClient {
                 handleStateChange(oldState, newState);
               }
             }),
+        publishPath_(publishPath),
 #if FOLLY_HAS_COROUTINES
         asyncPipe_(makePipe()),
 #endif
-        publishPath_(publishPath),
-        publishStats_(publishStats),
         writeErrors_(
             fb303::ThreadCachedServiceData::get()->getThreadStats(),
             getCounterPrefix() + ".writeErrors",
@@ -79,14 +77,13 @@ class FsdbPublisher : public FsdbStreamClient {
 
   bool write(PubUnit&& pubUnit);
 
+  bool disconnectForGR();
+
   ssize_t queueSize() const {
     return queueSize_;
   }
   size_t queueCapacity() const {
     return kPubQueueCapacity;
-  }
-  bool publishStats() const {
-    return publishStats_;
   }
 
  protected:
@@ -94,6 +91,8 @@ class FsdbPublisher : public FsdbStreamClient {
   folly::coro::AsyncGenerator<PubUnit&&> createGenerator();
 #endif
   OperPubRequest createRequest() const;
+
+  const std::vector<std::string> publishPath_;
 
  private:
   void handleStateChange(State oldState, State newState);
@@ -103,8 +102,6 @@ class FsdbPublisher : public FsdbStreamClient {
   folly::Synchronized<std::unique_ptr<GenPipeT>> asyncPipe_;
 #endif
   std::atomic<ssize_t> queueSize_{0};
-  const std::vector<std::string> publishPath_;
-  const bool publishStats_;
   fb303::ThreadCachedServiceData::TLTimeseries writeErrors_;
 };
 } // namespace facebook::fboss::fsdb

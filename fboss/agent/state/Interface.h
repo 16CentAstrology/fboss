@@ -12,11 +12,13 @@
 #include <folly/IPAddress.h>
 #include <folly/MacAddress.h>
 #include <folly/Range.h>
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 #include "fboss/agent/AddressUtil.h"
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
+#include "fboss/agent/state/ArpResponseTable.h"
+#include "fboss/agent/state/NdpResponseTable.h"
 #include "fboss/agent/state/NodeBase.h"
 #include "fboss/agent/state/Thrifty.h"
 #include "fboss/agent/types.h"
@@ -30,12 +32,23 @@ namespace facebook::fboss {
 
 class SwitchState;
 
+using DhcpV4OverrideMap = std::map<folly::MacAddress, folly::IPAddressV4>;
+using DhcpV6OverrideMap = std::map<folly::MacAddress, folly::IPAddressV6>;
+
 // both arp table and ndp table have same thrift type representation as map of
 // string to neighbor entry fields. define which of these two members of struct
 // resolves to which class.
 class Interface;
 RESOLVE_STRUCT_MEMBER(Interface, switch_state_tags::arpTable, ArpTable)
 RESOLVE_STRUCT_MEMBER(Interface, switch_state_tags::ndpTable, NdpTable)
+RESOLVE_STRUCT_MEMBER(
+    Interface,
+    switch_state_tags::arpResponseTable,
+    ArpResponseTable)
+RESOLVE_STRUCT_MEMBER(
+    Interface,
+    switch_state_tags::ndpResponseTable,
+    NdpResponseTable)
 
 /*
  * Interface stores a routing domain on the switch
@@ -43,6 +56,7 @@ RESOLVE_STRUCT_MEMBER(Interface, switch_state_tags::ndpTable, NdpTable)
 class Interface : public ThriftStructNode<Interface, state::InterfaceFields> {
  public:
   using Base = ThriftStructNode<Interface, state::InterfaceFields>;
+  using Base::modify;
   using AddressesType = Base::Fields::TypeFor<switch_state_tags::addresses>;
   using Addresses = std::map<folly::IPAddress, uint8_t>;
   Interface(
@@ -54,7 +68,10 @@ class Interface : public ThriftStructNode<Interface, state::InterfaceFields> {
       int mtu,
       bool isVirtual,
       bool isStateSyncDisabled,
-      cfg::InterfaceType type = cfg::InterfaceType::VLAN) {
+      cfg::InterfaceType type = cfg::InterfaceType::VLAN,
+      std::optional<RemoteInterfaceType> remoteIntfType = std::nullopt,
+      std::optional<LivenessStatus> remoteIntfLivenessStatus = std::nullopt,
+      cfg::Scope scope = cfg::Scope::LOCAL) {
     set<switch_state_tags::interfaceId>(id);
     setRouterID(router);
     if (vlan) {
@@ -66,6 +83,8 @@ class Interface : public ThriftStructNode<Interface, state::InterfaceFields> {
     setIsVirtual(isVirtual);
     setIsStateSyncDisabled(isStateSyncDisabled);
     setType(type);
+    setRemoteInterfaceType(remoteIntfType);
+    setScope(scope);
   }
 
   InterfaceID getID() const {
@@ -108,7 +127,14 @@ class Interface : public ThriftStructNode<Interface, state::InterfaceFields> {
     // untagged packets. During this transition, we will use VlanID 0 to
     // populate SwitchState/Neighbor cache etc. data structures. Once the
     // wedge_agent changes are complete, we will no longer need this function.
-    return getType() == cfg::InterfaceType::VLAN ? getVlanID() : VlanID(0);
+    switch (getType()) {
+      case cfg::InterfaceType::VLAN:
+        return getVlanID();
+      case cfg::InterfaceType::PORT:
+      case cfg::InterfaceType::SYSTEM_PORT:
+        return VlanID(0);
+    }
+    throw FbossError("interface type is unknown type");
   }
 
   Interface* modify(std::shared_ptr<SwitchState>* state);
@@ -178,18 +204,111 @@ class Interface : public ThriftStructNode<Interface, state::InterfaceFields> {
     return getNdpTable();
   }
 
+  template <typename NTable>
+  inline const std::shared_ptr<NTable> getNeighborTable() const;
+
   void setArpTable(state::NeighborEntries arpTable) {
     set<switch_state_tags::arpTable>(std::move(arpTable));
   }
   void setNdpTable(state::NeighborEntries ndpTable) {
     set<switch_state_tags::ndpTable>(std::move(ndpTable));
   }
+
+  void setArpTable(std::shared_ptr<ArpTable> table) {
+    ref<switch_state_tags::arpTable>() = std::move(table);
+  }
+  void setNdpTable(std::shared_ptr<NdpTable> table) {
+    ref<switch_state_tags::ndpTable>() = std::move(table);
+  }
+
   template <typename AddressType>
   void setNeighborEntryTable(state::NeighborEntries nbrTable) {
     if constexpr (std::is_same_v<AddressType, folly::IPAddressV4>) {
       return setArpTable(std::move(nbrTable));
     }
     return setNdpTable(std::move(nbrTable));
+  }
+
+  const std::shared_ptr<ArpResponseTable> getArpResponseTable() const {
+    return get<switch_state_tags::arpResponseTable>();
+  }
+  void setArpResponseTable(std::shared_ptr<ArpResponseTable> table) {
+    ref<switch_state_tags::arpResponseTable>() = std::move(table);
+  }
+
+  const std::shared_ptr<NdpResponseTable> getNdpResponseTable() const {
+    return get<switch_state_tags::ndpResponseTable>();
+  }
+  void setNdpResponseTable(std::shared_ptr<NdpResponseTable> table) {
+    ref<switch_state_tags::ndpResponseTable>() = std::move(table);
+  }
+
+  std::optional<folly::IPAddressV4> getDhcpV4Relay() const {
+    if (auto dhcpV4Relay = cref<switch_state_tags::dhcpV4Relay>()) {
+      return folly::IPAddressV4(dhcpV4Relay->toThrift());
+    }
+    return std::nullopt;
+  }
+
+  void setDhcpV4Relay(std::optional<folly::IPAddressV4> dhcpV4Relay) {
+    if (!dhcpV4Relay) {
+      ref<switch_state_tags::dhcpV4Relay>().reset();
+    } else {
+      set<switch_state_tags::dhcpV4Relay>((*dhcpV4Relay).str());
+    }
+  }
+
+  std::optional<folly::IPAddressV6> getDhcpV6Relay() const {
+    if (auto dhcpV6Relay = cref<switch_state_tags::dhcpV6Relay>()) {
+      return folly::IPAddressV6(dhcpV6Relay->toThrift());
+    }
+    return std::nullopt;
+  }
+
+  void setDhcpV6Relay(std::optional<folly::IPAddressV6> dhcpV6Relay) {
+    if (!dhcpV6Relay) {
+      ref<switch_state_tags::dhcpV6Relay>().reset();
+    } else {
+      set<switch_state_tags::dhcpV6Relay>((*dhcpV6Relay).str());
+    }
+  }
+
+  DhcpV4OverrideMap getDhcpV4RelayOverrides() const {
+    DhcpV4OverrideMap overrideMap{};
+    for (auto iter :
+         std::as_const(*get<switch_state_tags::dhcpRelayOverridesV4>())) {
+      overrideMap.emplace(
+          folly::MacAddress(iter.first),
+          folly::IPAddressV4(iter.second->cref()));
+    }
+    return overrideMap;
+  }
+
+  void setDhcpV4RelayOverrides(DhcpV4OverrideMap map) {
+    std::map<std::string, std::string> overrideMap{};
+    for (auto iter : map) {
+      overrideMap.emplace(iter.first.toString(), iter.second.str());
+    }
+    set<switch_state_tags::dhcpRelayOverridesV4>(std::move(overrideMap));
+  }
+
+  DhcpV6OverrideMap getDhcpV6RelayOverrides() const {
+    DhcpV6OverrideMap overrideMap{};
+    for (auto iter :
+         std::as_const(*get<switch_state_tags::dhcpRelayOverridesV6>())) {
+      overrideMap.emplace(
+          folly::MacAddress(iter.first),
+          folly::IPAddressV6(iter.second->cref()));
+    }
+    return overrideMap;
+  }
+
+  void setDhcpV6RelayOverrides(DhcpV6OverrideMap map) {
+    std::map<std::string, std::string> overrideMap{};
+    for (auto iter : map) {
+      overrideMap.emplace(iter.first.toString(), iter.second.str());
+    }
+    set<switch_state_tags::dhcpRelayOverridesV6>(std::move(overrideMap));
   }
 
   auto getAddresses() const {
@@ -205,6 +324,23 @@ class Interface : public ThriftStructNode<Interface, state::InterfaceFields> {
   bool hasAddress(folly::IPAddress ip) const {
     auto& addresses = std::as_const(*getAddresses());
     return (addresses.find(ip.str()) != addresses.end());
+  }
+
+  template <typename NTable>
+  void setNeighborTable(std::shared_ptr<NTable> table) {
+    if constexpr (std::is_same_v<NTable, ArpTable>) {
+      ref<switch_state_tags::arpTable>() = std::move(table);
+    } else {
+      ref<switch_state_tags::ndpTable>() = std::move(table);
+    }
+  }
+
+  template <typename NTable>
+  void setNeighborTable(state::NeighborEntries nbrTable) {
+    if constexpr (std::is_same_v<NTable, ArpTable>) {
+      return setArpTable(std::move(nbrTable));
+    }
+    return setNdpTable(std::move(nbrTable));
   }
 
   /**
@@ -295,6 +431,70 @@ class Interface : public ThriftStructNode<Interface, state::InterfaceFields> {
     return std::nullopt;
   }
 
+  std::optional<RemoteInterfaceType> getRemoteInterfaceType() const {
+    if (auto remoteIntfType = cref<switch_state_tags::remoteIntfType>()) {
+      return remoteIntfType->cref();
+    }
+    return std::nullopt;
+  }
+
+  void setRemoteInterfaceType(
+      const std::optional<RemoteInterfaceType>& remoteIntfType = std::nullopt) {
+    if (remoteIntfType) {
+      set<switch_state_tags::remoteIntfType>(remoteIntfType.value());
+    } else {
+      ref<switch_state_tags::remoteIntfType>().reset();
+    }
+  }
+
+  std::optional<LivenessStatus> getRemoteLivenessStatus() const {
+    if (auto remoteIntfLivenessStatus =
+            cref<switch_state_tags::remoteIntfLivenessStatus>()) {
+      return remoteIntfLivenessStatus->cref();
+    }
+    return std::nullopt;
+  }
+
+  void setRemoteLivenessStatus(
+      const std::optional<LivenessStatus>& remoteIntfLivenessStatus =
+          std::nullopt) {
+    if (remoteIntfLivenessStatus) {
+      set<switch_state_tags::remoteIntfLivenessStatus>(
+          remoteIntfLivenessStatus.value());
+    } else {
+      ref<switch_state_tags::remoteIntfLivenessStatus>().reset();
+    }
+  }
+
+  void setScope(const cfg::Scope& scope) {
+    set<switch_state_tags::scope>(scope);
+  }
+
+  cfg::Scope getScope() const {
+    return cref<switch_state_tags::scope>()->cref();
+  }
+
+  bool isStatic() const {
+    return getRemoteInterfaceType().has_value() &&
+        getRemoteInterfaceType().value() == RemoteInterfaceType::STATIC_ENTRY;
+  }
+
+  void setPortID(PortID port) {
+    set<switch_state_tags::portId>(port);
+  }
+
+  PortID getPortID() const {
+    CHECK(getType() == cfg::InterfaceType::PORT);
+    return PortID(get<switch_state_tags::portId>()->cref());
+  }
+
+  std::optional<PortID> getPortIDf() const {
+    if (getType() == cfg::InterfaceType::PORT) {
+      return getPortID();
+    }
+    return std::nullopt;
+  }
+
   /*
    * Inherit the constructors required for clone().
    * This needs to be public, as std::make_shared requires
@@ -306,5 +506,10 @@ class Interface : public ThriftStructNode<Interface, state::InterfaceFields> {
   using Base::Base;
   friend class CloneAllocator;
 };
+
+template <typename NTable>
+inline const std::shared_ptr<NTable> Interface::getNeighborTable() const {
+  return this->template getNeighborEntryTable<typename NTable::AddressType>();
+}
 
 } // namespace facebook::fboss

@@ -17,7 +17,9 @@
 
 namespace facebook::fboss {
 
+#if !defined(BRCM_SAI_SDK_XGS_AND_DNX) and !defined(CHENAB_SAI_SDK)
 constexpr auto kDefaultDropProbability = 100;
+#endif
 
 std::shared_ptr<SaiWred> SaiWredManager::getOrCreateProfile(
     const PortQueue& queue) {
@@ -48,14 +50,15 @@ SaiWredTraits::CreateAttributes SaiWredManager::profileCreateAttrs(
       std::get<std::optional<Attributes::EcnGreenMinThreshold>>(attrs);
   auto& ecnGreenMax =
       std::get<std::optional<Attributes::EcnGreenMaxThreshold>>(attrs);
-#if !defined(SAI_VERSION_8_2_0_0_ODP) &&     \
-    !defined(SAI_VERSION_8_2_0_0_DNX_ODP) && \
-    !defined(SAI_VERSION_8_2_0_0_SIM_ODP) && \
-    !defined(SAI_VERSION_9_0_EA_ODP) &&      \
-    !defined(SAI_VERSION_9_0_EA_DNX_ODP) &&  \
-    !defined(SAI_VERSION_9_0_EA_SIM_ODP)
+#if defined(TAJO_SDK)
+  // TAJO SDK populates greenMin/Max value to ecnGreenMin/Max if nullptr, so use
+  // 0 here to avoid that
   std::tie(greenMin, greenMax, greenDropProbability, ecnGreenMin, ecnGreenMax) =
       std::make_tuple(0, 0, kDefaultDropProbability, 0, 0);
+#elif !defined(BRCM_SAI_SDK_XGS_AND_DNX) and !defined(CHENAB_SAI_SDK)
+  std::tie(greenMin, greenMax, greenDropProbability, ecnGreenMin, ecnGreenMax) =
+      std::make_tuple(
+          0, 0, kDefaultDropProbability, std::nullopt, std::nullopt);
 #endif
   for (const auto& aqm : std::as_const(*queue.getAqms())) {
     // THRIFT_COPY

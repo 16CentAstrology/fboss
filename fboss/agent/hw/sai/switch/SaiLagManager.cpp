@@ -50,8 +50,7 @@ LagSaiId SaiLagManager::addLag(
   std::map<PortSaiId, std::shared_ptr<SaiLagMember>> members;
   for (auto iter : folly::enumerate(aggregatePort->subportAndFwdState())) {
     auto [subPort, fwdState] = *iter;
-    auto member = addMember(lag, aggregatePort->getID(), subPort);
-    setMemberState(member.second.get(), fwdState);
+    auto member = addMember(lag, aggregatePort->getID(), subPort, fwdState);
     members.emplace(std::move(member));
   }
   concurrentIndices_->vlanIds.emplace(
@@ -142,7 +141,8 @@ void SaiLagManager::changeLag(
 std::pair<PortSaiId, std::shared_ptr<SaiLagMember>> SaiLagManager::addMember(
     const std::shared_ptr<SaiLag>& lag,
     AggregatePortID aggregatePortID,
-    PortID subPort) {
+    PortID subPort,
+    AggregatePort::Forwarding fwdState) {
   auto portHandle = managerTable_->portManager().getPortHandle(subPort);
   CHECK(portHandle);
   portHandle->bridgePort.reset();
@@ -150,8 +150,11 @@ std::pair<PortSaiId, std::shared_ptr<SaiLagMember>> SaiLagManager::addMember(
   auto saiLagId = lag->adapterKey();
 
   SaiLagMemberTraits::AdapterHostKey adapterHostKey{saiLagId, saiPortId};
+  auto egressDisabled = (fwdState == AggregatePort::Forwarding::ENABLED)
+      ? SaiLagMemberTraits::Attributes::EgressDisable{false}
+      : SaiLagMemberTraits::Attributes::EgressDisable{true};
   SaiLagMemberTraits::CreateAttributes attrs{
-      saiLagId, saiPortId, SaiLagMemberTraits::Attributes::EgressDisable{true}};
+      saiLagId, saiPortId, egressDisabled};
   auto& lagMemberStore = saiStore_->get<SaiLagMemberTraits>();
   auto member = lagMemberStore.setObject(adapterHostKey, attrs);
   concurrentIndices_->memberPort2AggregatePortIds.emplace(
@@ -178,9 +181,16 @@ void SaiLagManager::removeMember(AggregatePortID aggPort, PortID subPort) {
   membersIter->second.reset();
   handlesIter->second->members.erase(membersIter);
   concurrentIndices_->memberPort2AggregatePortIds.erase(saiPortId);
-  portHandle->bridgePort = managerTable_->bridgeManager().addBridgePort(
-      SaiPortDescriptor(subPort),
-      PortDescriptorSaiId(portHandle->port->adapterKey()));
+  // During rollback, all hw calls are skipped except creation will fail.
+  // For lags that are already created, rollback will not remove any of
+  // those in hardware. Lag and lag members will be reclaim when the
+  // lastGoodState is applied. Therefore, there's no need to create bridge port
+  // in this case.
+  if (getHwWriteBehavior() != HwWriteBehavior::SKIP) {
+    portHandle->bridgePort = managerTable_->bridgeManager().addBridgePort(
+        SaiPortDescriptor(subPort),
+        PortDescriptorSaiId(portHandle->port->adapterKey()));
+  }
 }
 
 SaiLagHandle* FOLLY_NULLABLE
@@ -213,9 +223,9 @@ void SaiLagManager::removeLagHandle(
   while (!handle->members.empty()) {
     auto membersIter = handle->members.begin();
     auto portSaiId = membersIter->first;
-    auto iter = concurrentIndices_->portIds.find(portSaiId);
-    CHECK(iter != concurrentIndices_->portIds.end());
-    removeMember(aggPort, iter->second);
+    auto iter = concurrentIndices_->portSaiId2PortInfo.find(portSaiId);
+    CHECK(iter != concurrentIndices_->portSaiId2PortInfo.end());
+    removeMember(aggPort, iter->second.portID);
   }
   // remove bridge port
   handle->bridgePort.reset();
@@ -323,12 +333,12 @@ void SaiLagManager::updateStats(AggregatePortID aggPort) {
   auto* handle = getLagHandle(aggPort);
   for (auto member : handle->members) {
     auto portSaiId = member.first;
-    auto portIdsIter = concurrentIndices_->portIds.find(portSaiId);
-    if (portIdsIter == concurrentIndices_->portIds.end()) {
+    auto portIdsIter = concurrentIndices_->portSaiId2PortInfo.find(portSaiId);
+    if (portIdsIter == concurrentIndices_->portSaiId2PortInfo.end()) {
       continue;
     }
-    auto fb303Stats =
-        managerTable_->portManager().getLastPortStat(portIdsIter->second);
+    auto fb303Stats = managerTable_->portManager().getLastPortStat(
+        portIdsIter->second.portID);
     if (!fb303Stats) {
       continue;
     }

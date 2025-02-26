@@ -8,11 +8,17 @@
  *
  */
 
+#include "fboss/agent/AgentFeatures.h"
+#include "fboss/agent/DsfStateUpdaterUtil.h"
 #include "fboss/agent/HwSwitch.h"
+#include "fboss/agent/benchmarks/AgentBenchmarks.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
 #include "fboss/agent/hw/test/HwSwitchEnsemble.h"
 #include "fboss/agent/hw/test/HwSwitchEnsembleFactory.h"
 #include "fboss/agent/hw/test/HwSwitchEnsembleRouteUpdateWrapper.h"
+#include "fboss/agent/test/utils/DsfConfigUtils.h"
+#include "fboss/agent/test/utils/FabricTestUtils.h"
+#include "fboss/agent/test/utils/VoqTestUtils.h"
 
 #include <folly/Benchmark.h>
 #include <iostream>
@@ -22,7 +28,6 @@
 #include "fboss/agent/test/ResourceLibUtil.h"
 #include "fboss/lib/FunctionCallTimeReporter.h"
 
-#include "fboss/agent/benchmarks/AgentBenchmarks.h"
 #include "fboss/agent/test/AgentEnsemble.h"
 
 namespace facebook::fboss {
@@ -37,18 +42,25 @@ template <typename RouteScaleGeneratorT>
 void routeAddDelBenchmarker(bool measureAdd) {
   folly::BenchmarkSuspender suspender;
   AgentEnsembleSwitchConfigFn initialConfigFn =
-      [](HwSwitch* hwSwitch, const std::vector<PortID>& ports) {
-        return utility::onePortPerInterfaceConfig(hwSwitch, ports);
+      [](const AgentEnsemble& ensemble) {
+        FLAGS_enable_route_resource_protection = false;
+        return utility::onePortPerInterfaceConfig(
+            ensemble.getSw(), ensemble.masterLogicalPortIds());
       };
-  auto ensemble = createAgentEnsemble(initialConfigFn);
+  auto ensemble =
+      createAgentEnsemble(initialConfigFn, false /*disableLinkStateToggler*/);
   auto* sw = ensemble->getSw();
 
   auto routeGenerator = RouteScaleGeneratorT(sw->getState());
-  if (!routeGenerator.isSupported(ensemble->getPlatform()->getMode())) {
+  auto swSwitch = ensemble->agentInitializer()->sw();
+  auto platformType = swSwitch->getPlatformType();
+  if (!routeGenerator.isSupported(platformType)) {
     // skip if this is not supported for a platform
     return;
   }
-  ensemble->applyNewState(routeGenerator.resolveNextHops(sw->getState()));
+  ensemble->applyNewState([&](const std::shared_ptr<SwitchState>& in) {
+    return routeGenerator.resolveNextHops(in);
+  });
   const RouterID kRid(0);
   auto routeChunks = routeGenerator.getThriftRoutes();
   auto allThriftRoutes = routeGenerator.allThriftRoutes();
@@ -161,6 +173,96 @@ void routeAddDelBenchmarker(bool measureAdd) {
   }
   done = true;
   lookupThread.join();
+}
+
+inline void
+voqRouteBenchmark(bool add, uint32_t ecmpGroup, uint32_t ecmpWidth) {
+  folly::BenchmarkSuspender suspender;
+
+  // Allow 100% ECMP resource usage
+  FLAGS_ecmp_resource_percentage = 100;
+  FLAGS_ecmp_width = ecmpWidth;
+
+  AgentEnsembleSwitchConfigFn voqInitialConfig =
+      [](const AgentEnsemble& ensemble) {
+        FLAGS_hide_fabric_ports = false;
+        FLAGS_dsf_subscribe = false;
+        auto config = utility::onePortPerInterfaceConfig(
+            ensemble.getSw(),
+            ensemble.masterLogicalPortIds(),
+            true, /*interfaceHasSubnet*/
+            true, /*setInterfaceMac*/
+            utility::kBaseVlanId,
+            true /*enable fabric ports*/);
+        utility::populatePortExpectedNeighborsToSelf(
+            ensemble.masterLogicalPortIds(), config);
+        config.dsfNodes() = *utility::addRemoteIntfNodeCfg(*config.dsfNodes());
+        return config;
+      };
+  auto ensemble =
+      createAgentEnsemble(voqInitialConfig, false /*disableLinkStateToggler*/);
+  ScopedCallTimer timeIt;
+
+  auto updateDsfStateFn = [&ensemble](const std::shared_ptr<SwitchState>& in) {
+    std::map<SwitchID, std::shared_ptr<SystemPortMap>> switchId2SystemPorts;
+    std::map<SwitchID, std::shared_ptr<InterfaceMap>> switchId2Rifs;
+    utility::populateRemoteIntfAndSysPorts(
+        switchId2SystemPorts,
+        switchId2Rifs,
+        ensemble->getSw()->getConfig(),
+        ensemble->getSw()->getHwAsicTable()->isFeatureSupportedOnAllAsic(
+            HwAsic::Feature::RESERVED_ENCAP_INDEX_RANGE));
+    return DsfStateUpdaterUtil::getUpdatedState(
+        in,
+        ensemble->getSw()->getScopeResolver(),
+        ensemble->getSw()->getRib(),
+        switchId2SystemPorts,
+        switchId2Rifs);
+  };
+  ensemble->getSw()->getRib()->updateStateInRibThread(
+      [&ensemble, updateDsfStateFn]() {
+        ensemble->getSw()->updateStateWithHwFailureProtection(
+            folly::sformat("Update state for node: {}", 0), updateDsfStateFn);
+      });
+
+  // Trigger config apply to add remote interface routes as directly connected
+  // in RIB. This is to resolve ECMP members pointing to remote nexthops.
+  ensemble->applyNewConfig(voqInitialConfig(*ensemble));
+
+  utility::EcmpSetupTargetedPorts6 ecmpHelper(ensemble->getProgrammedState());
+  auto portDescriptor = utility::resolveRemoteNhops(ensemble.get(), ecmpHelper);
+
+  std::vector<RoutePrefixV6> prefixes;
+  std::vector<flat_set<PortDescriptor>> nhopSets;
+  CHECK_GE(portDescriptor.size(), ecmpWidth + ecmpGroup - 1);
+  for (int i = 0; i < ecmpGroup; i++) {
+    prefixes.push_back(RoutePrefixV6{
+        folly::IPAddressV6(folly::to<std::string>(i, "::", i)),
+        static_cast<uint8_t>(i == 0 ? 0 : 128)});
+    nhopSets.push_back(flat_set<PortDescriptor>(
+        std::make_move_iterator(portDescriptor.begin() + i),
+        std::make_move_iterator(portDescriptor.begin() + i + ecmpWidth)));
+  }
+
+  auto programRoutes = [&]() {
+    auto updater = ensemble->getSw()->getRouteUpdater();
+    ecmpHelper.programRoutes(&updater, nhopSets, prefixes);
+  };
+  auto unprogramRoutes = [&]() {
+    auto updater = ensemble->getSw()->getRouteUpdater();
+    ecmpHelper.unprogramRoutes(&updater, prefixes);
+  };
+  if (add) {
+    suspender.dismiss();
+    programRoutes();
+    suspender.rehire();
+    unprogramRoutes();
+  } else {
+    programRoutes();
+    suspender.dismiss();
+    unprogramRoutes();
+    suspender.rehire();
+  }
 }
 
 #define ROUTE_ADD_BENCHMARK(name, RouteScaleGeneratorT) \

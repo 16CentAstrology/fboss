@@ -77,126 +77,38 @@ void updateFlexConfig(
         allPortsinGroup,
         platform,
         kFirstPortEnabled);
+  } else if (flexMode == FlexPortMode::ONEX400G) {
+    enablePortsInPortGroup(
+        config,
+        cfg::PortSpeed::FOURHUNDREDG,
+        cfg::PortSpeed::HUNDREDG,
+        allPortsinGroup,
+        platform,
+        kFirstPortEnabled);
   } else {
     throw FbossError("invalid FlexConfig Mode");
   }
 }
 
-cfg::PortSpeed getSpeed(cfg::PortProfileID profile) {
-  switch (profile) {
-    case cfg::PortProfileID::PROFILE_10G_1_NRZ_NOFEC:
-    case cfg::PortProfileID::PROFILE_10G_1_NRZ_NOFEC_COPPER:
-    case cfg::PortProfileID::PROFILE_10G_1_NRZ_NOFEC_OPTICAL:
-      return cfg::PortSpeed::XG;
-
-    case cfg::PortProfileID::PROFILE_20G_2_NRZ_NOFEC:
-    case cfg::PortProfileID::PROFILE_20G_2_NRZ_NOFEC_OPTICAL:
-    case cfg::PortProfileID::PROFILE_20G_2_NRZ_NOFEC_COPPER:
-      return cfg::PortSpeed::TWENTYG;
-
-    case cfg::PortProfileID::PROFILE_25G_1_NRZ_NOFEC:
-    case cfg::PortProfileID::PROFILE_25G_1_NRZ_NOFEC_COPPER:
-    case cfg::PortProfileID::PROFILE_25G_1_NRZ_CL74_COPPER:
-    case cfg::PortProfileID::PROFILE_25G_1_NRZ_RS528_COPPER:
-    case cfg::PortProfileID::PROFILE_25G_1_NRZ_NOFEC_OPTICAL:
-    case cfg::PortProfileID::PROFILE_25G_1_NRZ_NOFEC_COPPER_RACK_YV3_T1:
-      return cfg::PortSpeed::TWENTYFIVEG;
-
-    case cfg::PortProfileID::PROFILE_40G_4_NRZ_NOFEC:
-    case cfg::PortProfileID::PROFILE_40G_4_NRZ_NOFEC_COPPER:
-    case cfg::PortProfileID::PROFILE_40G_4_NRZ_NOFEC_OPTICAL:
-      return cfg::PortSpeed::FORTYG;
-
-    case cfg::PortProfileID::PROFILE_50G_2_NRZ_NOFEC:
-    case cfg::PortProfileID::PROFILE_50G_2_NRZ_NOFEC_COPPER:
-    case cfg::PortProfileID::PROFILE_50G_2_NRZ_NOFEC_OPTICAL:
-    case cfg::PortProfileID::PROFILE_50G_2_NRZ_CL74_COPPER:
-    case cfg::PortProfileID::PROFILE_50G_2_NRZ_RS528_COPPER:
-      return cfg::PortSpeed::FIFTYG;
-
-    case cfg::PortProfileID::PROFILE_53POINT125G_1_PAM4_RS545_COPPER:
-    case cfg::PortProfileID::PROFILE_53POINT125G_1_PAM4_RS545_OPTICAL:
-      return cfg::PortSpeed::FIFTYTHREEPOINTONETWOFIVEG;
-
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_NOFEC:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_CL91:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_RS528:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_RS528_COPPER:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_RS528_OPTICAL:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_CL91_COPPER:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_CL91_OPTICAL:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_NOFEC_COPPER:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_CL91_COPPER_RACK_YV3_T1:
-      return cfg::PortSpeed::HUNDREDG;
-
-    case cfg::PortProfileID::PROFILE_200G_4_PAM4_RS544X2N:
-    case cfg::PortProfileID::PROFILE_200G_4_PAM4_RS544X2N_COPPER:
-    case cfg::PortProfileID::PROFILE_200G_4_PAM4_RS544X2N_OPTICAL:
-      return cfg::PortSpeed::TWOHUNDREDG;
-
-    case cfg::PortProfileID::PROFILE_400G_8_PAM4_RS544X2N:
-    case cfg::PortProfileID::PROFILE_400G_8_PAM4_RS544X2N_OPTICAL:
-    case cfg::PortProfileID::PROFILE_400G_8_PAM4_RS544X2N_COPPER:
-    case cfg::PortProfileID::PROFILE_400G_4_PAM4_RS544X2N_OPTICAL:
-      return cfg::PortSpeed::FOURHUNDREDG;
-
-    case cfg::PortProfileID::PROFILE_800G_8_PAM4_RS544X2N_OPTICAL:
-      return cfg::PortSpeed::EIGHTHUNDREDG;
-
-    case cfg::PortProfileID::PROFILE_DEFAULT:
-      break;
+bool portsExistsInPortGroup(
+    const Platform* platform,
+    const std::vector<PortID>& allPortsInGroup,
+    cfg::PortSpeed speed) {
+  for (auto portIdx = 0; portIdx < allPortsInGroup.size(); portIdx++) {
+    auto portID = allPortsInGroup.at(portIdx);
+    const auto& platformPortEntry =
+        platform->getPlatformPort(portID)->getPlatformPortEntry();
+    for (const auto& profile : *platformPortEntry.supportedProfiles()) {
+      auto profileID = profile.first;
+      if (auto profileCfg = platform->getPortProfileConfig(
+              PlatformPortProfileConfigMatcher(profileID, portID))) {
+        if (*profileCfg->speed() == speed) {
+          return true;
+        }
+      }
+    }
   }
-  return cfg::PortSpeed::DEFAULT;
-}
-TransmitterTechnology getMediaType(cfg::PortProfileID profile) {
-  switch (profile) {
-    case cfg::PortProfileID::PROFILE_10G_1_NRZ_NOFEC_COPPER:
-    case cfg::PortProfileID::PROFILE_20G_2_NRZ_NOFEC_COPPER:
-    case cfg::PortProfileID::PROFILE_25G_1_NRZ_NOFEC_COPPER:
-    case cfg::PortProfileID::PROFILE_25G_1_NRZ_CL74_COPPER:
-    case cfg::PortProfileID::PROFILE_25G_1_NRZ_RS528_COPPER:
-    case cfg::PortProfileID::PROFILE_40G_4_NRZ_NOFEC_COPPER:
-    case cfg::PortProfileID::PROFILE_50G_2_NRZ_NOFEC_COPPER:
-    case cfg::PortProfileID::PROFILE_50G_2_NRZ_CL74_COPPER:
-    case cfg::PortProfileID::PROFILE_50G_2_NRZ_RS528_COPPER:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_RS528_COPPER:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_CL91_COPPER:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_NOFEC_COPPER:
-    case cfg::PortProfileID::PROFILE_200G_4_PAM4_RS544X2N_COPPER:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_CL91_COPPER_RACK_YV3_T1:
-    case cfg::PortProfileID::PROFILE_25G_1_NRZ_NOFEC_COPPER_RACK_YV3_T1:
-    case cfg::PortProfileID::PROFILE_400G_8_PAM4_RS544X2N_COPPER:
-    case cfg::PortProfileID::PROFILE_53POINT125G_1_PAM4_RS545_COPPER:
-      return TransmitterTechnology::COPPER;
-
-    case cfg::PortProfileID::PROFILE_10G_1_NRZ_NOFEC_OPTICAL:
-    case cfg::PortProfileID::PROFILE_20G_2_NRZ_NOFEC_OPTICAL:
-    case cfg::PortProfileID::PROFILE_25G_1_NRZ_NOFEC_OPTICAL:
-    case cfg::PortProfileID::PROFILE_40G_4_NRZ_NOFEC_OPTICAL:
-    case cfg::PortProfileID::PROFILE_50G_2_NRZ_NOFEC_OPTICAL:
-    case cfg::PortProfileID::PROFILE_53POINT125G_1_PAM4_RS545_OPTICAL:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_RS528_OPTICAL:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_CL91_OPTICAL:
-    case cfg::PortProfileID::PROFILE_200G_4_PAM4_RS544X2N_OPTICAL:
-    case cfg::PortProfileID::PROFILE_400G_8_PAM4_RS544X2N_OPTICAL:
-    case cfg::PortProfileID::PROFILE_400G_4_PAM4_RS544X2N_OPTICAL:
-    case cfg::PortProfileID::PROFILE_800G_8_PAM4_RS544X2N_OPTICAL:
-      return TransmitterTechnology::OPTICAL;
-
-    case cfg::PortProfileID::PROFILE_10G_1_NRZ_NOFEC:
-    case cfg::PortProfileID::PROFILE_20G_2_NRZ_NOFEC:
-    case cfg::PortProfileID::PROFILE_25G_1_NRZ_NOFEC:
-    case cfg::PortProfileID::PROFILE_40G_4_NRZ_NOFEC:
-    case cfg::PortProfileID::PROFILE_50G_2_NRZ_NOFEC:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_NOFEC:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_CL91:
-    case cfg::PortProfileID::PROFILE_100G_4_NRZ_RS528:
-    case cfg::PortProfileID::PROFILE_200G_4_PAM4_RS544X2N:
-    case cfg::PortProfileID::PROFILE_400G_8_PAM4_RS544X2N:
-    case cfg::PortProfileID::PROFILE_DEFAULT:
-      break;
-  }
-  return TransmitterTechnology::UNKNOWN;
+  return false;
 }
 
 void enablePortsInPortGroup(
@@ -213,7 +125,6 @@ void enablePortsInPortGroup(
   //    the config
   // 2) Otherwise, update the speed with disabledLaneSpeed and state with
   //    cfg::PortState::DISABLED
-  CHECK_EQ(allPortsInGroup.size(), enabledPortsOption.size());
   for (auto portIdx = 0; portIdx < allPortsInGroup.size(); portIdx++) {
     auto portID = allPortsInGroup.at(portIdx);
     bool isPortEnabled = enabledPortsOption.at(portIdx);

@@ -22,7 +22,10 @@
 #include "fboss/agent/Platform.h"
 #include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SwitchState.h"
+#include "fboss/agent/test/utils/StatsTestUtils.h"
+#include "fboss/lib/CommonUtils.h"
 
+#include <sstream>
 #ifndef IS_OSS
 #if __has_feature(address_sanitizer)
 #include <sanitizer/lsan_interface.h>
@@ -62,6 +65,14 @@ const HwAsic* HwTest::getAsic() const {
   return getPlatform()->getAsic();
 }
 
+cfg::AsicType HwTest::getAsicType() const {
+  return getAsic()->getAsicType();
+}
+
+cfg::SwitchType HwTest::getSwitchType() const {
+  return getAsic()->getSwitchType();
+}
+
 bool HwTest::isSupported(HwAsic::Feature feature) const {
   return getAsic()->isSupported(feature);
 }
@@ -89,13 +100,14 @@ std::vector<PortID> HwTest::getAllPortsInGroup(PortID portID) const {
 }
 
 bool HwTest::hideFabricPorts() const {
-  // Due to the speedup in test run time (6m->21s on makalu)
+  // Due to the speedup in test run time (6m->21s on meru400biu)
   // we want to skip over fabric ports in a overwhelming
   // majority of test cases. Make this the default HwTest mode
   return true;
 }
 
 void HwTest::SetUp() {
+  FLAGS_verify_apply_oper_delta = true;
   FLAGS_hide_fabric_ports = hideFabricPorts();
   // Reset any global state being tracked in singletons
   // Each test then sets up its own state as needed.
@@ -109,6 +121,7 @@ void HwTest::SetUp() {
   hwSwitchEnsemble_ = createHwEnsemble(featuresDesired());
   initInfo.overrideDsfNodes =
       overrideDsfNodes(hwSwitchEnsemble_->dsfNodesFromInputConfig());
+  initInfo.failHwCallsOnWarmboot = failHwCallsOnWarmboot();
   hwSwitchEnsemble_->init(initInfo);
   hwSwitchEnsemble_->addHwEventObserver(this);
   if (getHwSwitch()->getBootType() == BootType::WARM_BOOT) {
@@ -184,6 +197,14 @@ std::shared_ptr<SwitchState> HwTest::applyNewStateImpl(
                      : hwSwitchEnsemble_->applyNewState(newState);
 }
 
+void HwTest::setSwitchDrainState(
+    const cfg::SwitchConfig& curConfig,
+    cfg::SwitchDrainState drainState) {
+  auto newCfg = curConfig;
+  *newCfg.switchSettings()->switchDrainState() = drainState;
+  applyNewConfig(newCfg);
+}
+
 HwPortStats HwTest::getLatestPortStats(PortID port) {
   return getLatestPortStats(std::vector<PortID>{port})[port];
 }
@@ -226,5 +247,9 @@ std::vector<cfg::AsicType> HwTest::getOtherAsicTypes() const {
       std::end(asicList));
 
   return asicList;
+}
+
+const SwitchIdScopeResolver& HwTest::scopeResolver() const {
+  return getHwSwitchEnsemble()->scopeResolver();
 }
 } // namespace facebook::fboss

@@ -24,7 +24,9 @@
 #include "fboss/agent/StateObserver.h"
 #include "fboss/agent/SwSwitch.h"
 #include "fboss/agent/hw/mock/MockHwSwitch.h"
+#include "fboss/agent/mnpu/MultiSwitchHwSwitchHandler.h"
 #include "fboss/agent/state/RouteNextHopEntry.h"
+#include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/test/RouteDistributionGenerator.h"
 
 namespace facebook::fboss {
@@ -44,16 +46,59 @@ namespace cfg {
 class SwitchConfig;
 }
 
+class MockMultiSwitchHwSwitchHandler : public MultiSwitchHwSwitchHandler {
+ public:
+  using MultiSwitchHwSwitchHandler::MultiSwitchHwSwitchHandler;
+  MOCK_METHOD2(
+      stateChanged,
+      std::shared_ptr<SwitchState>(const StateDelta&, bool));
+  MOCK_METHOD4(
+      stateChanged,
+      std::pair<fsdb::OperDelta, HwSwitchStateUpdateStatus>(
+          const fsdb::OperDelta&,
+          bool,
+          const std::shared_ptr<SwitchState>&,
+          const HwWriteBehavior&));
+};
+
+template <cfg::SwitchType type, bool enableIntfNbrTable, int count = 1>
+struct SwitchTypeAndEnableIntfNbrTableT {
+  static constexpr auto switchType = type;
+  static constexpr auto intfNbrTable = enableIntfNbrTable;
+  static constexpr auto numSwitches = count;
+};
+
+/*
+ * VOQ switches don't support VLANs. Thus, we are in the process of migrating
+ * from using VLAN neighbor tables to Interface neighbor tables.
+ *
+ * Thus, test all switches with Interface neighbor tables enabled.
+ * TODO(skhare) Once migration is complete, stop testing for VLAN neighbor
+ * tables i.e. remove <cfg::SwitchType::NPU, false>.
+ */
+using SwitchTypeAndEnableIntfNbrTable = ::testing::Types<
+    SwitchTypeAndEnableIntfNbrTableT<cfg::SwitchType::NPU, false>,
+    SwitchTypeAndEnableIntfNbrTableT<cfg::SwitchType::NPU, true>,
+    SwitchTypeAndEnableIntfNbrTableT<cfg::SwitchType::VOQ, true, 2>,
+    SwitchTypeAndEnableIntfNbrTableT<cfg::SwitchType::FABRIC, true>>;
+
 template <cfg::SwitchType type>
 struct SwitchTypeT {
   static constexpr auto switchType = type;
 };
 
-using SwitchTypes = ::testing::Types<
+using SwitchTypeTestTypes = ::testing::Types<
     SwitchTypeT<cfg::SwitchType::NPU>,
     SwitchTypeT<cfg::SwitchType::VOQ>,
     SwitchTypeT<cfg::SwitchType::FABRIC>>;
 
+using DsfSwitchTypeTestTypes = ::testing::Types<
+    SwitchTypeT<cfg::SwitchType::VOQ>,
+    SwitchTypeT<cfg::SwitchType::FABRIC>>;
+
+constexpr int64_t kNpuSwitchIdBegin = 0;
+constexpr int64_t kVoqSwitchIdBegin = 0;
+constexpr int64_t kFabricSwitchIdBegin = 1024;
 /*
  * In the non unit test code state passed to apply*Config is the state
  * returned from SwSwitch init, which is always published. However this
@@ -72,6 +117,12 @@ std::shared_ptr<SwitchState> publishAndApplyConfig(
     const Platform* platform,
     RoutingInformationBase* rib = nullptr);
 
+std::shared_ptr<SwitchState> publishAndApplyConfig(
+    const std::shared_ptr<SwitchState>& state,
+    cfg::SwitchConfig* config,
+    const Platform* platform,
+    RoutingInformationBase* rib = nullptr);
+
 /*
  * Create a SwSwitch for testing purposes, with the specified initial state.
  *
@@ -81,18 +132,27 @@ std::shared_ptr<SwitchState> publishAndApplyConfig(
  */
 std::unique_ptr<HwTestHandle> createTestHandle(
     const std::shared_ptr<SwitchState>& = nullptr,
-    SwitchFlags flags = SwitchFlags::DEFAULT);
+    SwitchFlags flags = SwitchFlags::DEFAULT,
+    cfg::SwitchConfig* cfg = nullptr);
 std::unique_ptr<HwTestHandle> createTestHandle(
     cfg::SwitchConfig* cfg,
     SwitchFlags flags = SwitchFlags::DEFAULT);
 
 std::unique_ptr<MockPlatform> createMockPlatform(
     cfg::SwitchType switchType = cfg::SwitchType::NPU,
-    std::optional<int64_t> switchId = std::nullopt);
+    int64_t switchId = 0,
+    cfg::SwitchConfig* config = nullptr);
 std::unique_ptr<SwSwitch> setupMockSwitchWithoutHW(
-    std::unique_ptr<MockPlatform> platform,
+    MockPlatform* platform,
     const std::shared_ptr<SwitchState>& state,
-    SwitchFlags flags);
+    SwitchFlags flags,
+    cfg::SwitchConfig* config = nullptr);
+
+std::unique_ptr<SwSwitch> setupMockSwitchWithoutHW(
+    const std::vector<std::unique_ptr<MockPlatform>>& platforms,
+    const std::shared_ptr<SwitchState>& state,
+    SwitchFlags flags,
+    cfg::SwitchConfig* config = nullptr);
 
 std::unique_ptr<SwSwitch> setupMockSwitchWithHW(
     std::unique_ptr<MockPlatform> platform,
@@ -100,17 +160,17 @@ std::unique_ptr<SwSwitch> setupMockSwitchWithHW(
     SwitchFlags flags);
 cfg::DsfNode makeDsfNodeCfg(
     int64_t switchId = 0,
-    cfg::DsfNodeType type = cfg::DsfNodeType::INTERFACE_NODE);
-
-cfg::SwitchConfig updateSwitchID(
-    const cfg::SwitchConfig& origCfg,
-    int64_t oldSwitchId,
-    int64_t newSwitchId);
+    cfg::DsfNodeType type = cfg::DsfNodeType::INTERFACE_NODE,
+    std::optional<int> clusterId = std::nullopt,
+    cfg::AsicType asicType = cfg::AsicType::ASIC_TYPE_MOCK,
+    std::optional<int> fabricLevel = std::nullopt);
 
 std::shared_ptr<SystemPort> makeSysPort(
     const std::optional<std::string>& qosPolicy,
     int64_t sysPortId = 1,
     int64_t switchId = 1);
+std::tuple<state::NeighborEntries, state::NeighborEntries> makeNbrs();
+
 /*
  * Get the MockHwSwitch from a SwSwitch.
  */
@@ -199,12 +259,14 @@ void checkField(
  *       192.168.55.1/24
  *       2401:db00:2110:3055::0001/64
  */
-std::shared_ptr<SwitchState> testStateA();
+std::shared_ptr<SwitchState> testStateA(
+    cfg::SwitchType switchType = cfg::SwitchType::NPU);
 /*
  * Same as testStateA but with all ports
  * enabled and up
  */
-std::shared_ptr<SwitchState> testStateAWithPortsUp();
+std::shared_ptr<SwitchState> testStateAWithPortsUp(
+    cfg::SwitchType switchType = cfg::SwitchType::NPU);
 
 /*
  * Same as testStateA but with AclLookupClass associated with every port.
@@ -213,6 +275,8 @@ std::shared_ptr<SwitchState> testStateAWithPortsUp();
 std::shared_ptr<SwitchState> testStateAWithLookupClasses();
 
 std::shared_ptr<SwitchState> testStateAWithoutIpv4VlanIntf(VlanID vlanId);
+
+std::shared_ptr<SwitchState> testStateAWithoutIpv4();
 
 /*
  * Bring all ports up for a given input state
@@ -229,13 +293,19 @@ std::shared_ptr<SwitchState> bringAllPortsDown(
 /*
  * Fabric switch test config
  */
-cfg::SwitchConfig testConfigFabricSwitch();
+cfg::SwitchConfig testConfigFabricSwitch(
+    bool dualStage = false,
+    int fabricLevel = 1,
+    int parallLinkPerNode = 4,
+    std::optional<int> dualStageLevel2FabricNodes = std::nullopt);
 /*
  * The returned configuration object, if applied to a SwitchState with ports
  * 1-20, will yield the same SwitchState as that returned by testStateA().
  */
 cfg::SwitchConfig testConfigA(
     cfg::SwitchType switchType = cfg::SwitchType::NPU);
+
+cfg::SwitchConfig testConfigB();
 /*
  * Same as testConfgA but with AclLookupClass associated with every port.
  * (MH-NIC case queue-per-host configuration).
@@ -243,26 +313,10 @@ cfg::SwitchConfig testConfigA(
 cfg::SwitchConfig testConfigAWithLookupClasses();
 
 /*
- * Create a SwitchState for testing.
- *
- * Profile B:
- *   - 10 ports, 1 VLAN, 1 interface
- *   - Ports 1-10 are in VLAN 1
- *   - Interface 1:
- *     - VLAN 1
- *     - MAC 00:02:00:00:00:01
- *     - IPs:
- *       10.0.0.1/24
- *       192.168.0.1/24
- *       2401:db00:2110:3001::0001/64
+ * NPU switch configuration with only port interfaces
  */
-std::shared_ptr<SwitchState> testStateB();
+cfg::SwitchConfig testConfigAWithPortInterfaces();
 
-/*
- * Same as testStateA but with all ports
- * enabled and up
- */
-std::shared_ptr<SwitchState> testStateBWithPortsUp();
 /*
  * Convenience macro that wraps EXPECT_CALL() on the underlying MockHwSwitch
  */
@@ -356,6 +410,19 @@ RoutePrefixV6 makePrefixV6(std::string str);
       *tun,                                         \
       sendPacketToHost_(                            \
           RxPacketMatcher::createMatcher(name, dstIfID, matchFn)))
+
+/**
+ * Convenience macro for expecting stateChanged
+ * usage:
+ *  EXPECT_STATE_UPDATE(sw)
+ */
+#define EXPECT_STATE_UPDATE(sw) EXPECT_HW_CALL(sw, stateChangedImpl(_));
+
+#define EXPECT_STATE_UPDATE_TIMES(sw, times) \
+  EXPECT_HW_CALL(sw, stateChangedImpl(_)).Times(times);
+
+#define EXPECT_STATE_UPDATE_TIMES_ATLEAST(sw, times) \
+  EXPECT_HW_CALL(sw, stateChangedImpl(_)).Times(::testing::AtLeast(times));
 
 /**
  * Templatized version of Matching function for Tx/Rx packet.
@@ -543,4 +610,71 @@ void validateThriftMapMapSerialization(const NodeMap& nodeMap) {
   auto nodeMapBack = std::make_shared<NodeMap>(nodeMap.toThrift());
   EXPECT_TRUE(nodeMap.toThrift() == nodeMapBack->toThrift());
 }
+
+state::RouteFields makeTestDropRouteFields(const std::string& prefix, bool v6);
+
+std::map<std::string, state::RouteFields> makeFib(
+    const std::set<std::string>& prefixes,
+    bool v6);
+
+state::FibContainerFields makeFibContainerFields(
+    int vrf,
+    const std::set<std::string>& v4Prefixes,
+    const std::set<std::string>& v6Prefixes);
+
+void addSwitchInfo(
+    std::shared_ptr<SwitchState>& state,
+    cfg::SwitchType switchType = cfg::SwitchType::NPU,
+    int64_t SwitchId = 0,
+    cfg::AsicType asicType = cfg::AsicType::ASIC_TYPE_MOCK,
+    int64_t portIdMin =
+        cfg::switch_config_constants::DEFAULT_PORT_ID_RANGE_MIN(),
+    int64_t portIdMax =
+        cfg::switch_config_constants::DEFAULT_PORT_ID_RANGE_MAX(),
+    int16_t switchIndex = 0,
+    std::optional<int64_t> sysPortMin = std::nullopt,
+    std::optional<int64_t> sysPortMax = std::nullopt,
+    std::optional<std::string> mac = std::nullopt,
+    std::optional<std::string> connectionHandle = std::nullopt);
+
+cfg::SwitchInfo createSwitchInfo(
+    cfg::SwitchType switchType,
+    cfg::AsicType asicType = cfg::AsicType::ASIC_TYPE_MOCK,
+    int64_t portIdMin =
+        cfg::switch_config_constants::DEFAULT_PORT_ID_RANGE_MIN(),
+    int64_t portIdMax =
+        cfg::switch_config_constants::DEFAULT_PORT_ID_RANGE_MAX(),
+    int16_t switchIndex = 0,
+    std::optional<int64_t> sysPortMin = std::nullopt,
+    std::optional<int64_t> sysPortMax = std::nullopt,
+    std::optional<std::string> mac = std::nullopt,
+    std::optional<std::string> connectionHandle = std::nullopt);
+
+void registerPort(
+    std::shared_ptr<SwitchState> state,
+    PortID id,
+    const std::string& name,
+    HwSwitchMatcher scope,
+    cfg::PortType portType = cfg::PortType::INTERFACE_PORT);
+
+void setAggregatePortMemberIDs(
+    std::vector<cfg::AggregatePortMember>& members,
+    const std::vector<int32_t>& portIDs);
+
+template <typename T>
+std::vector<int32_t> getAggregatePortMemberIDs(const std::vector<T>& members);
+
+void addSwitchSettingsToState(
+    std::shared_ptr<SwitchState>& state,
+    std::shared_ptr<SwitchSettings> switchSettings =
+        std::make_shared<SwitchSettings>(),
+    int64_t switchId = 0);
+
+HwSwitchInitFn mockHwSwitchInitFn(SwSwitch* sw);
+
+std::unique_ptr<SwSwitch> createSwSwitchWithMultiSwitch(
+    const AgentConfig* config,
+    const AgentDirectoryUtil* dirUtil,
+    HwSwitchHandlerInitFn initFunc = nullptr);
+
 } // namespace facebook::fboss

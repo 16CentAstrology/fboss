@@ -24,12 +24,13 @@
 #include <mutex>
 
 DECLARE_bool(disable_valid_route_check);
+DECLARE_bool(classid_for_unresolved_routes);
 
 namespace facebook::fboss {
 
 class SaiManagerTable;
 class SaiPlatform;
-class SaiNextHopGroupHandle;
+struct SaiNextHopGroupHandle;
 class SaiStore;
 class SaiRouteManager;
 struct SaiCounterHandle;
@@ -49,13 +50,18 @@ class ManagedRouteNextHop
       SaiRouteManager* routeManager,
       SaiRouteTraits::AdapterHostKey routeKey,
       std::shared_ptr<ManagedNextHop<NextHopTraitsT>> managedNextHop,
-      bool routeMetadataSupported);
+      bool routeMetadataSupported,
+      std::optional<SaiRouteTraits::Attributes::Metadata> metadata);
   void afterCreate(PublisherObject nexthop) override;
   void beforeRemove() override;
   void linkDown() override {}
   sai_object_id_t adapterKey() const;
   using detail::SaiObjectEventSubscriber<NextHopTraitsT>::isReady;
   typename NextHopTraitsT::AdapterHostKey adapterHostKey() const;
+  std::optional<SaiRouteTraits::Attributes::Metadata> getMetadata() const;
+  void setMetadata(
+      std::optional<SaiRouteTraits::Attributes::Metadata> metadata);
+  ~ManagedRouteNextHop() override;
 
  private:
   void updateMetadata(
@@ -66,6 +72,7 @@ class ManagedRouteNextHop
   typename SaiRouteTraits::AdapterHostKey routeKey_;
   std::shared_ptr<ManagedNextHop<NextHopTraitsT>> managedNextHop_;
   bool routeMetadataSupported_;
+  std::optional<SaiRouteTraits::Attributes::Metadata> metadata_;
 };
 
 using ManagedRouteIpNextHop = ManagedRouteNextHop<SaiIpNextHopTraits>;
@@ -115,6 +122,11 @@ class SaiRouteManager {
       const std::shared_ptr<Route<AddrT>>& swRoute,
       RouterID routerId);
 
+  template <typename AddrT>
+  void removeRouteForRollback(
+      const std::shared_ptr<Route<AddrT>>& swRoute,
+      RouterID routerId);
+
   SaiRouteHandle* getRouteHandle(const SaiRouteTraits::RouteEntry& entry);
   const SaiRouteHandle* getRouteHandle(
       const SaiRouteTraits::RouteEntry& entry) const;
@@ -123,6 +135,8 @@ class SaiRouteManager {
 
   std::shared_ptr<SaiObject<SaiRouteTraits>> getRouteObject(
       SaiRouteTraits::AdapterHostKey routeKey);
+
+  void checkMetadata(SaiRouteTraits::RouteEntry entry);
 
  private:
   SaiRouteHandle* getRouteHandleImpl(
@@ -144,7 +158,8 @@ class SaiRouteManager {
   std::shared_ptr<ManagedRouteNextHopT> refOrCreateManagedRouteNextHop(
       SaiRouteHandle* routeHandle,
       SaiRouteTraits::RouteEntry entry,
-      std::shared_ptr<ManagedNextHopT> nexthop);
+      std::shared_ptr<ManagedNextHopT> nexthop,
+      std::optional<SaiRouteTraits::Attributes::Metadata> metadata);
 
   template <typename AddrT>
   std::shared_ptr<SaiCounterHandle> getCounterHandleForRoute(

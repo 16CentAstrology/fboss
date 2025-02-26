@@ -64,7 +64,7 @@ uint16_t MKAServiceManager::getServerPort() const {
 }
 
 std::string MKAServiceManager::getPortName(PortID portId) const {
-  return swSwitch_->getState()->getPorts()->getPort(portId)->getName();
+  return swSwitch_->getState()->getPorts()->getNode(portId)->getName();
 }
 
 void MKAServiceManager::handlePacket(std::unique_ptr<RxPacket> packet) {
@@ -92,7 +92,7 @@ void MKAServiceManager::handlePacket(std::unique_ptr<RxPacket> packet) {
   }
   folly::IOBuf* buf = packet->buf();
   TPacket pktToSend;
-  pktToSend.buf() = buf->moveToFbString().toStdString();
+  pktToSend.buf() = buf->to<std::string>();
   pktToSend.timestamp() = time(nullptr);
   pktToSend.l2Port() = std::move(l2Port);
   size_t len = pktToSend.buf()->size();
@@ -115,13 +115,13 @@ void MKAServiceManager::recvPacket(TPacket&& packet) {
   try {
     try {
       port = PortID(folly::to<uint16_t>(*packet.l2Port()));
-    } catch (const std::exception& e) {
+    } catch (const std::exception&) {
       port =
           swSwitch_->getState()->getPorts()->getPort(*packet.l2Port())->getID();
     }
     vlan = swSwitch_->getState()
                ->getPorts()
-               ->getPort(port)
+               ->getNode(port)
                ->getVlans()
                .begin()
                ->first;

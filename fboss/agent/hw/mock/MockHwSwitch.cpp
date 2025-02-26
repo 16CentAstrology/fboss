@@ -8,9 +8,10 @@
  *
  */
 #include "fboss/agent/hw/mock/MockHwSwitch.h"
+#include "fboss/agent/AgentFeatures.h"
 
 #include <folly/Memory.h>
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 
 #include "fboss/agent/hw/mock/MockTxPacket.h"
 
@@ -53,15 +54,20 @@ MockHwSwitch::MockHwSwitch(MockPlatform* platform) : platform_(platform) {
             delete pkt;
             return true;
           }));
-  ON_CALL(*this, stateChanged(_))
+  ON_CALL(*this, stateChangedImpl(_))
       .WillByDefault(
           Invoke([](const StateDelta& delta) { return delta.newState(); }));
-  ON_CALL(*this, stateChangedTransaction(_))
+  ON_CALL(*this, stateChangedTransaction(_, _))
       .WillByDefault(
-          Invoke([](const StateDelta& delta) { return delta.newState(); }));
-  ON_CALL(*this, transactionsSupported()).WillByDefault(Return(false));
+          Invoke([](const StateDelta& delta, const HwWriteBehaviorRAII&) {
+            return delta.newState();
+          }));
+  if (FLAGS_enable_hw_update_protection) {
+    ON_CALL(*this, transactionsSupported()).WillByDefault(Return(true));
+  } else {
+    ON_CALL(*this, transactionsSupported()).WillByDefault(Return(false));
+  }
   ON_CALL(*this, isValidStateUpdate(_)).WillByDefault(Return(true));
-  ON_CALL(*this, getAndClearNeighborHit(_, _)).WillByDefault(Return(true));
 }
 
 std::unique_ptr<TxPacket> MockHwSwitch::allocatePacket(uint32_t size) const {

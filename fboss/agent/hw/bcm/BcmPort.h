@@ -95,6 +95,9 @@ class BcmPort {
   cfg::SampleDestination getSampleDestination() const {
     return sampleDest_;
   }
+  cfg::PortFlowletConfig getPortFlowletConfig() const {
+    return portFlowletConfig_;
+  }
   QueueConfig getCurrentQueueSettings();
 
   /*
@@ -231,12 +234,22 @@ class BcmPort {
 
   const PortPgConfig& getDefaultPgSettings() const;
   const BufferPoolCfg& getDefaultIngressPoolSettings() const;
+  const std::string& getIngressBufferPoolName() const;
   uint8_t determinePipe() const;
   int getPgMinLimitBytes(const int pgId) const;
   int getIngressSharedBytes(const int pgId) const;
   phy::PhyInfo updateIPhyInfo();
 
   uint32_t getInterPacketGapBits() const;
+  void processChangedZeroPreemphasis(
+      const std::shared_ptr<Port>& oldPort,
+      const std::shared_ptr<Port>& newPort);
+  void processChangedTxEnable(
+      const std::shared_ptr<Port>& oldPort,
+      const std::shared_ptr<Port>& newPort);
+
+  void setPortFlowletConfig(const std::shared_ptr<Port>& port);
+  void updatePortFlowletConfig(const std::shared_ptr<Port>& port);
 
  private:
   class BcmPortStats {
@@ -261,6 +274,10 @@ class BcmPort {
       folly::Synchronized<std::optional<BcmPortStats>>::WLockedPtr;
 
   void updateWredStats(std::chrono::seconds now, int64_t* portStatVal);
+  void updateInCongestionDiscardStats(
+      std::chrono::seconds now,
+      uint64_t* portStatVal,
+      std::map<int16_t, int64_t>* portPgStatVal);
   uint32_t getCL91FECStatus() const;
   bool isCL91FECApplicable() const;
   // no copy or assignment
@@ -290,12 +307,12 @@ class BcmPort {
   void removePortPfcStatsLocked(
       const BcmPort::PortStatsWLockedPtr& lockedPortStatsPtr,
       const std::shared_ptr<Port>& swPort,
-      Port::PfcPriorityList priorities);
+      const std::vector<PfcPriority>& priorities);
   void reinitPortPfcStats(const std::shared_ptr<Port>& swPort);
   void updatePortPfcStats(
       std::chrono::seconds now,
       HwPortStats& curPortStats,
-      Port::PfcPriorityList pfcPriorities);
+      const std::vector<PfcPriority>& pfcPriorities);
   std::string getPfcPriorityStatsKey(
       folly::StringPiece statKey,
       PfcPriority priority);
@@ -343,6 +360,7 @@ class BcmPort {
       const int value,
       const std::string& controlStr);
   std::vector<PfcPriority> getLastConfiguredPfcPriorities();
+  void programFlowletPortQuality(std::optional<PortFlowletCfgPtr> portFlowlet);
 
   void setTxSetting(const std::shared_ptr<Port>& swPort);
   void setTxSettingViaPhyControl(
@@ -353,6 +371,7 @@ class BcmPort {
       const std::vector<phy::PinConfig>& iphyPinConfigs);
 
   bool isMmuLossy() const;
+  bool isMmuLossless() const;
 
   void applyMirrorAction(
       MirrorAction action,
@@ -382,6 +401,7 @@ class BcmPort {
   std::optional<std::string> egressMirror_;
   cfg::SampleDestination sampleDest_;
   TransmitterTechnology transmitterTechnology_{TransmitterTechnology::UNKNOWN};
+  cfg::PortFlowletConfig portFlowletConfig_;
 
   // The port group this port is a part of
   BcmPortGroup* portGroup_{nullptr};
@@ -396,6 +416,7 @@ class BcmPort {
   fb303::ExportedHistogramMapImpl::LockableHistogram outPktLengths_;
 
   int codewordErrorsPage_{0};
+  std::map<short, long> codewordStats_;
 
   folly::Synchronized<std::shared_ptr<Port>> programmedSettings_;
 

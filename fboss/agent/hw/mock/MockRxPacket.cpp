@@ -9,7 +9,6 @@
  */
 #include "fboss/agent/hw/mock/MockRxPacket.h"
 
-#include <folly/Memory.h>
 #include <folly/io/Cursor.h>
 #include <folly/io/IOBuf.h>
 #include "fboss/agent/packet/PktUtil.h"
@@ -24,10 +23,8 @@ using std::unique_ptr;
 
 namespace facebook::fboss {
 
-MockRxPacket::MockRxPacket(std::unique_ptr<folly::IOBuf> buf) {
-  buf_ = std::move(buf);
-  len_ = buf_->computeChainDataLength();
-}
+MockRxPacket::MockRxPacket(std::unique_ptr<folly::IOBuf> buf)
+    : SwRxPacket(std::move(buf)) {}
 
 unique_ptr<MockRxPacket> MockRxPacket::fromHex(StringPiece hex) {
   auto buf = make_unique<IOBuf>(PktUtil::parseHexData(hex));

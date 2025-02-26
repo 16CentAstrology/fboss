@@ -15,7 +15,6 @@
 
 #include "fboss/agent/hw/test/ConfigFactory.h"
 
-#include <cstdio>
 #include <cstring>
 namespace {
 std::vector<int> getControllingPortIDs() {
@@ -36,21 +35,17 @@ SaiFakePlatform::SaiFakePlatform(
     : SaiPlatform(
           std::move(productInfo),
           std::make_unique<FakeTestPlatformMapping>(getControllingPortIDs()),
-          kLocalMac) {}
+          kLocalMac) {
+  agentDirUtil_ = std::make_unique<AgentDirectoryUtil>(
+      tmpDir_.path().string() + "/volatile",
+      tmpDir_.path().string() + "/persist");
+}
 
 void SaiFakePlatform::setupAsic(
-    cfg::SwitchType switchType,
     std::optional<int64_t> switchId,
-    std::optional<cfg::Range64> systemPortRange) {
-  asic_ = std::make_unique<FakeAsic>(switchType, switchId, systemPortRange);
-}
-
-std::string SaiFakePlatform::getVolatileStateDir() const {
-  return tmpDir_.path().string() + "/volatile";
-}
-
-std::string SaiFakePlatform::getPersistentStateDir() const {
-  return tmpDir_.path().string() + "/persist";
+    const cfg::SwitchInfo& switchInfo,
+    std::optional<HwAsic::FabricNodeRole> fabricNodeRole) {
+  asic_ = std::make_unique<FakeAsic>(switchId, switchInfo);
 }
 
 std::string SaiFakePlatform::getHwConfig() {
@@ -61,7 +56,7 @@ HwAsic* SaiFakePlatform::getAsic() const {
   return asic_.get();
 }
 
-SaiFakePlatform::~SaiFakePlatform() {}
+SaiFakePlatform::~SaiFakePlatform() = default;
 
 const std::set<sai_api_t>& SaiFakePlatform::getSupportedApiList() const {
   return SaiApiTable::getInstance()->getFullApiList();

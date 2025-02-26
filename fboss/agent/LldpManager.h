@@ -12,8 +12,8 @@
 #include <folly/io/async/AsyncTimeout.h>
 #include <memory>
 #include <unordered_map>
-#include "fboss/agent/Platform.h"
 #include "fboss/agent/lldp/LinkNeighborDB.h"
+#include "fboss/agent/packet/PktFactory.h"
 #include "fboss/agent/state/Port.h"
 #include "fboss/agent/state/PortMap.h"
 #include "fboss/agent/state/SwitchState.h"
@@ -24,10 +24,13 @@ class Cursor;
 }
 } // namespace folly
 
+enum LldpValidationResult { SUCCESS, MISMATCH, MISSING };
+
 namespace facebook::fboss {
 
 class RxPacket;
 class TxPacket;
+class SwSwitch;
 
 class LldpManager : private folly::AsyncTimeout {
   /*
@@ -85,7 +88,17 @@ class LldpManager : private folly::AsyncTimeout {
   static std::unique_ptr<TxPacket> createLldpPkt(
       SwSwitch* sw,
       const folly::MacAddress macaddr,
-      VlanID,
+      const std::optional<VlanID>& vlanID,
+      const std::string& hostname,
+      const std::string& portname,
+      const std::string& portdesc,
+      const uint16_t ttl,
+      const uint16_t capabilities);
+
+  static std::unique_ptr<TxPacket> createLldpPkt(
+      const facebook::fboss::utility::AllocatePktFn& allocate,
+      const folly::MacAddress macaddr,
+      const std::optional<VlanID>& vlanID,
       const std::string& hostname,
       const std::string& portname,
       const std::string& portdesc,
@@ -95,7 +108,7 @@ class LldpManager : private folly::AsyncTimeout {
   static void fillLldpTlv(
       TxPacket* pkt,
       const folly::MacAddress macaddr,
-      VlanID vlanid,
+      const std::optional<VlanID>& vlanID,
       const std::string& systemdescr,
       const std::string& hostname,
       const std::string& portname,

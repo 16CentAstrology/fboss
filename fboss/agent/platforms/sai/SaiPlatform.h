@@ -36,34 +36,31 @@ DECLARE_string(hw_config_file);
 namespace facebook::fboss {
 
 class SaiSwitch;
-class AutoInitQsfpCache;
-class QsfpCache;
 
 class SaiPlatform : public Platform, public StateObserver {
  public:
-  explicit SaiPlatform(
+  SaiPlatform(
       std::unique_ptr<PlatformProductInfo> productInfo,
       std::unique_ptr<PlatformMapping> platformMapping,
       folly::MacAddress localMac);
   ~SaiPlatform() override;
 
   HwSwitch* getHwSwitch() const override;
-  void onHwInitialized(SwSwitch* sw) override;
-  void onInitialConfigApplied(SwSwitch* sw) override;
-  std::unique_ptr<ThriftHandler> createHandler(SwSwitch* sw) override;
-  TransceiverIdxThrift getPortMapping(PortID port, cfg::PortSpeed speed)
+  void onHwInitialized(HwSwitchCallback* sw) override;
+  std::shared_ptr<apache::thrift::AsyncProcessorFactory> createHandler()
+      override;
+  TransceiverIdxThrift getPortMapping(PortID port, cfg::PortProfileID profileID)
       const override;
   virtual SaiPlatformPort* getPort(PortID id) const;
   PlatformPort* getPlatformPort(PortID port) const override;
   void initPorts() override;
   virtual std::string getHwConfig() = 0;
+  std::string getHwConfigDumpFile_deprecated();
   std::string getHwConfigDumpFile();
   void generateHwConfigFile();
   virtual sai_service_method_table_t* getServiceMethodTable() const;
-  void stop() override;
   HwSwitchWarmBootHelper* getWarmBootHelper() override;
   void stateUpdated(const StateDelta& delta) override;
-  QsfpCache* getQsfpCache() const override;
 
   virtual std::vector<PortID> getAllPortsInGroup(PortID portID) const = 0;
   virtual std::vector<FlexPortMode> getSupportedFlexPortModes() const = 0;
@@ -74,12 +71,20 @@ class SaiPlatform : public Platform, public StateObserver {
     return masterLogicalPortIds_;
   }
 
-  virtual PortID findPortID(
+  /*
+   * Get the portID and all the profiles matching the given speed and lane list
+   */
+  virtual std::pair<PortID, std::vector<cfg::PortProfileID>>
+  findPortIDAndProfiles(
       cfg::PortSpeed speed,
       std::vector<uint32_t> lanes,
       PortSaiId portSaiId) const;
 
   bool supportsAddRemovePort() const override {
+    return true;
+  }
+
+  bool isSai() const override {
     return true;
   }
 
@@ -99,7 +104,8 @@ class SaiPlatform : public Platform, public StateObserver {
   virtual SaiSwitchTraits::CreateAttributes getSwitchAttributes(
       bool mandatoryOnly,
       cfg::SwitchType switchType,
-      std::optional<int64_t> switchId);
+      std::optional<int64_t> switchId,
+      BootType bootType);
 
   uint32_t getDefaultMacAgingTime() const;
 
@@ -109,7 +115,7 @@ class SaiPlatform : public Platform, public StateObserver {
   }
 
   /*
-   * Based on the switch types: regular switch vs phy, some apis might not be
+   * Based on the switch types: regular switch vs phy, some APIs might not be
    * supported.
    * The default apis list for these two different asic types are just based
    * on our current experience. Eventually we will use getSupportedApiList()
@@ -125,6 +131,17 @@ class SaiPlatform : public Platform, public StateObserver {
   getSaiProfileVendorExtensionValues() const {
     return std::unordered_map<std::string, std::string>();
   }
+  /*
+   * Platform dependent internal {cpu, loopback} system ports. These must be
+   * provided as part of switch init
+   */
+  virtual std::vector<sai_system_port_config_t> getInternalSystemPortConfig()
+      const;
+
+  std::string getHwAsicConfig(
+      const std::unordered_map<std::string, std::string>& overrides = {});
+
+  void stateChanged(const StateDelta& delta) override;
 
  protected:
   std::unique_ptr<SaiSwitch> saiSwitch_;
@@ -132,17 +149,9 @@ class SaiPlatform : public Platform, public StateObserver {
   std::unordered_map<PortID, std::unique_ptr<SaiPlatformPort>> portMapping_;
 
  private:
-  /*
-   * Platform dependent internal {cpu, loopback} system ports. These must be
-   * provided as part of switch init
-   */
-  virtual std::vector<sai_system_port_config_t> getInternalSystemPortConfig()
-      const;
   void initImpl(uint32_t hwFeaturesDesired) override;
   void initSaiProfileValues();
-  void updateQsfpCache(const StateDelta& delta);
   std::unique_ptr<HwSwitchWarmBootHelper> wbHelper_;
-  std::unique_ptr<AutoInitQsfpCache> qsfpCache_;
   // List of controlling ports on platform. Each of these then
   // have subports that can be used when using flex ports
   std::vector<PortID> masterLogicalPortIds_;

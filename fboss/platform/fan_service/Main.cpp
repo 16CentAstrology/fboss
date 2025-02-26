@@ -1,53 +1,70 @@
 // Copyright 2021- Facebook. All rights reserved.
 
+#include <csignal>
 #include <memory>
-#include <mutex>
 #include <string>
 
 #include <fb303/FollyLoggingHandler.h>
-#include <folly/experimental/FunctionScheduler.h>
-#include <folly/logging/Init.h>
+#include <folly/executors/FunctionScheduler.h>
+#include <thrift/lib/cpp2/protocol/Serializer.h>
+
 #include <folly/logging/xlog.h>
 #include <gflags/gflags.h>
 
-#include "fboss/platform/fan_service/FanService.h"
+#include "fboss/platform/config_lib/ConfigLib.h"
+#include "fboss/platform/fan_service/ConfigValidator.h"
+#include "fboss/platform/fan_service/ControlLogic.h"
 #include "fboss/platform/fan_service/FanServiceHandler.h"
 #include "fboss/platform/helpers/Init.h"
+#include "fboss/platform/helpers/PlatformNameLib.h"
 
 using namespace facebook;
 using namespace facebook::fboss::platform;
+using namespace facebook::fboss::platform::fan_service;
 
 DEFINE_int32(thrift_port, 5972, "Port for the thrift service");
 DEFINE_int32(
     control_interval,
-    5,
-    "How often we will read sensors and change fan pwm");
-DEFINE_string(mock_input, "", "Mock Input File");
-DEFINE_string(mock_output, "", "Mock Output File");
+    1,
+    "How often we will check whether sensor read and pwm control is needed");
 
-FOLLY_INIT_LOGGING_CONFIG("fboss=DBG2; default:async=true");
+// This signal handler is used to stop the thrift server and service, resulting
+// in a clean exit of the program ensuring all resources are released/destroyed.
+std::shared_ptr<apache::thrift::ThriftServer> server;
+void handleSignal(int sig) {
+  XLOG(INFO) << "Received signal " << sig << ", shutting down...";
+  if (server) {
+    server->stop();
+  }
+}
 
 int main(int argc, char** argv) {
+  std::signal(SIGTERM, handleSignal);
+  std::signal(SIGINT, handleSignal);
   fb303::registerFollyLoggingOptionHandlers();
-  helpers::init(argc, argv);
+  helpers::init(&argc, &argv);
 
-  // If Mock configuration is enabled, run Fan Service in Mock mode, then quit.
-  // No Thrift service will be created at all.
-  if (FLAGS_mock_input != "") {
-    facebook::fboss::platform::FanService mockedFanService;
-    mockedFanService.kickstart();
-    return mockedFanService.runMock(FLAGS_mock_input, FLAGS_mock_output);
+  auto platformName = helpers::PlatformNameLib().getPlatformName();
+  std::string fanServiceConfJson =
+      ConfigLib().getFanServiceConfig(platformName);
+  auto config =
+      apache::thrift::SimpleJSONSerializer::deserialize<FanServiceConfig>(
+          fanServiceConfJson);
+  XLOG(INFO) << apache::thrift::SimpleJSONSerializer::serialize<std::string>(
+      config);
+  if (!ConfigValidator().isValid(config)) {
+    XLOG(ERR) << "Invalid config! Aborting...";
+    throw std::runtime_error("Invalid Config.  Aborting...");
   }
 
-  auto serviceImpl = std::make_unique<facebook::fboss::platform::FanService>();
-
-  auto server = std::make_shared<apache::thrift::ThriftServer>();
-  auto handler = std::make_shared<FanServiceHandler>(std::move(serviceImpl));
-  handler->getFanService()->kickstart();
+  auto pBsp = std::make_shared<Bsp>(config);
+  server = std::make_shared<apache::thrift::ThriftServer>();
+  auto controlLogic = std::make_shared<ControlLogic>(config, pBsp);
+  auto handler = std::make_shared<FanServiceHandler>(controlLogic);
 
   folly::FunctionScheduler scheduler;
   scheduler.addFunction(
-      [handler]() { handler->getFanService()->controlFan(); },
+      [controlLogic]() { controlLogic->controlFan(); },
       std::chrono::seconds(FLAGS_control_interval),
       "FanControl");
   scheduler.start();
@@ -57,5 +74,6 @@ int main(int argc, char** argv) {
   server->setAllowPlaintextOnLoopback(true);
   helpers::runThriftService(server, handler, "FanService", FLAGS_thrift_port);
 
+  XLOG(INFO) << "FanService stopped";
   return 0;
 }

@@ -90,7 +90,7 @@ CmdGlobalOptions::UnionList CmdGlobalOptions::getFilters(
     for (std::string termStr : interVec) {
       const auto& trimmedTermStr = folly::trimWhitespace(termStr);
       std::vector<std::string> filterTermVector;
-      folly::split(" ", trimmedTermStr, filterTermVector);
+      folly::split(' ', trimmedTermStr, filterTermVector);
       if (filterTermVector.size() != 3) {
         std::cerr << "Each filter term must be of the form <key op value>. "
                   << std::endl;
@@ -104,7 +104,7 @@ CmdGlobalOptions::UnionList CmdGlobalOptions::getFilters(
             getFilterOp(filterTermVector[1]),
             filterTermVector[2]);
         intersectList.push_back(filterTerm);
-      } catch (const std::invalid_argument& e) {
+      } catch (const std::invalid_argument&) {
         std::cerr << "invalid operator passed for key " << filterTermVector[0]
                   << std::endl;
         filterParsingEC = cli::CliOptionResult::OP_ERROR;

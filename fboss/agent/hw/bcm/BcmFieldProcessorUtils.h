@@ -192,6 +192,17 @@ bool checkArrayHasNonZero(Param (&param)[size]) {
   return false;
 }
 
+template <typename Param>
+bool checkArrayHasNonZero(Param* param, size_t size) {
+  // as long as the param has one non-zero item, we consider it valid
+  for (size_t i = 0; i < size; i++) {
+    if (param[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * `bcm_field_qualify_SrcIp6` and `bcm_field_qualify_DstIp6` will use this func.
  *  Cause they use bcm_ip6_t, which is uint8[16]
@@ -230,6 +241,57 @@ bool isBcmQualFieldStateSame(
     return true;
   }
   // TODO(joseph5wu) log an array
+  XLOG(ERR) << aclMsg << " " << qualMsg << " qualify doesn't match.";
+  return false;
+}
+
+/**
+ * `bcm_field_qualify_udf` will use this func.
+ */
+template <typename Func, typename Param>
+bool isBcmQualFieldStateSame(
+    Func getBcmQualifierFn,
+    int unit,
+    bcm_field_entry_t entry,
+    int id,
+    int maxLength,
+    bool existInSW,
+    const Param* swData,
+    const Param* swMask,
+    size_t size,
+    const std::string& aclMsg,
+    const std::string& qualMsg,
+    bool verifyMask = true,
+    bool verifyLength = true) {
+  std::shared_ptr<Param[]> hwData(new Param[size]);
+  std::shared_ptr<Param[]> hwMask(new Param[size]);
+  int hwLength = 0;
+  auto rv = getBcmQualifierFn(
+      unit, entry, id, maxLength, hwData.get(), hwMask.get(), &hwLength);
+  bcmCheckError(rv, aclMsg, " failed to get ", qualMsg, " qualifier");
+
+  bool isNotExistInBoth = !existInSW &&
+      !checkArrayHasNonZero(hwData.get(), size) &&
+      !checkArrayHasNonZero(hwMask.get(), size);
+  // only check match if exist in both
+  bool isValueSameInBoth = existInSW;
+  if (existInSW) {
+    for (size_t i = 0; i < size; i++) {
+      isValueSameInBoth &= (hwData[i] == swData[i]);
+    }
+    if (verifyMask) {
+      for (size_t i = 0; i < size; i++) {
+        isValueSameInBoth &= (hwMask[i] == swMask[i]);
+      }
+    }
+    if (verifyLength) {
+      isValueSameInBoth &= (hwLength == size);
+    }
+  }
+  if (isNotExistInBoth || isValueSameInBoth) {
+    return true;
+  }
+
   XLOG(ERR) << aclMsg << " " << qualMsg << " qualify doesn't match.";
   return false;
 }
@@ -356,15 +418,32 @@ bool needsExtraFPQsetQualifiers(cfg::AsicType asicType);
 bcm_field_qset_t getGroupQset(int unit, bcm_field_group_t groupId);
 
 void clearFPGroup(int unit, bcm_field_group_t gid);
+std::set<bcm_udf_id_t> getUdfQsetIds(int unit, bcm_field_group_t gid);
 
 void createFPGroup(
     int unit,
     bcm_field_qset_t qset,
     bcm_field_group_t gid,
     int g_pri,
-    bool onHSDK);
+    bool onHSDK,
+    bool enableQsetCompression = false);
+
+bcm_field_hintid_t compressFpQualifier(
+    int unit,
+    bcm_field_qualify_t qualifier,
+    const int start,
+    const int end);
 
 bool qsetsEqual(const bcm_field_qset_t& lhs, const bcm_field_qset_t& rhs);
+
+void updateUdfQset(
+    int unit,
+    bcm_field_qset_t& qset,
+    const std::set<bcm_udf_id_t>& udfIds);
+
+bool qsetsMultiSetEqual(
+    const bcm_field_qset_t& lhs,
+    const bcm_field_qset_t& rhs);
 
 bool fpGroupExists(int unit, bcm_field_group_t gid);
 int fpGroupNumAclEntries(int unit, bcm_field_group_t gid);

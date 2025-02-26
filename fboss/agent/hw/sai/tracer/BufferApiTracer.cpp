@@ -13,20 +13,17 @@
 #include <utility>
 
 #include "fboss/agent/hw/sai/api/BufferApi.h"
-#include "fboss/agent/hw/sai/tracer/BufferApiTracer.h"
 #include "fboss/agent/hw/sai/tracer/Utils.h"
 
 using folly::to;
 
 namespace {
-std::map<int32_t, std::pair<std::string, std::size_t>> _BufferPoolMap {
-  SAI_ATTR_MAP(BufferPool, Type), SAI_ATTR_MAP(BufferPool, Size),
-      SAI_ATTR_MAP(BufferPool, ThresholdMode),
-#if defined(TAJO_SDK) || defined(SAI_VERSION_8_2_0_0_ODP) ||                   \
-    defined(SAI_VERSION_8_2_0_0_DNX_ODP) || defined(SAI_VERSION_9_0_EA_ODP) || \
-    defined(SAI_VERSION_8_2_0_0_SIM_ODP) ||                                    \
-    defined(SAI_VERSION_9_0_EA_SIM_ODP) || defined(SAI_VERSION_9_0_EA_DNX_ODP)
-      SAI_ATTR_MAP(BufferPool, XoffSize),
+std::map<int32_t, std::pair<std::string, std::size_t>> _BufferPoolMap{
+    SAI_ATTR_MAP(BufferPool, Type),
+    SAI_ATTR_MAP(BufferPool, Size),
+    SAI_ATTR_MAP(BufferPool, ThresholdMode),
+#if defined(TAJO_SDK) || defined(BRCM_SAI_SDK_XGS_AND_DNX)
+    SAI_ATTR_MAP(BufferPool, XoffSize),
 #endif
 };
 
@@ -35,6 +32,7 @@ std::map<int32_t, std::pair<std::string, std::size_t>> _BufferProfileMap{
     SAI_ATTR_MAP(BufferProfile, ReservedBytes),
     SAI_ATTR_MAP(BufferProfile, ThresholdMode),
     SAI_ATTR_MAP(BufferProfile, SharedDynamicThreshold),
+    SAI_ATTR_MAP(BufferProfile, SharedStaticThreshold),
     SAI_ATTR_MAP(BufferProfile, XoffTh),
     SAI_ATTR_MAP(BufferProfile, XonTh),
     SAI_ATTR_MAP(BufferProfile, XonOffsetTh),
@@ -45,6 +43,15 @@ std::map<int32_t, std::pair<std::string, std::size_t>> _IngressPriorityGroupMap{
     SAI_ATTR_MAP(IngressPriorityGroup, Index),
     SAI_ATTR_MAP(IngressPriorityGroup, BufferProfile),
 };
+
+void handleExtensionAttributes() {
+  SAI_EXT_ATTR_MAP(BufferProfile, SharedFadtMaxTh)
+  SAI_EXT_ATTR_MAP(BufferProfile, SharedFadtMinTh)
+  SAI_EXT_ATTR_MAP(BufferProfile, SramFadtMaxTh)
+  SAI_EXT_ATTR_MAP(BufferProfile, SramFadtMinTh)
+  SAI_EXT_ATTR_MAP(BufferProfile, SramFadtXonOffset)
+}
+
 } // namespace
 
 namespace facebook::fboss {
@@ -92,6 +99,7 @@ WRAP_CLEAR_STATS_FUNC(
     buffer);
 
 sai_buffer_api_t* wrappedBufferApi() {
+  handleExtensionAttributes();
   static sai_buffer_api_t bufferWrappers;
 
   bufferWrappers.create_buffer_pool = &wrap_create_buffer_pool;

@@ -19,14 +19,15 @@ class FsdbStateSubscriberImpl : public FsdbSubscriber<SubUnit, PathElement> {
   }
 
  private:
-#if FOLLY_HAS_COROUTINES && !defined(IS_OSS)
+#if FOLLY_HAS_COROUTINES
   using StreamT = typename BaseT::StreamT;
   using SubStreamT = typename BaseT::template SubStreamT<SubUnit>;
   folly::coro::Task<StreamT> setupStream() override;
   folly::coro::Task<void> serveStream(StreamT&& stream) override;
 #endif
 };
-using FsdbStateSubscriber = FsdbStateSubscriberImpl<OperState, std::string>;
+using FsdbStateSubscriber =
+    FsdbStateSubscriberImpl<OperState, std::vector<std::string>>;
 using FsdbExtStateSubscriber =
-    FsdbStateSubscriberImpl<OperSubPathUnit, ExtendedOperPath>;
+    FsdbStateSubscriberImpl<OperSubPathUnit, std::vector<ExtendedOperPath>>;
 } // namespace facebook::fboss::fsdb

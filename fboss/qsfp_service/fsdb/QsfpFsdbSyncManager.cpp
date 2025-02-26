@@ -22,11 +22,11 @@ QsfpFsdbSyncManager::QsfpFsdbSyncManager() {
   if (FLAGS_publish_state_to_fsdb) {
     stateSyncer_ =
         std::make_unique<fsdb::FsdbSyncManager<state::QsfpServiceData>>(
-            "qsfp_service", getStatePath(), false, true);
+            "qsfp_service", getStatePath(), false, fsdb::PubSubType::DELTA);
   }
   if (FLAGS_publish_stats_to_fsdb) {
     statsSyncer_ = std::make_unique<fsdb::FsdbSyncManager<stats::QsfpStats>>(
-        "qsfp_service", getStatsPath(), true, false);
+        "qsfp_service", getStatsPath(), true, fsdb::PubSubType::PATH);
   }
 }
 
@@ -93,6 +93,25 @@ void QsfpFsdbSyncManager::updateTcvrStats(std::map<int, TcvrStats>&& stats) {
     out->template modify<stats::qsfp_stats_tags::strings::tcvrStats>();
     out->template ref<stats::qsfp_stats_tags::strings::tcvrStats>()->fromThrift(
         stats);
+    return out;
+  });
+}
+
+void QsfpFsdbSyncManager::updatePimState(int pimId, PimState&& newState) {
+  if (!FLAGS_publish_state_to_fsdb) {
+    return;
+  }
+
+  stateSyncer_->updateState([pimId,
+                             newState = std::move(newState)](const auto& in) {
+    auto out = in->clone();
+    out->template modify<state::qsfp_state_tags::strings::state>();
+    auto& state = out->template ref<state::qsfp_state_tags::strings::state>();
+    state->template modify<state::qsfp_state_tags::strings::pimStates>();
+    auto& PimStates =
+        state->template ref<state::qsfp_state_tags::strings::pimStates>();
+    PimStates->modify(folly::to<std::string>(pimId));
+    PimStates->ref(pimId)->fromThrift(newState);
     return out;
   });
 }
@@ -179,6 +198,31 @@ void QsfpFsdbSyncManager::updatePhyStat(
   updatePhyStats(*pendingPhyStatsWLockedPtr);
   // Clear the stats, we are ready to start over
   pendingPhyStatsWLockedPtr->clear();
+}
+
+void QsfpFsdbSyncManager::updatePortStats(PortStatsMap stats) {
+  if (!FLAGS_publish_stats_to_fsdb) {
+    return;
+  }
+
+  statsSyncer_->updateState([stats = std::move(stats)](const auto& in) {
+    auto out = in->clone();
+    out->template modify<stats::qsfp_stats_tags::strings::portStats>();
+    out->template ref<stats::qsfp_stats_tags::strings::portStats>()->fromThrift(
+        stats);
+    return out;
+  });
+}
+
+void QsfpFsdbSyncManager::updatePortStat(
+    std::string&& portName,
+    HwPortStats&& stat) {
+  if (!FLAGS_publish_stats_to_fsdb) {
+    return;
+  }
+  auto pendingPortStatsWLockedPtr = pendingPortStats_.wlock();
+  (*pendingPortStatsWLockedPtr)[portName] = stat;
+  updatePortStats(*pendingPortStatsWLockedPtr);
 }
 
 } // namespace fboss

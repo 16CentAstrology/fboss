@@ -2,7 +2,11 @@
 
 #pragma once
 
+#include "fboss/agent/AgentFeatures.h"
+#include "fboss/agent/HwSwitch.h"
 #include "fboss/agent/Main.h"
+#include "fboss/agent/Platform.h"
+#include "fboss/agent/single/MonolithicAgentInitializer.h"
 #include "fboss/agent/state/PortDescriptor.h"
 
 #include <gtest/gtest.h>
@@ -10,7 +14,7 @@
 namespace facebook::fboss {
 class SwitchState;
 
-class AgentTest : public ::testing::Test, public AgentInitializer {
+class AgentTest : public ::testing::Test, public MonolithicAgentInitializer {
  public:
   virtual ~AgentTest();
   void SetUp() override {
@@ -86,8 +90,7 @@ class AgentTest : public ::testing::Test, public AgentInitializer {
 
   template <typename SETUP_FN, typename VERIFY_FN>
   void verifyAcrossWarmBoots(SETUP_FN setup, VERIFY_FN verify) {
-    verifyAcrossWarmBoots(
-        setup, verify, []() {}, []() {});
+    verifyAcrossWarmBoots(setup, verify, []() {}, []() {});
   }
   template <typename VERIFY_FN>
   void verifyAcrossWarmBoots(VERIFY_FN verify) {
@@ -95,7 +98,8 @@ class AgentTest : public ::testing::Test, public AgentInitializer {
   }
 
   std::string getAgentTestDir() const {
-    return platform()->getPersistentStateDir() + "/agent_test/";
+    return platform()->getDirectoryUtil()->getPersistentStateDir() +
+        "/agent_test/";
   }
 
   std::string getTestConfigPath() const {
@@ -110,6 +114,13 @@ class AgentTest : public ::testing::Test, public AgentInitializer {
       const std::string& configFile) const;
   void reloadConfig(std::string reason) const;
   virtual void logLinkDbgMessage(std::vector<PortID>& /* portIDs */) const {}
+
+  SwitchID scope(const boost::container::flat_set<PortDescriptor>& ports);
+  SwitchID scope(
+      const std::shared_ptr<SwitchState>& state,
+      const boost::container::flat_set<PortDescriptor>& ports);
+
+  PortID getPortID(const std::string& portName) const;
 
  private:
   template <typename AddrT>
@@ -128,5 +139,9 @@ class AgentTest : public ::testing::Test, public AgentInitializer {
   std::unique_ptr<std::thread> asyncInitThread_{nullptr};
 };
 
-void initAgentTest(int argc, char** argv, PlatformInitFn initPlatformFn);
+void initAgentTest(
+    int argc,
+    char** argv,
+    PlatformInitFn initPlatformFn,
+    std::optional<cfg::StreamType> streamType = std::nullopt);
 } // namespace facebook::fboss

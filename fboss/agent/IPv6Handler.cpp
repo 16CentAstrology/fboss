@@ -16,7 +16,6 @@
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/NeighborUpdater.h"
 #include "fboss/agent/PacketLogger.h"
-#include "fboss/agent/Platform.h"
 #include "fboss/agent/RxPacket.h"
 #include "fboss/agent/SwSwitch.h"
 #include "fboss/agent/SwitchStats.h"
@@ -38,6 +37,18 @@
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/state/Vlan.h"
 #include "fboss/agent/state/VlanMap.h"
+
+DECLARE_bool(intf_nbr_tables);
+
+DEFINE_bool(
+    disable_icmp_error_response,
+    false,
+    "Disable sending icmp error response pkts in agent");
+
+DEFINE_bool(
+    disable_neighbor_solicitation,
+    false,
+    "Disable sending neighbor solicitation pkts in agent");
 
 using folly::IPAddressV6;
 using folly::MacAddress;
@@ -129,24 +140,41 @@ void IPv6Handler::intfDeleted(const Interface* intf) {
   CHECK_EQ(numErased, 1);
 }
 
+template <typename VlanOrIntfT>
 void IPv6Handler::handlePacket(
     unique_ptr<RxPacket> pkt,
     MacAddress dst,
     MacAddress src,
-    Cursor cursor) {
+    Cursor cursor,
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf) {
+  auto vlanID = getVlanIDFromVlanOrIntf(vlanOrIntf);
+  auto vlanIDStr = vlanID.has_value()
+      ? folly::to<std::string>(static_cast<int>(vlanID.value()))
+      : "None";
   const uint32_t l3Len = pkt->getLength() - (cursor - Cursor(pkt->buf()));
   IPv6Hdr ipv6(cursor); // note: advances our cursor object
   XLOG(DBG4) << "IPv6 (" << l3Len
              << " bytes)"
                 " port: "
-             << pkt->getSrcPort() << " vlan: " << pkt->getSrcVlan()
+             << pkt->getSrcPort() << " vlan: " << vlanIDStr
              << " src: " << ipv6.srcAddr.str() << " (" << src << ")"
              << " dst: " << ipv6.dstAddr.str() << " (" << dst << ")"
              << " nextHeader: " << static_cast<int>(ipv6.nextHeader);
 
-  // Additional data (such as FCS) may be appended after the IP payload
-  auto payload = folly::IOBuf::wrapBuffer(cursor.data(), ipv6.payloadLength);
-  cursor.reset(payload.get());
+  auto payloadLength = pkt->getLength() - (cursor - Cursor(pkt->buf()));
+  if (ipv6.payloadLength > payloadLength) {
+    sw_->portStats(pkt->getSrcPort())->pktBogus();
+    XLOG(DBG3) << "Discarding pkt with invalid length field. length: " << " ("
+               << ipv6.payloadLength << ")" << "payload length: " << " ("
+               << payloadLength << ")" << " src: " << ipv6.srcAddr.str() << " ("
+               << src << ")" << " dst: " << ipv6.dstAddr.str() << " (" << dst
+               << ")";
+    return;
+  }
+
+  // Additional data (such as FCS) may be appended after the IP payload, trim to
+  // expected size of ipv6 payload
+  cursor = Cursor(cursor, ipv6.payloadLength);
 
   // retrieve the current switch state
   auto state = sw_->getState();
@@ -161,9 +189,18 @@ void IPv6Handler::handlePacket(
     XLOG(DBG4) << "DHCP UDP packet, source port :" << udpHdr.srcPort
                << " destination port: " << udpHdr.dstPort;
     if (DHCPv6Handler::isForDHCPv6RelayOrServer(udpHdr)) {
-      DHCPv6Handler::handlePacket(
-          sw_, std::move(pkt), src, dst, ipv6, udpHdr, udpCursor);
-      return;
+      auto switchType = sw_->getSwitchInfoTable().l3SwitchType();
+      if (switchType == cfg::SwitchType::VOQ) {
+        // TODO(skhare)
+        // Support DHCP packets for VOQ switches
+        XLOG_EVERY_MS(DBG2, 5000)
+            << "Dropping DHCPv6 pkt for VOQ switches, Not Supported yet";
+        return;
+      } else {
+        DHCPv6Handler::handlePacket(
+            sw_, std::move(pkt), src, dst, ipv6, udpHdr, udpCursor, vlanOrIntf);
+        return;
+      }
     }
   }
 
@@ -188,31 +225,50 @@ void IPv6Handler::handlePacket(
     // Forward multicast packet directly to corresponding host interface
     // and let Linux handle it. In software we consume ICMPv6 Multicast
     // packets for function of NDP protocol, rest all are forwarded to host.
-    intf = interfaceMap->getInterfaceInVlanIf(pkt->getSrcVlan());
+    auto intfID = sw_->getState()->getInterfaceIDForPort(PortDescriptor(port));
+    intf = state->getInterfaces()->getNodeIf(intfID);
   } else if (ipv6.dstAddr.isLinkLocal()) {
-    // Forward link-local packet directly to corresponding host interface
-    // provided desAddr is assigned to that interface.
-    intf = interfaceMap->getInterfaceInVlanIf(pkt->getSrcVlan());
-    if (intf && !(intf->hasAddress(ipv6.dstAddr))) {
+    // If srcPort == CPU port, this packet was injected by self, and then
+    // trapped back via RX callback. We don't need to handle self injected
+    // packets, so sete intf = nullptr;
+    // However, these might be packts
+    // However, we would still trigger neighbor solicitation
+    // (resolveDestAndHandlePacket) if the destination IP is not already
+    // resolved.
+    if (port == PortID(0)) {
       intf = nullptr;
+    } else {
+      // Forward link-local packet directly to corresponding host interface
+      // provided desAddr is assigned to that interface.
+      auto intfID =
+          sw_->getState()->getInterfaceIDForPort(PortDescriptor(port));
+      intf = state->getInterfaces()->getNodeIf(intfID);
+      if (intf && !(intf->hasAddress(ipv6.dstAddr))) {
+        intf = nullptr;
+      }
     }
   } else {
     // Else loopup host interface based on destAddr
-    intf = interfaceMap->getInterfaceIf(RouterID(0), ipv6.dstAddr);
+    const auto iter = sw_->getAddrToLocalIntfMap().find(
+        std::make_pair(RouterID(0), ipv6.dstAddr));
+    if (iter != sw_->getAddrToLocalIntfMap().end()) {
+      intf = interfaceMap->getNodeIf(iter->second);
+    }
   }
 
   // If the packet is destined to us, accept packets
   // with a hop limit of 1. Else we need to forward
   // this packet so the hop limit should be at least 1
   auto minHopLimit = intf ? 0 : 1;
-  if (ipv6.hopLimit <= minHopLimit) {
+  if (FLAGS_send_icmp_time_exceeded && ipv6.hopLimit <= minHopLimit) {
     XLOG(DBG4) << "Rx IPv6 Packet with hop limit exceeded";
     sw_->portStats(port)->pktDropped();
     sw_->portStats(port)->ipv6HopExceeded();
-    // Look up cpu mac from platform
-    MacAddress cpuMac = sw_->getPlatform()->getLocalMac();
-    sendICMPv6TimeExceeded(
-        port, pkt->getSrcVlan(), cpuMac, cpuMac, ipv6, cursor);
+    // Look up cpu mac from switchInfo
+    auto switchId = sw_->getScopeResolver()->scope(port).switchId();
+    MacAddress cpuMac =
+        sw_->getHwAsicTable()->getHwAsicIf(switchId)->getAsicMac();
+    sendICMPv6TimeExceeded(port, vlanID, cpuMac, cpuMac, ipv6, cursor);
     return;
   }
 
@@ -220,15 +276,19 @@ void IPv6Handler::handlePacket(
     // packets destined for us
     // Anything not handled by the controller, we will forward it to the host,
     // i.e. ping, ssh, bgp...
+    if (ipv6.hopLimit == 1) {
+      sw_->stats()->ipv6HopLimit1Mine();
+    }
     if (ipv6.payloadLength > intf->getMtu()) {
       // Generate PTB as interface to dst intf has MTU smaller than payload
       sendICMPv6PacketTooBig(
-          port, pkt->getSrcVlan(), src, dst, ipv6, intf->getMtu(), cursor);
+          port, vlanID, src, dst, ipv6, intf->getMtu(), cursor);
       sw_->portStats(port)->pktDropped();
       return;
     }
     if (ipv6.nextHeader == static_cast<uint8_t>(IP_PROTO::IP_PROTO_IPV6_ICMP)) {
-      pkt = handleICMPv6Packet(std::move(pkt), dst, src, ipv6, cursor);
+      pkt = handleICMPv6Packet(
+          std::move(pkt), dst, src, ipv6, cursor, vlanOrIntf);
       if (pkt == nullptr) {
         // packet has been handled
         return;
@@ -253,12 +313,30 @@ void IPv6Handler::handlePacket(
   }
 }
 
+// Explicit instantiation to avoid linker errors
+// https://isocpp.org/wiki/faq/templates#separate-template-fn-defn-from-decl
+template void IPv6Handler::handlePacket<Vlan>(
+    unique_ptr<RxPacket> pkt,
+    MacAddress dst,
+    MacAddress src,
+    Cursor cursor,
+    const std::shared_ptr<Vlan>& vlanOrIntf);
+
+template void IPv6Handler::handlePacket<Interface>(
+    unique_ptr<RxPacket> pkt,
+    MacAddress dst,
+    MacAddress src,
+    Cursor cursor,
+    const std::shared_ptr<Interface>& vlanOrIntf);
+
+template <typename VlanOrIntfT>
 unique_ptr<RxPacket> IPv6Handler::handleICMPv6Packet(
     unique_ptr<RxPacket> pkt,
     MacAddress dst,
     MacAddress src,
     const IPv6Hdr& ipv6,
-    Cursor cursor) {
+    Cursor cursor,
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf) {
   ICMPHdr icmp6(cursor); // note: advances our cursor object
 
   // Validate the checksum, and drop the packet if it is not valid
@@ -278,10 +356,10 @@ unique_ptr<RxPacket> IPv6Handler::handleICMPv6Packet(
       handleRouterAdvertisement(std::move(pkt), hdr, cursor);
       return nullptr;
     case ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_SOLICITATION:
-      handleNeighborSolicitation(std::move(pkt), hdr, cursor);
+      handleNeighborSolicitation(std::move(pkt), hdr, cursor, vlanOrIntf);
       return nullptr;
     case ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_ADVERTISEMENT:
-      handleNeighborAdvertisement(std::move(pkt), hdr, cursor);
+      handleNeighborAdvertisement(std::move(pkt), hdr, cursor, vlanOrIntf);
       return nullptr;
     case ICMPv6Type::ICMPV6_TYPE_NDP_REDIRECT_MESSAGE:
       sw_->portStats(pkt)->ipv6NdpPkt();
@@ -306,14 +384,9 @@ void IPv6Handler::handleRouterSolicitation(
 
   cursor.skip(4); // 4 reserved bytes
 
-  auto state = sw_->getState();
-  auto vlan = state->getVlans()->getVlanIf(pkt->getSrcVlan());
-  if (!vlan) {
-    sw_->portStats(pkt)->pktDropped();
-    return;
-  }
-
-  auto intf = state->getInterfaces()->getInterfaceIf(vlan->getInterfaceID());
+  auto intfID =
+      sw_->getState()->getInterfaceIDForPort(PortDescriptor(pkt->getSrcPort()));
+  auto intf = sw_->getState()->getInterfaces()->getNodeIf(intfID);
   if (!intf) {
     sw_->portStats(pkt)->pktDropped();
     return;
@@ -374,10 +447,17 @@ void IPv6Handler::handleRouterAdvertisement(
   sw_->portStats(pkt)->pktDropped();
 }
 
+template <typename VlanOrIntfT>
 void IPv6Handler::handleNeighborSolicitation(
     unique_ptr<RxPacket> pkt,
     const ICMPHeaders& hdr,
-    Cursor cursor) {
+    Cursor cursor,
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf) {
+  auto vlanID = getVlanIDFromVlanOrIntf(vlanOrIntf);
+  auto vlanIDStr = vlanID.has_value()
+      ? folly::to<std::string>(static_cast<int>(vlanID.value()))
+      : "None";
+
   sw_->portStats(pkt)->ipv6NdpPkt();
   if (!checkNdpPacket(hdr, pkt.get())) {
     return;
@@ -395,11 +475,10 @@ void IPv6Handler::handleNeighborSolicitation(
   XLOG(DBG4) << "got neighbor solicitation for " << targetIP.str();
 
   auto state = sw_->getState();
-  auto vlan = state->getVlans()->getVlanIf(pkt->getSrcVlan());
-  if (!vlan) {
-    // Hmm, we don't actually have this VLAN configured.
-    // Perhaps the state has changed since we received the packet.
-    XLOG(DBG5) << "invalid vlan " << vlan << ", drop the packet";
+
+  if (!vlanOrIntf) {
+    XLOG(DBG5) << "invalid vlan or interface " << vlanIDStr
+               << ", drop the packet on port: " << pkt->getSrcPort();
     sw_->portStats(pkt)->pktDropped();
     return;
   }
@@ -415,7 +494,6 @@ void IPv6Handler::handleNeighborSolicitation(
     return;
   }
 
-  auto updater = sw_->getNeighborUpdater();
   auto type = ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_SOLICITATION;
 
   if ((!ndpOptions.sourceLinkLayerAddress.has_value() &&
@@ -435,11 +513,12 @@ void IPv6Handler::handleNeighborSolicitation(
 
   if (!AggregatePort::isIngressValid(state, pkt)) {
     XLOG(DBG2) << "Dropping invalid NS ingressing on port " << pkt->getSrcPort()
-               << " on vlan " << vlan << " for " << targetIP;
+               << " on vlan " << vlanIDStr << " for " << targetIP;
+
     return;
   }
 
-  auto entry = vlan->getNdpResponseTable()->getEntry(targetIP);
+  auto entry = vlanOrIntf->getNdpResponseTable()->getEntry(targetIP);
   auto srcPortDescriptor = PortDescriptor::fromRxPacket(*pkt.get());
   if (ndpOptions.sourceLinkLayerAddress.has_value()) {
     /* rfc 4861 - if the source address is not the unspecified address and,
@@ -449,8 +528,8 @@ void IPv6Handler::handleNeighborSolicitation(
     */
     if (!entry) {
       // if this IP address not is in NDP response table.
-      updater->receivedNdpNotMine(
-          vlan->getID(),
+      receivedNdpNotMine(
+          vlanOrIntf,
           hdr.ipv6->srcAddr,
           ndpOptions.sourceLinkLayerAddress.value(),
           srcPortDescriptor,
@@ -459,8 +538,8 @@ void IPv6Handler::handleNeighborSolicitation(
       return;
     }
 
-    updater->receivedNdpMine(
-        vlan->getID(),
+    receivedNdpMine(
+        vlanOrIntf,
         hdr.ipv6->srcAddr,
         ndpOptions.sourceLinkLayerAddress.value(),
         srcPortDescriptor,
@@ -472,19 +551,27 @@ void IPv6Handler::handleNeighborSolicitation(
 
   // Send the response. To reply the neighbor solicitation, we can use the
   // src port of such packet to send back the neighbor advertisement.
-  sendNeighborAdvertisement(
-      pkt->getSrcVlan(),
-      entry->getMac(),
-      targetIP,
-      hdr.src,
-      hdr.ipv6->srcAddr,
-      srcPortDescriptor);
+  if (entry) {
+    sendNeighborAdvertisement(
+        vlanID,
+        entry->getMac(),
+        targetIP,
+        hdr.src,
+        hdr.ipv6->srcAddr,
+        srcPortDescriptor);
+  } else {
+    XLOG(DBG2) << "Dropping NS ingressing on port " << pkt->getSrcPort()
+               << " on vlan " << vlanIDStr << " for " << targetIP
+               << " due to missing mac ";
+  }
 }
 
+template <typename VlanOrIntfT>
 void IPv6Handler::handleNeighborAdvertisement(
     unique_ptr<RxPacket> pkt,
     const ICMPHeaders& hdr,
-    Cursor cursor) {
+    Cursor cursor,
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf) {
   sw_->portStats(pkt)->ipv6NdpPkt();
   if (!checkNdpPacket(hdr, pkt.get())) {
     return;
@@ -511,12 +598,31 @@ void IPv6Handler::handleNeighborAdvertisement(
     sw_->portStats(pkt)->pktDropped();
     return;
   }
+  if (pkt->getSrcPort() == PortID(0)) {
+    XLOG(DBG2) << "ignoring IPv6 neighbor advertisement for " << targetIP
+               << " received from cpu port";
+    sw_->portStats(pkt)->pktDropped();
+    return;
+  }
 
-  auto state = sw_->getState();
-  auto vlan = state->getVlans()->getVlanIf(pkt->getSrcVlan());
-  if (!vlan) {
+  if (!vlanOrIntf) {
     // Hmm, we don't actually have this VLAN configured.
     // Perhaps the state has changed since we received the packet.
+    sw_->portStats(pkt)->pktDropped();
+    return;
+  }
+
+  if (!AggregatePort::isIngressValid(sw_->getState(), pkt, true)) {
+    // drop NDP advertisement packets when LAG port is not up,
+    // otherwise, NDP entry would be created for this down port,
+    // and confuse later neighbor/next hop resolution logics
+    auto vlanID = getVlanIDFromVlanOrIntf(vlanOrIntf);
+    auto vlanIDStr = vlanID.has_value()
+        ? folly::to<std::string>(static_cast<int>(vlanID.value()))
+        : "None";
+    XLOG(DBG2) << "Dropping invalid neighbor advertisement ingressing on port "
+               << pkt->getSrcPort() << " on vlan " << vlanIDStr << " for "
+               << targetIP;
     sw_->portStats(pkt)->pktDropped();
     return;
   }
@@ -524,24 +630,30 @@ void IPv6Handler::handleNeighborAdvertisement(
   XLOG(DBG4) << "got neighbor advertisement for " << targetIP << " ("
              << targetMac << ")";
 
-  auto updater = sw_->getNeighborUpdater();
   auto type = ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_ADVERTISEMENT;
 
-  // Check to see if this IP address is in our NDP response table.
-  auto entry = vlan->getNdpResponseTable()->getEntry(hdr.ipv6->dstAddr);
-  if (!entry) {
-    updater->receivedNdpNotMine(
-        vlan->getID(),
-        targetIP,
-        hdr.src,
-        PortDescriptor::fromRxPacket(*pkt.get()),
-        type,
-        flags);
-    return;
+  const auto& dstIP = hdr.ipv6->dstAddr;
+  /*
+   * Unsolicited nbr adv are sent to mcast (typically all nodes mcast) address.
+   * RFC (rfc2461)  explicitly allows for unsolicited ndp advertisments
+   */
+  if (!dstIP.isMulticast()) {
+    // Check to see if this IP address is in our NDP response table.
+    auto entry = vlanOrIntf->getNdpResponseTable()->getEntry(hdr.ipv6->dstAddr);
+    if (!entry) {
+      receivedNdpNotMine(
+          vlanOrIntf,
+          targetIP,
+          hdr.src,
+          PortDescriptor::fromRxPacket(*pkt.get()),
+          type,
+          flags);
+      return;
+    }
   }
 
-  updater->receivedNdpMine(
-      vlan->getID(),
+  receivedNdpMine(
+      vlanOrIntf,
       targetIP,
       hdr.src,
       PortDescriptor::fromRxPacket(*pkt.get()),
@@ -551,11 +663,16 @@ void IPv6Handler::handleNeighborAdvertisement(
 
 void IPv6Handler::sendICMPv6TimeExceeded(
     PortID srcPort,
-    VlanID srcVlan,
+    std::optional<VlanID> srcVlan,
     MacAddress dst,
     MacAddress src,
     IPv6Hdr& v6Hdr,
     folly::io::Cursor cursor) {
+  if (FLAGS_disable_icmp_error_response) {
+    XLOG(DBG4)
+        << "skipping sending icmpv6 time exceeded since icmp error response generation is disabled";
+    return;
+  }
   auto state = sw_->getState();
 
   /*
@@ -563,11 +680,13 @@ void IPv6Handler::sendICMPv6TimeExceeded(
    *  - The unused field of the ICMP header;
    *  - The original IPv6 header and its payload.
    */
-  uint32_t icmpPayloadLength =
-      ICMPHdr::ICMPV6_UNUSED_LEN + IPv6Hdr::SIZE + cursor.totalLength();
+  uint32_t icmpPayloadLength = (uint32_t)ICMPHdr::ICMPV6_UNUSED_LEN +
+      (uint32_t)IPv6Hdr::SIZE + cursor.totalLength();
   // This payload and the IPv6/ICMPv6 headers must fit the IPv6 MTU
-  icmpPayloadLength =
-      std::min(icmpPayloadLength, IPV6_MIN_MTU - IPv6Hdr::SIZE - ICMPHdr::SIZE);
+  icmpPayloadLength = std::min(
+      icmpPayloadLength,
+      (uint32_t)IPV6_MIN_MTU - (uint32_t)IPv6Hdr::SIZE -
+          (uint32_t)ICMPHdr::SIZE);
 
   auto serializeBody = [&](RWPrivateCursor* sendCursor) {
     // ICMPv6 unused field
@@ -580,8 +699,9 @@ void IPv6Handler::sendICMPv6TimeExceeded(
 
   IPAddressV6 srcIp;
   try {
-    srcIp = getSwitchVlanIPv6(state, srcVlan);
-  } catch (const std::exception& ex) {
+    srcIp = getSwitchIntfIPv6(
+        state, sw_->getState()->getInterfaceIDForPort(PortDescriptor(srcPort)));
+  } catch (const std::exception&) {
     srcIp = getAnyIntfIPv6(state);
   }
 
@@ -596,8 +716,12 @@ void IPv6Handler::sendICMPv6TimeExceeded(
       ICMPv6Code::ICMPV6_CODE_TIME_EXCEEDED_HOPLIMIT_EXCEEDED,
       icmpPayloadLength,
       serializeBody);
+
+  auto srcVlanStr = srcVlan.has_value()
+      ? folly::to<std::string>(static_cast<int>(srcVlan.value()))
+      : "None";
   XLOG(DBG4) << "sending ICMPv6 Time Exceeded with srcMac  " << src
-             << " dstMac: " << dst << " vlan: " << srcVlan
+             << " dstMac: " << dst << " vlan: " << srcVlanStr
              << " dstIp: " << v6Hdr.srcAddr.str() << " srcIP: " << srcIp.str()
              << " bodyLength: " << icmpPayloadLength;
   sw_->sendPacketSwitchedAsync(std::move(icmpPkt));
@@ -605,12 +729,17 @@ void IPv6Handler::sendICMPv6TimeExceeded(
 
 void IPv6Handler::sendICMPv6PacketTooBig(
     PortID srcPort,
-    VlanID srcVlan,
+    std::optional<VlanID> srcVlan,
     folly::MacAddress dst,
     folly::MacAddress src,
     IPv6Hdr& v6Hdr,
     int expectedMtu,
     folly::io::Cursor cursor) {
+  if (FLAGS_disable_icmp_error_response) {
+    XLOG(DBG4)
+        << "skipping sending icmpv6 time exceeded since icmp error response generation is disabled";
+    return;
+  }
   auto state = sw_->getState();
 
   // payload serialization function
@@ -618,8 +747,8 @@ void IPv6Handler::sendICMPv6PacketTooBig(
   // this is upper limit of bodyLength
   uint32_t bodyLengthLimit = IPV6_MIN_MTU - ICMPHdr::computeTotalLengthV6(0);
   // this is when we add the whole input L3 packet
-  uint32_t fullPacketLength =
-      ICMPHdr::ICMPV6_MTU_LEN + IPv6Hdr::SIZE + cursor.totalLength();
+  uint32_t fullPacketLength = (uint32_t)ICMPHdr::ICMPV6_MTU_LEN +
+      (uint32_t)IPv6Hdr::SIZE + cursor.totalLength();
   auto bodyLength = std::min(bodyLengthLimit, fullPacketLength);
 
   auto serializeBody = [&](RWPrivateCursor* sendCursor) {
@@ -630,7 +759,8 @@ void IPv6Handler::sendICMPv6PacketTooBig(
     sendCursor->push(cursor, remainingLength);
   };
 
-  IPAddressV6 srcIp = getSwitchVlanIPv6(state, srcVlan);
+  IPAddressV6 srcIp = getSwitchIntfIPv6(
+      state, sw_->getState()->getInterfaceIDForPort(PortDescriptor(srcPort)));
   auto icmpPkt = createICMPv6Pkt(
       sw_,
       dst,
@@ -643,8 +773,11 @@ void IPv6Handler::sendICMPv6PacketTooBig(
       bodyLength,
       serializeBody);
 
+  auto srcVlanStr = srcVlan.has_value()
+      ? folly::to<std::string>(static_cast<int>(srcVlan.value()))
+      : "None";
   XLOG(DBG4) << "sending ICMPv6 Packet Too Big with srcMac  " << src
-             << " dstMac: " << dst << " vlan: " << srcVlan
+             << " dstMac: " << dst << " vlan: " << srcVlanStr
              << " dstIp: " << v6Hdr.srcAddr.str() << " srcIP: " << srcIp.str()
              << " bodyLength: " << bodyLength;
   sw_->sendPacketSwitchedAsync(std::move(icmpPkt));
@@ -676,6 +809,12 @@ void IPv6Handler::sendMulticastNeighborSolicitation(
     const IPAddressV6& targetIP,
     const MacAddress& srcMac,
     const std::optional<VlanID>& vlanID) {
+  if (FLAGS_disable_neighbor_updates) {
+    XLOG(DBG4)
+        << "skipping sending neighbor solicitation since neighbor updates are disabled";
+    return;
+  }
+
   IPAddressV6 solicitedNodeAddr = targetIP.getSolicitedNodeAddress();
   MacAddress dstMac = MacAddress::createMulticast(solicitedNodeAddr);
   // For now, we always use our link local IP as the source.
@@ -684,11 +823,16 @@ void IPv6Handler::sendMulticastNeighborSolicitation(
   NDPOptions ndpOptions;
   ndpOptions.sourceLinkLayerAddress.emplace(srcMac);
 
+  auto portDescriptor = getInterfacePortDescriptorToReach(sw, targetIP);
+
+  auto portDescriptorStr =
+      portDescriptor.has_value() ? portDescriptor.value().str() : "None";
   auto vlanIDStr = vlanID.has_value()
       ? folly::to<std::string>(static_cast<int>(vlanID.value()))
       : "None";
   XLOG(DBG4) << "sending neighbor solicitation for " << targetIP << " on vlan "
-             << vlanIDStr;
+             << vlanIDStr << " solicitedNodeAddr: " << solicitedNodeAddr.str()
+             << " using port: " << portDescriptorStr;
 
   sendNeighborSolicitation(
       sw,
@@ -698,7 +842,7 @@ void IPv6Handler::sendMulticastNeighborSolicitation(
       srcMac,
       targetIP,
       vlanID,
-      std::optional<PortDescriptor>(),
+      portDescriptor,
       ndpOptions);
 }
 
@@ -709,41 +853,67 @@ void IPv6Handler::sendUnicastNeighborSolicitation(
     const folly::MacAddress& targetMac,
     const folly::IPAddressV6& srcIP,
     const folly::MacAddress& srcMac,
-    const VlanID& vlanID,
+    const std::optional<VlanID>& vlanID,
     const PortDescriptor& portDescriptor) {
+  auto portToSend{portDescriptor};
+
+  if (FLAGS_disable_neighbor_updates) {
+    XLOG(DBG4)
+        << "skipping sending neighbor solicitation since neighbor updates are disabled";
+    return;
+  }
+  if (FLAGS_disable_neighbor_solicitation) {
+    XLOG(DBG4)
+        << "skipping sending neighbor solicitation since flag disable_neighbor_solicitation set to true";
+    return;
+  }
+
   auto state = sw->getState();
-  auto vlan = state->getVlans()->getVlanIf(vlanID);
-  if (!Interface::isIpAttached(targetIP, vlan->getInterfaceID(), state)) {
+
+  InterfaceID intfID;
+  switch (portDescriptor.type()) {
+    case PortDescriptor::PortType::PHYSICAL:
+      intfID = sw->getState()->getInterfaceIDForPort(portDescriptor);
+      break;
+    case PortDescriptor::PortType::AGGREGATE:
+      intfID = sw->getState()->getInterfaceIDForPort(portDescriptor);
+      break;
+    case PortDescriptor::PortType::SYSTEM_PORT:
+      auto physPortID = getPortID(portDescriptor.sysPortID(), sw->getState());
+      portToSend = PortDescriptor(physPortID);
+      intfID = sw->getState()->getInterfaceIDForPort(portToSend);
+  }
+
+  if (!Interface::isIpAttached(targetIP, intfID, state)) {
     XLOG(DBG2) << "unicast neighbor solicitation not sent, neighbor address: "
                << targetIP << ", is not in the subnets of interface: "
-               << vlan->getInterfaceID() << " for vlan:" << vlanID;
+               << " for interface:" << intfID;
     return;
   }
 
   XLOG(DBG4) << "sending unicast neighbor solicitation to " << targetIP << "("
-             << targetMac << ")"
-             << " on vlan " << vlanID << " from " << srcIP << "(" << srcMac
-             << ")";
+             << targetMac << ")" << " on interface " << intfID << " from "
+             << srcIP << "(" << srcMac
+             << ")  portDescriptor:" << portDescriptor.str()
+             << " portToSend: " << portToSend.str();
 
   return sendNeighborSolicitation(
-      sw, targetIP, targetMac, srcIP, srcMac, targetIP, vlanID, portDescriptor);
+      sw, targetIP, targetMac, srcIP, srcMac, targetIP, vlanID, portToSend);
 }
 
 void IPv6Handler::sendMulticastNeighborSolicitation(
     SwSwitch* sw,
-    const IPAddressV6& targetIP,
-    const shared_ptr<Vlan>& vlan) {
-  auto state = sw->getState();
-  auto intfID = vlan->getInterfaceID();
+    const IPAddressV6& targetIP) {
+  auto intf =
+      sw->getState()->getInterfaces()->getIntfToReach(RouterID(0), targetIP);
 
-  auto intf = state->getInterfaces()->getInterfaceIf(intfID);
   if (!intf) {
-    XLOG(DBG0) << "Cannot find interface " << intfID;
+    XLOG(DBG0) << "Cannot find interface for " << targetIP;
     return;
   }
 
   sendMulticastNeighborSolicitation(
-      sw, targetIP, intf->getMac(), vlan->getID());
+      sw, targetIP, intf->getMac(), intf->getVlanIDIf());
 }
 
 void IPv6Handler::resolveDestAndHandlePacket(
@@ -754,18 +924,20 @@ void IPv6Handler::resolveDestAndHandlePacket(
     Cursor cursor) {
   // Right now this either responds with PTB or generate neighbor soliciations
   auto ingressPort = pkt->getSrcPort();
+  auto vlanID = pkt->getSrcVlanIf();
   auto targetIP = hdr.dstAddr;
   auto state = sw_->getState();
 
-  auto ingressInterface =
-      state->getInterfaces()->getInterfaceInVlanIf(pkt->getSrcVlan());
-  if (!ingressInterface) {
-    // Received packed on unknown VLAN
-    return;
+  if (vlanID.has_value()) {
+    auto ingressInterface =
+        state->getInterfaces()->getInterfaceInVlanIf(vlanID.value());
+    if (!ingressInterface) {
+      // Received packed on unknown VLAN
+      return;
+    }
   }
 
-  auto route =
-      sw_->longestMatch(state, targetIP, ingressInterface->getRouterID());
+  auto route = sw_->longestMatch(state, targetIP, RouterID(0));
   if (!route || !route->isResolved()) {
     sw_->portStats(ingressPort)->ipv6DstLookupFailure();
     // No way to reach targetIP
@@ -777,7 +949,7 @@ void IPv6Handler::resolveDestAndHandlePacket(
 
   for (auto nexthop : nexthops) {
     // get interface needed to reach next hop
-    auto intf = interfaces->getInterfaceIf(nexthop.intf());
+    auto intf = interfaces->getNodeIf(nexthop.intf());
     if (intf) {
       // what should be source & destination of packet
       auto source = intf->getAddressToReach(nexthop.addr())->first.asV6();
@@ -791,33 +963,24 @@ void IPv6Handler::resolveDestAndHandlePacket(
       if (hdr.payloadLength > intf->getMtu()) {
         // Generate PTB as interface to next hop has MTU smaller than payload
         sendICMPv6PacketTooBig(
-            ingressPort,
-            pkt->getSrcVlan(),
-            src,
-            dst,
-            hdr,
-            intf->getMtu(),
-            cursor);
+            ingressPort, vlanID, src, dst, hdr, intf->getMtu(), cursor);
         sw_->portStats(ingressPort)->pktDropped();
         return;
       } else {
         // Check if destination is unknown, in which case trigger NDP
-        auto vlanID = intf->getVlanID();
-        auto vlan = state->getVlans()->getVlanIf(vlanID);
-        if (vlan) {
-          auto entry = vlan->getNdpTable()->getEntryIf(target);
-          if (nullptr == entry) {
-            // No entry in NDP table, create a neighbor solicitation packet
-            sendMulticastNeighborSolicitation(
-                sw_, target, intf->getMac(), vlan->getID());
-            // Notify the updater that we sent a solicitation out
-            sw_->getNeighborUpdater()->sentNeighborSolicitation(vlanID, target);
-          } else {
-            XLOG(DBG5) << "not sending neighbor solicitation for "
-                       << target.str() << ", "
-                       << ((entry->isPending()) ? "pending" : "")
-                       << " entry already exists";
-          }
+        auto entry = getNeighborEntryForIP<NdpEntry>(
+            state, intf, target, FLAGS_intf_nbr_tables);
+
+        if (nullptr == entry) {
+          // No entry in NDP table, create a neighbor solicitation packet
+          sendMulticastNeighborSolicitation(
+              sw_, target, intf->getMac(), intf->getVlanIDIf());
+          // Notify the updater that we sent a solicitation out
+          sw_->sentNeighborSolicitation(intf, target);
+        } else {
+          XLOG(DBG5) << "not sending neighbor solicitation for " << target.str()
+                     << ", " << ((entry->isPending()) ? "pending" : "")
+                     << " entry already exists";
         }
       }
     }
@@ -845,7 +1008,7 @@ void IPv6Handler::sendMulticastNeighborSolicitations(
   auto intfs = state->getInterfaces();
   auto nhs = route->getForwardInfo().getNextHopSet();
   for (auto nh : nhs) {
-    auto intf = intfs->getInterfaceIf(nh.intf());
+    auto intf = intfs->getNodeIf(nh.intf());
     if (intf) {
       if (nh.addr().isV6()) {
         auto source = intf->getAddressToReach(nh.addr())->first.asV6();
@@ -872,26 +1035,54 @@ void IPv6Handler::sendMulticastNeighborSolicitations(
 }
 
 void IPv6Handler::floodNeighborAdvertisements() {
-  for (auto iter : std::as_const(*sw_->getState()->getInterfaces())) {
-    // This check is mostly for agent tests where we dont want to flood NDP
-    // causing loop, when ports are in loopback
-    const auto& intf = iter.second;
-    if (isAnyInterfacePortInLoopbackMode(sw_->getState(), intf)) {
-      XLOG(DBG2) << "Do not flood neighbor advertisement on interface: "
-                 << intf->getName();
-      continue;
-    }
-    for (auto iter : std::as_const(*intf->getAddresses())) {
-      auto addrEntry = folly::IPAddress(iter.first);
-      if (!addrEntry.isV6()) {
+  for (const auto& [_, intfMap] :
+       std::as_const(*sw_->getState()->getInterfaces())) {
+    for (auto iter : std::as_const(*intfMap)) {
+      // This check is mostly for agent tests where we dont want to flood NDP
+      // causing loop, when ports are in loopback
+      const auto& intf = iter.second;
+      if (isAnyInterfacePortInLoopbackMode(sw_->getState(), intf)) {
+        XLOG(DBG2) << "Do not flood neighbor advertisement on interface: "
+                   << intf->getName();
         continue;
       }
-      sendNeighborAdvertisement(
-          intf->getVlanIDIf(),
-          intf->getMac(),
-          addrEntry.asV6(),
-          MacAddress::BROADCAST,
-          IPAddressV6());
+
+      // If NDP is flooded on recycle port interface, it will be resolved and
+      // will get added as DYNAMIC entry, which is incorrect.
+      if (isAnyInterfacePortRecyclePort(sw_->getState(), intf)) {
+        XLOG(DBG2)
+            << "Do not flood neighbor advertisement on recycle port interface: "
+            << intf->getName();
+        continue;
+      }
+
+      for (auto iter : std::as_const(*intf->getAddresses())) {
+        auto addrEntry = folly::IPAddress(iter.first);
+        if (!addrEntry.isV6()) {
+          continue;
+        }
+
+        std::optional<PortDescriptor> portDescriptor{std::nullopt};
+        auto switchType = sw_->getSwitchInfoTable().l3SwitchType();
+        if (switchType == cfg::SwitchType::VOQ) {
+          // VOQ switches don't use VLANs (no broadcast domain).
+          // Find the port to send out the pkt with pipeline bypass on.
+          CHECK(intf->getSystemPortID().has_value());
+          portDescriptor = PortDescriptor(
+              getPortID(*intf->getSystemPortID(), sw_->getState()));
+          XLOG(DBG4) << "Sending neighbor advertisements for "
+                     << addrEntry.str()
+                     << " Using port: " << portDescriptor.value().str();
+        }
+
+        sendNeighborAdvertisement(
+            intf->getVlanIDIf(),
+            intf->getMac(),
+            addrEntry.asV6(),
+            MacAddress::BROADCAST,
+            IPAddressV6(),
+            portDescriptor);
+      }
     }
   }
 }
@@ -903,6 +1094,11 @@ void IPv6Handler::sendNeighborAdvertisement(
     MacAddress dstMac,
     IPAddressV6 dstIP,
     const std::optional<PortDescriptor>& portDescriptor) {
+  if (FLAGS_disable_neighbor_updates) {
+    XLOG(DBG4)
+        << "skipping sending neighbor advertisement since neighbor updates are disabled";
+    return;
+  }
   XLOG(DBG4) << "sending neighbor advertisement to " << dstIP.str() << " ("
              << dstMac << "): for " << srcIP << " (" << srcMac << ")";
 
@@ -977,4 +1173,61 @@ void IPv6Handler::sendNeighborSolicitation(
       serializeBody);
   sw->sendNetworkControlPacketAsync(std::move(pkt), portDescriptor);
 }
+
+template <typename VlanOrIntfT>
+void IPv6Handler::receivedNdpNotMine(
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf,
+    IPAddressV6 ip,
+    MacAddress macAddr,
+    PortDescriptor port,
+    ICMPv6Type type,
+    uint32_t flags) {
+  sw_->stats()->ipv6NdpNotMine();
+  auto updater = sw_->getNeighborUpdater();
+  if constexpr (std::is_same_v<VlanOrIntfT, Vlan>) {
+    updater->receivedNdpNotMine(
+        vlanOrIntf->getID(), ip, macAddr, port, type, flags);
+
+  } else {
+    updater->receivedNdpNotMineForIntf(
+        vlanOrIntf->getID(), ip, macAddr, port, type, flags);
+  }
+}
+
+template <typename VlanOrIntfT>
+void IPv6Handler::receivedNdpMine(
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf,
+    IPAddressV6 ip,
+    MacAddress macAddr,
+    PortDescriptor port,
+    ICMPv6Type type,
+    uint32_t flags) {
+  auto updater = sw_->getNeighborUpdater();
+  if constexpr (std::is_same_v<VlanOrIntfT, Vlan>) {
+    updater->receivedNdpMine(
+        vlanOrIntf->getID(), ip, macAddr, port, type, flags);
+
+  } else {
+    updater->receivedNdpMineForIntf(
+        vlanOrIntf->getID(), ip, macAddr, port, type, flags);
+  }
+}
+
+std::optional<PortDescriptor> IPv6Handler::getInterfacePortDescriptorToReach(
+    SwSwitch* sw,
+    const folly::IPAddressV6& ipAddr) {
+  std::optional<PortDescriptor> portDescriptor{std::nullopt};
+
+  if (sw->getSwitchInfoTable().l3SwitchType() == cfg::SwitchType::VOQ) {
+    // VOQ switches don't use VLANs (no broadcast domain).
+    // Find the port to send out the pkt with pipeline bypass on.
+    auto portID = getInterfacePortToReach(sw->getState(), ipAddr);
+    if (portID.has_value()) {
+      portDescriptor = PortDescriptor(portID.value());
+    }
+  }
+
+  return portDescriptor;
+}
+
 } // namespace facebook::fboss

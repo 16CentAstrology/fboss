@@ -5,8 +5,11 @@ namespace cpp2 facebook.fboss.fsdb
 namespace go facebook.fboss.fsdb_oper
 
 include "fboss/fsdb/if/fsdb_common.thrift"
+include "fboss/thrift_cow/patch.thrift"
+include "thrift/annotation/cpp.thrift"
 
-typedef binary (cpp2.type = "::folly::fbstring") fbbinary
+@cpp.Type{name = "::folly::fbstring"}
+typedef binary fbbinary
 
 /*
  * Generic types for interacting w/ OperState
@@ -31,6 +34,14 @@ struct ExtendedOperPath {
   1: list<OperPathElem> path;
 }
 
+union Path {
+  // TODO: remove in favor of rawPath
+  1: OperPath operPath;
+  2: RawOperPath rawPath;
+  3: list<ExtendedOperPath> extendedPaths;
+  4: map<SubscriptionKey, RawOperPath> rawPaths;
+}
+
 enum OperProtocol {
   BINARY = 1,
   SIMPLE_JSON = 2,
@@ -46,6 +57,7 @@ struct OperState {
   1: optional fbbinary contents;
   2: OperProtocol protocol;
   3: optional OperMetadata metadata;
+  4: bool isHeartbeat = false;
 }
 
 struct TaggedOperState {
@@ -83,6 +95,9 @@ struct OperSubRequest {
   1: OperPath path;
   2: OperProtocol protocol = OperProtocol.BINARY;
   3: fsdb_common.SubscriberId subscriberId;
+  // Forcefully subscribe even if there is already a subscriber with the same SubscriberId
+  4: bool forceSubscribe = false;
+  5: optional i64 heartbeatInterval;
 }
 
 struct OperSubInitResponse {}
@@ -92,6 +107,9 @@ struct OperSubRequestExtended {
   1: list<ExtendedOperPath> paths;
   2: OperProtocol protocol = OperProtocol.BINARY;
   3: fsdb_common.SubscriberId subscriberId;
+  // Forcefully subscribe even if there is already a subscriber with the same SubscriberId
+  4: bool forceSubscribe = false;
+  5: optional i64 heartbeatInterval;
 }
 
 struct OperSubPathUnit {
@@ -105,4 +123,46 @@ struct OperSubDeltaUnit {
 enum PubSubType {
   PATH = 0,
   DELTA = 1,
+  PATCH = 2,
+}
+
+struct PubRequest {
+  1: RawOperPath path;
+  2: fsdb_common.ClientId clientId;
+}
+
+typedef i32 SubscriptionKey
+
+struct SubRequest {
+  1: map<SubscriptionKey, RawOperPath> paths;
+  3: fsdb_common.ClientId clientId;
+  // Forcefully subscribe even if there is already a subscriber with the same SubscriberId
+  4: bool forceSubscribe = false;
+  5: optional i64 heartbeatInterval;
+}
+
+struct Patch {
+  1: list<string> basePath;
+  2: patch.PatchNode patch;
+  3: OperMetadata metadata;
+  4: OperProtocol protocol = OperProtocol.COMPACT;
+}
+
+union PublisherMessage {
+  1: Patch patch;
+  // TODO: heartbeat
+}
+
+struct SubscriberChunk {
+  // SubscriptionKey is specified by the client, it is an alias to the path
+  // For each path we have a list of patches because of the existence of wildcard
+  // paths. For non wildcard subs, there will always be only one patch per key
+  1: map<SubscriptionKey, list<Patch>> patchGroups;
+}
+
+struct Heartbeat {}
+
+union SubscriberMessage {
+  1: SubscriberChunk chunk;
+  2: Heartbeat heartbeat;
 }

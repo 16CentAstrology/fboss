@@ -12,7 +12,7 @@
 
 #include <folly/FBString.h>
 #include <folly/IPAddress.h>
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 #include "fboss/agent/AddressUtil.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
@@ -31,7 +31,7 @@ RouteForwardAction str2ForwardAction(const std::string& action);
  */
 template <typename AddrT>
 struct RoutePrefix {
-  RoutePrefix() {}
+  RoutePrefix() = default;
 
   RoutePrefix(AddrT addr, uint8_t u8) {
     auto& data = this->writableData();
@@ -78,7 +78,7 @@ struct RoutePrefix {
   bool operator!=(const RoutePrefix& p2) const {
     return !operator==(p2);
   }
-  typedef AddrT AddressT;
+  using AddressT = AddrT;
 
   inline AddrT network() const {
     auto ip = network::toIPAddress(*(this->data().prefix()));
@@ -186,8 +186,8 @@ struct is_fboss_key_object_type<Label> {
   static constexpr bool value = true;
 };
 
-typedef RoutePrefix<folly::IPAddressV4> RoutePrefixV4;
-typedef RoutePrefix<folly::IPAddressV6> RoutePrefixV6;
+using RoutePrefixV4 = RoutePrefix<folly::IPAddressV4>;
+using RoutePrefixV6 = RoutePrefix<folly::IPAddressV6>;
 using RouteKeyMpls = Label;
 
 void toAppend(const RoutePrefixV4& prefix, std::string* result);

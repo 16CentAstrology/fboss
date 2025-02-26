@@ -14,28 +14,8 @@
 #include "fboss/agent/state/SwitchState.h"
 
 #include "fboss/agent/state/NodeBase-defs.h"
-#include "folly/dynamic.h"
-#include "folly/json.h"
-
-namespace {
-constexpr auto kL2LearningMode = "l2LearningMode";
-constexpr auto kQcmEnable = "qcmEnable";
-constexpr auto kPtpTcEnable = "ptpTcEnable";
-constexpr auto kL2AgeTimerSeconds = "l2AgeTimerSeconds";
-constexpr auto kMaxRouteCounterIDs = "maxRouteCounterIDs";
-constexpr auto kBlockNeighbors = "blockNeighbors";
-constexpr auto kBlockNeighborVlanID = "blockNeighborVlanID";
-constexpr auto kBlockNeighborIP = "blockNeighborIP";
-constexpr auto kMacAddrsToBlock = "macAddrsToBlock";
-constexpr auto kMacAddrToBlockVlanID = "macAddrToBlockVlanID";
-constexpr auto kMacAddrToBlockAddr = "macAddrToBlockAddr";
-constexpr auto kSwitchType = "switchType";
-constexpr auto kSwitchId = "switchId";
-constexpr auto kExactMatchTableConfigs = "exactMatchTableConfigs";
-constexpr auto kExactMatchTableName = "name";
-constexpr auto kExactMatchTableDstPrefixLength = "dstPrefixLength";
-
-} // namespace
+#include "folly/json/dynamic.h"
+#include "folly/json/json.h"
 
 namespace facebook::fboss {
 
@@ -46,12 +26,67 @@ SwitchSettings* SwitchSettings::modify(std::shared_ptr<SwitchState>* state) {
   }
 
   SwitchState::modify(state);
+  auto newMultiSwitchSwitchSettings = (*state)->getSwitchSettings()->clone();
   auto newSwitchSettings = clone();
   auto* ptr = newSwitchSettings.get();
-  (*state)->resetSwitchSettings(std::move(newSwitchSettings));
-  return ptr;
+  for (auto& switchSettings : *newMultiSwitchSwitchSettings) {
+    if (switchSettings.second.get() == this) {
+      switchSettings.second = newSwitchSettings;
+      (*state)->resetSwitchSettings(std::move(newMultiSwitchSwitchSettings));
+      return ptr;
+    }
+  }
+  std::string entryJson;
+  apache::thrift::SimpleJSONSerializer::serialize(toThrift(), &entryJson);
+  throw FbossError(
+      "Cannot find SwitchSettings entry in MultiSwitchSwitchSettings ",
+      entryJson);
 }
 
-template class ThriftStructNode<SwitchSettings, state::SwitchSettingsFields>;
+std::unordered_set<SwitchID> SwitchSettings::getSwitchIds() const {
+  std::unordered_set<SwitchID> switchIds;
+  for (const auto& switchIdAndInfo : getSwitchIdToSwitchInfo()) {
+    switchIds.insert(SwitchID(switchIdAndInfo.first));
+  }
+  return switchIds;
+}
+
+std::optional<cfg::SwitchType> SwitchSettings::l3SwitchType() const {
+  std::set<cfg::SwitchType> l3SwitchTypes;
+  for (const auto& switchIdAndInfo : getSwitchIdToSwitchInfo()) {
+    switch (*switchIdAndInfo.second.switchType()) {
+      case cfg::SwitchType::NPU:
+      case cfg::SwitchType::VOQ:
+        l3SwitchTypes.insert(*switchIdAndInfo.second.switchType());
+        break;
+      case cfg::SwitchType::PHY:
+      case cfg::SwitchType::FABRIC:
+        break;
+    }
+  }
+  CHECK(l3SwitchTypes.size() <= 1)
+      << "Only one type of l3 switch type must be present";
+  if (!l3SwitchTypes.empty()) {
+    return *l3SwitchTypes.begin();
+  }
+  return std::nullopt;
+}
+
+std::unordered_set<SwitchID> SwitchSettings::getSwitchIdsOfType(
+    cfg::SwitchType type) const {
+  std::unordered_set<SwitchID> switchIds;
+  for (const auto& switchIdAndInfo : getSwitchIdToSwitchInfo()) {
+    if (switchIdAndInfo.second.switchType() == type) {
+      switchIds.insert(SwitchID(switchIdAndInfo.first));
+    }
+  }
+  return switchIds;
+}
+
+bool SwitchSettings::vlansSupported() const {
+  return !getSwitchIdsOfType(cfg::SwitchType::NPU).empty();
+}
+
+template struct ThriftStructNode<SwitchSettings, state::SwitchSettingsFields>;
 
 } // namespace facebook::fboss

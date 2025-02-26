@@ -12,22 +12,20 @@
 #include <fboss/agent/SwSwitch.h>
 #include <fboss/agent/test/AgentEnsemble.h>
 #include "fboss/agent/ApplyThriftConfig.h"
+#include "fboss/agent/DsfStateUpdaterUtil.h"
 #include "fboss/agent/Utils.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
-#include "fboss/agent/hw/test/HwSwitchEnsemble.h"
-#include "fboss/agent/hw/test/HwSwitchEnsembleFactory.h"
-#include "fboss/agent/hw/test/HwSwitchEnsembleRouteUpdateWrapper.h"
 #include "fboss/agent/hw/test/HwTestCoppUtils.h"
 #include "fboss/agent/hw/test/HwTestProdConfigUtils.h"
-#include "fboss/agent/hw/test/LoadBalancerUtils.h"
-#include "fboss/agent/hw/test/dataplane_tests/HwTestOlympicUtils.h"
 #include "fboss/agent/test/RouteDistributionGenerator.h"
 #include "fboss/agent/test/RouteScaleGenerators.h"
-#include "fboss/lib/FunctionCallTimeReporter.h"
-#include "fboss/lib/platforms/PlatformMode.h"
+#include "fboss/agent/test/utils/DsfConfigUtils.h"
+#include "fboss/agent/test/utils/FabricTestUtils.h"
+#include "fboss/agent/test/utils/VoqTestUtils.h"
 
-#include <folly/logging/xlog.h>
+#include "fboss/lib/FunctionCallTimeReporter.h"
+
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 
 #include <iostream>
@@ -39,67 +37,75 @@ using namespace facebook::fboss;
 namespace facebook::fboss::utility {
 
 std::optional<uint16_t> getUplinksCount(
-    const HwSwitch* hwSwitch,
+    PlatformType platformType,
     cfg::PortSpeed uplinkSpeed,
     cfg::PortSpeed downlinkSpeed) {
-  auto platformMode = hwSwitch->getPlatform()->getMode();
-  using ConfigType = std::tuple<PlatformMode, cfg::PortSpeed, cfg::PortSpeed>;
+  using ConfigType = std::tuple<PlatformType, cfg::PortSpeed, cfg::PortSpeed>;
   static const std::map<ConfigType, uint16_t> numUplinksMap = {
-      {{PlatformMode::WEDGE, cfg::PortSpeed::FORTYG, cfg::PortSpeed::XG}, 4},
-      {{PlatformMode::WEDGE100, cfg::PortSpeed::HUNDREDG, cfg::PortSpeed::XG},
+      {{PlatformType::PLATFORM_WEDGE,
+        cfg::PortSpeed::FORTYG,
+        cfg::PortSpeed::XG},
        4},
-      {{PlatformMode::WEDGE100,
+      {{PlatformType::PLATFORM_WEDGE100,
+        cfg::PortSpeed::HUNDREDG,
+        cfg::PortSpeed::XG},
+       4},
+      {{PlatformType::PLATFORM_WEDGE100,
         cfg::PortSpeed::HUNDREDG,
         cfg::PortSpeed::TWENTYFIVEG},
        4},
-      {{PlatformMode::WEDGE100,
+      {{PlatformType::PLATFORM_WEDGE100,
         cfg::PortSpeed::HUNDREDG,
         cfg::PortSpeed::FIFTYG},
        4},
-      {{PlatformMode::GALAXY_LC,
+      {{PlatformType::PLATFORM_GALAXY_LC,
         cfg::PortSpeed::HUNDREDG,
         cfg::PortSpeed::FIFTYG},
        16},
-      {{PlatformMode::GALAXY_FC,
+      {{PlatformType::PLATFORM_GALAXY_FC,
         cfg::PortSpeed::HUNDREDG,
         cfg::PortSpeed::FIFTYG},
        16},
-      {{PlatformMode::WEDGE400C, cfg::PortSpeed::HUNDREDG, cfg::PortSpeed::XG},
+      {{PlatformType::PLATFORM_WEDGE400C,
+        cfg::PortSpeed::HUNDREDG,
+        cfg::PortSpeed::XG},
        4},
-      {{PlatformMode::WEDGE400C,
+      {{PlatformType::PLATFORM_WEDGE400C,
         cfg::PortSpeed::HUNDREDG,
         cfg::PortSpeed::TWENTYFIVEG},
        4},
-      {{PlatformMode::WEDGE400C,
+      {{PlatformType::PLATFORM_WEDGE400C,
         cfg::PortSpeed::HUNDREDG,
         cfg::PortSpeed::FIFTYG},
        4},
-      {{PlatformMode::WEDGE400C,
+      {{PlatformType::PLATFORM_WEDGE400C,
         cfg::PortSpeed::HUNDREDG,
         cfg::PortSpeed::HUNDREDG},
        4},
-      {{PlatformMode::WEDGE400,
+      {{PlatformType::PLATFORM_WEDGE400,
         cfg::PortSpeed::HUNDREDG,
         cfg::PortSpeed::TWENTYFIVEG},
        4},
-      {{PlatformMode::WEDGE400,
+      {{PlatformType::PLATFORM_WEDGE400,
         cfg::PortSpeed::HUNDREDG,
         cfg::PortSpeed::FIFTYG},
        4},
-      {{PlatformMode::WEDGE400,
+      {{PlatformType::PLATFORM_WEDGE400,
         cfg::PortSpeed::HUNDREDG,
         cfg::PortSpeed::HUNDREDG},
        4},
-      {{PlatformMode::YAMP, cfg::PortSpeed::HUNDREDG, cfg::PortSpeed::HUNDREDG},
+      {{PlatformType::PLATFORM_YAMP,
+        cfg::PortSpeed::HUNDREDG,
+        cfg::PortSpeed::HUNDREDG},
        4},
-      {{PlatformMode::MINIPACK,
+      {{PlatformType::PLATFORM_MINIPACK,
         cfg::PortSpeed::HUNDREDG,
         cfg::PortSpeed::HUNDREDG},
        4},
   };
 
   auto iter = numUplinksMap.find(
-      std::make_tuple(platformMode, uplinkSpeed, downlinkSpeed));
+      std::make_tuple(platformType, uplinkSpeed, downlinkSpeed));
   if (iter == numUplinksMap.end()) {
     return std::nullopt;
   }
@@ -121,7 +127,11 @@ utility::RouteDistributionGenerator::ThriftRouteChunks getRoutes(
    * for wedge100, wedge100S and Galaxy. Hence, use FSW route scale for TH.
    */
   auto* swSwitch = ensemble->getSw();
-  auto asicType = ensemble->getHw()->getPlatform()->getAsic()->getAsicType();
+  // Before m-mpu agent test, use first Asic for initialization.
+  auto switchIds = swSwitch->getHwAsicTable()->getSwitchIDs();
+  CHECK_GE(switchIds.size(), 1);
+  auto asicType =
+      swSwitch->getHwAsicTable()->getHwAsic(*switchIds.cbegin())->getAsicType();
 
   if (asicType == cfg::AsicType::ASIC_TYPE_TRIDENT2) {
     return utility::RSWRouteScaleGenerator(swSwitch->getState())
@@ -131,8 +141,10 @@ utility::RouteDistributionGenerator::ThriftRouteChunks getRoutes(
       asicType == cfg::AsicType::ASIC_TYPE_TOMAHAWK4 ||
       asicType == cfg::AsicType::ASIC_TYPE_EBRO ||
       asicType == cfg::AsicType::ASIC_TYPE_GARONNE ||
-      asicType == cfg::AsicType::ASIC_TYPE_INDUS ||
-      asicType == cfg::AsicType::ASIC_TYPE_BEAS) {
+      asicType == cfg::AsicType::ASIC_TYPE_JERICHO2 ||
+      asicType == cfg::AsicType::ASIC_TYPE_JERICHO3 ||
+      asicType == cfg::AsicType::ASIC_TYPE_RAMON ||
+      asicType == cfg::AsicType::ASIC_TYPE_TOMAHAWK5) {
     return utility::HgridUuRouteScaleGenerator(swSwitch->getState())
         .getThriftRoutes();
   } else if (asicType == cfg::AsicType::ASIC_TYPE_TOMAHAWK) {
@@ -143,18 +155,29 @@ utility::RouteDistributionGenerator::ThriftRouteChunks getRoutes(
   }
 }
 
-void initandExitBenchmarkHelper(
+void initAndExitBenchmarkHelper(
     cfg::PortSpeed uplinkSpeed,
-    cfg::PortSpeed downlinkSpeed) {
+    cfg::PortSpeed downlinkSpeed,
+    cfg::SwitchType switchType) {
   folly::BenchmarkSuspender suspender;
   std::unique_ptr<AgentEnsemble> ensemble{};
 
-  AgentEnsembleSwitchConfigFn initialConfig =
-      [uplinkSpeed, downlinkSpeed](
-          HwSwitch* hwSwitch, const std::vector<PortID>& ports) {
-        auto numUplinks = getUplinksCount(hwSwitch, uplinkSpeed, downlinkSpeed);
+  AgentEnsembleSwitchConfigFn npuInitialConfig =
+      [uplinkSpeed, downlinkSpeed](const AgentEnsemble& ensemble) {
+        auto ports = ensemble.masterLogicalPortIds();
+        auto numUplinks = getUplinksCount(
+            ensemble.getSw()->getPlatformType(), uplinkSpeed, downlinkSpeed);
+        // Before m-mpu agent test, use first Asic for initialization.
+        auto switchIds = ensemble.getSw()->getHwAsicTable()->getSwitchIDs();
+        CHECK_GE(switchIds.size(), 1);
+        auto asic =
+            ensemble.getSw()->getHwAsicTable()->getHwAsic(*switchIds.cbegin());
         if (!numUplinks) {
-          return utility::oneL3IntfNPortConfig(hwSwitch, ports);
+          return utility::oneL3IntfNPortConfig(
+              ensemble.getSw()->getPlatformMapping(),
+              asic,
+              ensemble.masterLogicalPortIds(),
+              ensemble.getSw()->getPlatformSupportsAddRemovePort());
         }
         /*
          * Based on the uplink/downlink speed, use the ConfigFactory to create
@@ -163,13 +186,49 @@ void initandExitBenchmarkHelper(
          */
 
         auto config = utility::createUplinkDownlinkConfig(
-            hwSwitch,
-            ports,
+            ensemble.getSw()->getPlatformMapping(),
+            asic,
+            ensemble.getSw()->getPlatformType(),
+            ensemble.getSw()->getPlatformSupportsAddRemovePort(),
+            ensemble.masterLogicalPortIds(),
             numUplinks.value(),
             uplinkSpeed,
             downlinkSpeed,
-            hwSwitch->getPlatform()->getAsic()->desiredLoopbackMode());
-        utility::addProdFeaturesToConfig(config, hwSwitch);
+            asic->desiredLoopbackModes());
+        utility::addProdFeaturesToConfig(config, asic, ensemble.isSai());
+        return config;
+      };
+
+  AgentEnsembleSwitchConfigFn voqInitialConfig =
+      [](const AgentEnsemble& ensemble) {
+        FLAGS_hide_fabric_ports = false;
+        // Diable dsf subcribe for single-box test
+        FLAGS_dsf_subscribe = false;
+        auto config = utility::onePortPerInterfaceConfig(
+            ensemble.getSw(),
+            ensemble.masterLogicalPortIds(),
+            true, /*interfaceHasSubnet*/
+            true, /*setInterfaceMac*/
+            utility::kBaseVlanId,
+            true /*enable fabric ports*/);
+        utility::populatePortExpectedNeighborsToSelf(
+            ensemble.masterLogicalPortIds(), config);
+        config.dsfNodes() = *utility::addRemoteIntfNodeCfg(*config.dsfNodes());
+        return config;
+      };
+
+  AgentEnsembleSwitchConfigFn fabricInitialConfig =
+      [](const AgentEnsemble& ensemble) {
+        FLAGS_hide_fabric_ports = false;
+        auto config = utility::onePortPerInterfaceConfig(
+            ensemble.getSw(),
+            ensemble.masterLogicalPortIds(),
+            false /*interfaceHasSubnet*/,
+            false /*setInterfaceMac*/,
+            utility::kBaseVlanId,
+            true /*enable fabric ports*/);
+        utility::populatePortExpectedNeighborsToSelf(
+            ensemble.masterLogicalPortIds(), config);
         return config;
       };
 
@@ -187,12 +246,59 @@ void initandExitBenchmarkHelper(
      * disable when setting up for warmboot
      */
     ScopedCallTimer timeIt;
-    ensemble = createAgentEnsemble(initialConfig);
+    switch (switchType) {
+      case cfg::SwitchType::VOQ:
+        ensemble = createAgentEnsemble(
+            voqInitialConfig, false /*disableLinkStateToggler*/);
+        if (ensemble->getSw()->getBootType() == BootType::COLD_BOOT) {
+          auto updateDsfStateFn =
+              [&ensemble](const std::shared_ptr<SwitchState>& in) {
+                std::map<SwitchID, std::shared_ptr<SystemPortMap>>
+                    switchId2SystemPorts;
+                std::map<SwitchID, std::shared_ptr<InterfaceMap>> switchId2Rifs;
+                utility::populateRemoteIntfAndSysPorts(
+                    switchId2SystemPorts,
+                    switchId2Rifs,
+                    ensemble->getSw()->getConfig(),
+                    ensemble->getSw()
+                        ->getHwAsicTable()
+                        ->isFeatureSupportedOnAllAsic(
+                            HwAsic::Feature::RESERVED_ENCAP_INDEX_RANGE));
+                return DsfStateUpdaterUtil::getUpdatedState(
+                    in,
+                    ensemble->getSw()->getScopeResolver(),
+                    ensemble->getSw()->getRib(),
+                    switchId2SystemPorts,
+                    switchId2Rifs);
+              };
+          ensemble->getSw()->getRib()->updateStateInRibThread(
+              [&ensemble, updateDsfStateFn]() {
+                ensemble->getSw()->updateStateWithHwFailureProtection(
+                    folly::sformat("Update state for node: {}", 0),
+                    updateDsfStateFn);
+              });
+        }
+        break;
+      case cfg::SwitchType::NPU:
+        ensemble = createAgentEnsemble(
+            npuInitialConfig, false /*disableLinkStateToggler*/);
+        break;
+      case cfg::SwitchType::FABRIC:
+        ensemble = createAgentEnsemble(
+            fabricInitialConfig, false /*disableLinkStateToggler*/);
+        break;
+      default:
+        throw FbossError("Unsupported switch type");
+    }
   }
   suspender.rehire();
-  auto routeChunks = getRoutes(ensemble.get());
-  auto updater = ensemble->getSw()->getRouteUpdater();
-  ensemble->programRoutes(RouterID(0), ClientID::BGPD, routeChunks);
+  // Fabric switch does not support route programming
+  if (ensemble->getBootType() == BootType::COLD_BOOT &&
+      switchType != cfg::SwitchType::FABRIC) {
+    auto routeChunks = getRoutes(ensemble.get());
+    auto updater = ensemble->getSw()->getRouteUpdater();
+    ensemble->programRoutes(RouterID(0), ClientID::BGPD, routeChunks);
+  }
   if (FLAGS_setup_for_warmboot) {
     ScopedCallTimer timeIt;
     // Static such that the object destructor runs as late as possible. In

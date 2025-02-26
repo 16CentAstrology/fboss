@@ -11,6 +11,7 @@
 #include "fboss/agent/hw/test/ConfigFactory.h"
 #include "fboss/agent/hw/test/LoadBalancerUtils.h"
 #include "fboss/agent/state/Interface.h"
+#include "fboss/agent/state/StateUtils.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/state/Vlan.h"
 #include "fboss/agent/test/MultiNodeTest.h"
@@ -92,6 +93,11 @@ class MultiNodeLoadBalancerTest : public MultiNodeTest {
     return getNeighbors<folly::IPAddressV4>();
   }
   void verifyReachability() const {
+    // In a cold boot ports can flap initially. Wait for ports to
+    // stabilize state
+    if (platform()->getHwSwitch()->getBootType() != BootType::WARM_BOOT) {
+      sleep(60);
+    }
     for (auto dstIp : getNeighbors()) {
       std::string pingCmd = "ping -c 5 ";
       std::string resultStr;
@@ -104,11 +110,12 @@ class MultiNodeLoadBalancerTest : public MultiNodeTest {
     auto config = utility::onePortPerInterfaceConfig(
         platform()->getHwSwitch(),
         testPorts(),
-        cfg::PortLoopbackMode::NONE,
+        utility::kDefaultLoopbackMap(),
         true /*interfaceHasSubnet*/,
         false /*setInterfaceMac*/);
     config.loadBalancers()->push_back(
-        facebook::fboss::utility::getEcmpFullHashConfig(sw()->getPlatform()));
+        facebook::fboss::utility::getEcmpFullHashConfig(
+            {platform()->getAsic()}));
     return config;
   }
 };
@@ -116,11 +123,16 @@ class MultiNodeLoadBalancerTest : public MultiNodeTest {
 TEST_F(MultiNodeLoadBalancerTest, verifyFullHashLoadBalance) {
   auto verify = [this]() {
     auto state = sw()->getState();
-    auto vlan = state->getVlans()->cbegin()->second->getID();
+    auto vlan =
+        utility::getFirstMap(state->getVlans())->cbegin()->second->getID();
     auto localMac = state->getInterfaces()->getInterfaceInVlan(vlan)->getMac();
     for (auto isV6 : {true, false}) {
       facebook::fboss::utility::pumpTraffic(
-          isV6, sw()->getHw(), localMac, vlan);
+          isV6,
+          utility::getAllocatePktFn(sw()),
+          utility::getSendPktFunc(sw()),
+          localMac,
+          vlan);
     }
     // Let all packets get through
     sleep(5);

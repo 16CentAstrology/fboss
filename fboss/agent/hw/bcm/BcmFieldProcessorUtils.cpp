@@ -158,6 +158,16 @@ bool isMirrorActionSame(
   return param0 == 0 && param1 == mirrorHandle;
 }
 
+bool isFlowletActionStateSame(
+    const std::optional<MatchAction>& swAction,
+    const std::string& aclMsg) {
+  if (!swAction || !swAction.value().getFlowletAction()) {
+    XLOG(ERR) << aclMsg << " has flowletValue action in h/w but not in s/w";
+    return false;
+  }
+  return true;
+}
+
 bool isActionStateSame(
     const BcmSwitch* hw,
     int unit,
@@ -166,14 +176,15 @@ bool isActionStateSame(
     const std::string& aclMsg,
     const BcmAclActionParameters& data) {
   // first we need to get all actions of current acl entry
-  std::array<bcm_field_action_t, 7> supportedActions = {
+  std::array<bcm_field_action_t, 8> supportedActions = {
       bcmFieldActionDrop,
       bcmFieldActionCosQNew,
       bcmFieldActionCosQCpuNew,
       bcmFieldActionDscpNew,
       bcmFieldActionMirrorIngress,
       bcmFieldActionMirrorEgress,
-      bcmFieldActionL3Switch};
+      bcmFieldActionL3Switch,
+      bcmFieldActionDynamicEcmpEnable};
   boost::container::flat_map<bcm_field_action_t, std::pair<uint32_t, uint32_t>>
       bcmActions;
   for (auto action : supportedActions) {
@@ -203,6 +214,9 @@ bool isActionStateSame(
       expectedAC += 1;
     }
     if (acl->getAclAction()->cref<switch_state_tags::redirectToNextHop>()) {
+      expectedAC += 1;
+    }
+    if (acl->getAclAction()->cref<switch_state_tags::flowletAction>()) {
       expectedAC += 1;
     }
   }
@@ -266,6 +280,9 @@ bool isActionStateSame(
       case bcmFieldActionL3Switch:
         isSame = isRedirectToNextHopStateSame(hw, param0, aclAction, aclMsg);
         break;
+      case bcmFieldActionDynamicEcmpEnable:
+        isSame = isFlowletActionStateSame(aclAction, aclMsg);
+        break;
       default:
         throw FbossError("Unknown action=", action->first);
     }
@@ -297,16 +314,94 @@ void clearFPGroup(int unit, bcm_field_group_t gid) {
   bcmCheckError(rv, "Failed to destroy group: ", gid);
 }
 
+bcm_field_hintid_t compressFpQualifier(
+    int unit,
+    bcm_field_qualify_t qualifier,
+    const int start,
+    const int end) {
+  bcm_field_hintid_t hint_id;
+  auto rv = bcm_field_hints_create(unit, &hint_id);
+  bcmCheckError(rv, "Failed to create hints for compressing fp qualifier");
+
+  bcm_field_hint_t hint;
+  bcm_field_hint_t_init(&hint);
+  hint.hint_type = bcmFieldHintTypeExtraction;
+  hint.qual = qualifier;
+  hint.start_bit = start;
+  hint.end_bit = end;
+  rv = bcm_field_hints_add(unit, hint_id, &hint);
+  bcmCheckError(rv, "Failed to add hints id: ", (int)hint_id);
+  return hint_id;
+}
+
+std::set<bcm_udf_id_t> getUdfQsetIds(int unit, bcm_field_group_t gid) {
+  std::set<bcm_udf_id_t> udfIds;
+  int udfs[BCM_FIELD_USER_NUM_UDFS];
+  int count = 0;
+
+  const auto& qsetInHw = getGroupQset(unit, gid);
+  bcm_field_qset_id_multi_get(
+      unit,
+      qsetInHw,
+      bcmFieldQualifyUdf,
+      BCM_FIELD_USER_NUM_UDFS,
+      udfs,
+      &count);
+
+  for (int index = 0; index < count; ++index) {
+    udfIds.insert(udfs[index]);
+  }
+  return udfIds;
+}
+
+void updateUdfQset(
+    int unit,
+    bcm_field_qset_t& qset,
+    const std::set<bcm_udf_id_t>& udfIds) {
+  // update the qset with the multiset  for udfIds
+  std::vector<int> v(udfIds.begin(), udfIds.end());
+  std::string udfIdString;
+  std::for_each(v.begin(), v.end(), [&udfIdString](const auto& udfId) {
+    udfIdString.append(std::to_string(udfId)).append(",");
+  });
+
+  int rv = bcm_field_qset_id_multi_set(
+      unit, bcmFieldQualifyUdf, v.size(), v.data(), &qset);
+  bcmCheckError(
+      rv, "bcm_field_qset_id_multi_set failed for bcmGroupId", udfIdString);
+  XLOG(INFO) << "Update udf id in the qset: " << udfIdString;
+}
+
 void createFPGroup(
     int unit,
     bcm_field_qset_t qset,
     bcm_field_group_t gid,
     int g_pri,
-    bool onHSDK) {
+    bool onHSDK,
+    bool enableQsetCompression) {
   int rv;
-  if (onHSDK) {
+  if (enableQsetCompression) {
+    /*
+     * We want to deprecate bcm_field_group_create_id eventually
+     * but do it in phases. First enable for udf_ifp_acls and later
+     */
     bcm_field_group_config_t config;
     bcm_field_group_config_t_init(&config);
+    config.flags = BCM_FIELD_GROUP_CREATE_WITH_ID;
+    config.qset = qset;
+    BCM_FIELD_ASET_INIT(config.aset);
+    config.priority = g_pri;
+    config.group = gid;
+
+    /* generate hint to compress ipv6 fields */
+    config.hintid = compressFpQualifier(unit, bcmFieldQualifySrcIp6, 0, 64);
+    rv = bcm_field_group_config_create(unit, &config);
+    XLOG(DBG2) << "Generate hint id for compressing srcIp6 qualifier :"
+               << (int)config.hintid;
+  } else if (onHSDK) {
+    bcm_field_group_config_t config;
+    bcm_field_group_config_t_init(&config);
+
     config.flags = BCM_FIELD_GROUP_CREATE_WITH_ID;
     config.qset = qset;
     BCM_FIELD_ASET_INIT(config.aset);
@@ -377,6 +472,17 @@ bool qsetsEqual(const bcm_field_qset_t& lhs, const bcm_field_qset_t& rhs) {
   return true;
 }
 
+bool qsetsMultiSetEqual(
+    const bcm_field_qset_t& lhs,
+    const bcm_field_qset_t& rhs) {
+  for (auto qual = 0; qual < BCM_FIELD_USER_NUM_UDFS; ++qual) {
+    if (lhs.udf_map[qual] != rhs.udf_map[qual]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool fpGroupExists(int unit, bcm_field_group_t gid) {
   bcm_field_qset_t qset;
   BCM_FIELD_QSET_INIT(qset);
@@ -411,10 +517,14 @@ bool needsExtraFPQsetQualifiers(cfg::AsicType asicType) {
       return false;
     case cfg::AsicType::ASIC_TYPE_EBRO:
     case cfg::AsicType::ASIC_TYPE_GARONNE:
+    case cfg::AsicType::ASIC_TYPE_YUBA:
+    case cfg::AsicType::ASIC_TYPE_CHENAB:
     case cfg::AsicType::ASIC_TYPE_ELBERT_8DD:
     case cfg::AsicType::ASIC_TYPE_SANDIA_PHY:
-    case cfg::AsicType::ASIC_TYPE_INDUS:
-    case cfg::AsicType::ASIC_TYPE_BEAS:
+    case cfg::AsicType::ASIC_TYPE_JERICHO2:
+    case cfg::AsicType::ASIC_TYPE_JERICHO3:
+    case cfg::AsicType::ASIC_TYPE_RAMON:
+    case cfg::AsicType::ASIC_TYPE_RAMON3:
       throw FbossError("Unsupported ASIC type");
   }
   return true;

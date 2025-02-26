@@ -36,6 +36,7 @@ using SaiIngressPriorityGroup =
 
 struct SaiBufferPoolHandle {
   std::shared_ptr<SaiBufferPool> bufferPool;
+  std::string bufferPoolName;
 };
 
 struct SaiIngressPriorityGroupHandle {
@@ -61,29 +62,43 @@ class SaiBufferManager {
   std::shared_ptr<SaiBufferProfile> getOrCreateIngressProfile(
       const state::PortPgFields& portPgConfig);
 
-  void setupBufferPool(
-      const std::optional<state::BufferPoolFields> ingressPgCfg = std::nullopt);
+  void setupBufferPool(const PortQueue& queue);
+  void setupBufferPool(const state::PortPgFields& portPgConfig);
 
   void updateStats();
   void updateIngressBufferPoolStats();
   void updateEgressBufferPoolStats();
   void updateIngressPriorityGroupStats(
       const PortID& portId,
-      const std::string& portName,
+      HwPortStats& hwPortStats,
       bool updateWatermarks);
-  void createIngressBufferPool(const std::shared_ptr<Port> port);
+  void updateIngressPriorityGroupWatermarkStats(
+      const std::shared_ptr<SaiIngressPriorityGroup>& ingressPriorityGroup,
+      const IngressPriorityGroupID& pgId,
+      const HwPortStats& hwPortStats);
+  void updateIngressPriorityGroupNonWatermarkStats(
+      const std::shared_ptr<SaiIngressPriorityGroup>& ingressPriorityGroup,
+      const IngressPriorityGroupID& pgId,
+      HwPortStats& hwPortStats);
   uint64_t getDeviceWatermarkBytes() const {
     return deviceWatermarkBytes_;
   }
+  const std::map<std::string, uint64_t>& getGlobalHeadroomWatermarkBytes()
+      const {
+    return globalHeadroomWatermarkBytes_;
+  }
+  const std::map<std::string, uint64_t>& getGlobalSharedWatermarkBytes() const {
+    return globalSharedWatermarkBytes_;
+  }
   static uint64_t getMaxEgressPoolBytes(const SaiPlatform* platform);
   void setIngressPriorityGroupBufferProfile(
-      IngressPriorityGroupSaiId pdId,
+      const std::shared_ptr<SaiIngressPriorityGroup> ingressPriorityGroup,
       std::shared_ptr<SaiBufferProfile> bufferProfile);
   SaiIngressPriorityGroupHandles loadIngressPriorityGroups(
       const std::vector<IngressPriorityGroupSaiId>& ingressPriorityGroupSaiIds);
+  SaiBufferPoolHandle* getIngressBufferPoolHandle() const;
 
  private:
-  void publishDeviceWatermark(uint64_t peakBytes) const;
   void publishGlobalWatermarks(
       const uint64_t& globalHeadroomBytes,
       const uint64_t& globalSharedBytes) const;
@@ -100,21 +115,35 @@ class SaiBufferManager {
       std::shared_ptr<SaiBufferPoolHandle> bufferPoolHandle,
       const PortPgConfig* portPgCfg);
   void setupEgressBufferPool();
-  void setupIngressBufferPool(const state::BufferPoolFields& bufferPoolCfg);
+  void setupEgressBufferPool(
+      const std::optional<BufferPoolFields>& bufferPoolCfg);
+  void setupIngressBufferPool(
+      const std::string& bufferPoolName,
+      const BufferPoolFields& bufferPoolCfg);
   void setupIngressEgressBufferPool(
-      const std::optional<state::BufferPoolFields> ingressPgCfg);
-  SaiBufferPoolHandle* getEgressBufferPoolHandle() const;
-  SaiBufferPoolHandle* getIngressBufferPoolHandle() const;
+      const std::optional<std::string>& bufferPoolName = std::nullopt,
+      const std::optional<BufferPoolFields>& ingressPgCfg = std::nullopt);
+  void createOrUpdateIngressEgressBufferPool(
+      uint64_t poolSize,
+      std::optional<int32_t> newXoffSize);
+  SaiBufferPoolHandle* getEgressBufferPoolHandle(const PortQueue& queue) const;
+  const std::vector<sai_stat_id_t>&
+  supportedIngressPriorityGroupWatermarkStats() const;
+  const std::vector<sai_stat_id_t>&
+  supportedIngressPriorityGroupNonWatermarkStats() const;
 
   SaiStore* saiStore_;
   SaiManagerTable* managerTable_;
   const SaiPlatform* platform_;
-  std::unique_ptr<SaiBufferPoolHandle> egressBufferPoolHandle_;
+  std::map<std::string, std::unique_ptr<SaiBufferPoolHandle>>
+      egressBufferPoolHandle_;
   std::unique_ptr<SaiBufferPoolHandle> ingressBufferPoolHandle_;
   std::unique_ptr<SaiBufferPoolHandle> ingressEgressBufferPoolHandle_;
   UnorderedRefMap<SaiBufferProfileTraits::AdapterHostKey, SaiBufferProfile>
       bufferProfiles_;
   uint64_t deviceWatermarkBytes_{0};
+  std::map<std::string, uint64_t> globalHeadroomWatermarkBytes_{};
+  std::map<std::string, uint64_t> globalSharedWatermarkBytes_{};
 };
 
 } // namespace facebook::fboss

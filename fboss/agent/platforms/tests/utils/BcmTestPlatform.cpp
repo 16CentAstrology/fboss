@@ -21,6 +21,7 @@
 #include <folly/logging/xlog.h>
 
 #include "fboss/agent/platforms/wedge/utils/BcmLedUtils.h"
+#include "fboss/lib/fpga/facebook/fuji/FujiSystemContainer.h"
 
 using folly::MacAddress;
 using std::string;
@@ -38,6 +39,17 @@ BcmTestPlatform::BcmTestPlatform(
       utility::getSubsidiaryPortIDs(getPlatformPorts());
   CHECK(portsByMasterPort.size() > 1);
   for (auto itPort : portsByMasterPort) {
+    // FLAGS_force_5pim_fuji is set only for H/W tests for 5PIM chassis.
+    // Skip the ports from PIMs 4,5,6 not present in the 5PIM chassis.
+    if (FLAGS_force_5pim_fuji) {
+      auto pim = getPlatformMapping()->getPimID(itPort.first);
+      auto fivePimSlots = FujiSystemContainer::get_all_5_pims();
+      if (std::find(fivePimSlots.begin(), fivePimSlots.end(), pim) ==
+          fivePimSlots.end()) {
+        continue;
+      }
+    }
+
     masterLogicalPortIds_.push_back(itPort.first);
     logicalPortIds_.insert(
         logicalPortIds_.end(), itPort.second.begin(), itPort.second.end());
@@ -51,25 +63,16 @@ HwSwitch* BcmTestPlatform::getHwSwitch() const {
 }
 
 void BcmTestPlatform::onUnitCreate(int unit) {
-  warmBootHelper_ = std::make_unique<BcmWarmBootHelper>(unit, getWarmBootDir());
+  warmBootHelper_ = std::make_unique<BcmWarmBootHelper>(
+      unit, getDirectoryUtil()->getWarmBootDir());
   dumpHwConfig();
 }
 
-void BcmTestPlatform::onHwInitialized(SwSwitch* /*sw*/) {}
-
-void BcmTestPlatform::onInitialConfigApplied(SwSwitch* /*sw*/) {}
-
-void BcmTestPlatform::stop() {}
+void BcmTestPlatform::onHwInitialized(HwSwitchCallback* /*sw*/) {}
 
 void BcmTestPlatform::initImpl(uint32_t hwFeaturesDesired) {
   initPorts();
   bcmSwitch_ = std::make_unique<BcmSwitch>(this, hwFeaturesDesired);
-}
-
-std::unique_ptr<ThriftHandler> BcmTestPlatform::createHandler(
-    SwSwitch* /*sw*/) {
-  XLOG(FATAL) << "unexpected call to BcmTestPlatform::createHandler()";
-  return nullptr;
 }
 
 void BcmTestPlatform::onUnitAttach(int /*unit*/) {
@@ -127,14 +130,7 @@ void BcmTestPlatform::initLEDs(
 const std::optional<phy::PortProfileConfig>
 BcmTestPlatform::getPortProfileConfig(
     PlatformPortProfileConfigMatcher profileMatcher) const {
-  auto originalConfig = Platform::getPortProfileConfig(profileMatcher);
-  if (!overridePortInterPacketGapBits_ || !originalConfig) {
-    return originalConfig;
-  }
-  // change the return config to use override ipg
-  phy::PortProfileConfig newConfig = *originalConfig;
-  newConfig.iphy()->interPacketGapBits() = *overridePortInterPacketGapBits_;
-  return newConfig;
+  return Platform::getPortProfileConfig(profileMatcher);
 }
 
 } // namespace facebook::fboss

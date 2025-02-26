@@ -3,6 +3,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import codecs
 import collections
 import email
@@ -93,16 +95,17 @@ endif()
 # something like the following pip3 command:
 #   pip3 --isolated install --no-cache-dir --no-index --system \
 #       --target <install_dir> <wheel_file>
-# pyre-fixme[13] fields initialized in _build
 class PythonWheelBuilder(BuilderBase):
     """This Builder can take Python wheel archives and install them as python libraries
     that can be used by add_fb_python_library()/add_fb_python_executable() CMake rules.
     """
 
+    # pyre-fixme[13]: Attribute `dist_info_dir` is never initialized.
     dist_info_dir: str
+    # pyre-fixme[13]: Attribute `template_format_dict` is never initialized.
     template_format_dict: Dict[str, str]
 
-    def _build(self, install_dirs: List[str], reconfigure: bool) -> None:
+    def _build(self, reconfigure: bool) -> None:
         # When we are invoked, self.src_dir contains the unpacked wheel contents.
         #
         # Since a wheel file is just a zip file, the Fetcher code recognizes it as such
@@ -169,10 +172,12 @@ class PythonWheelBuilder(BuilderBase):
         self._write_cmake_config_template()
 
         # Run the build
-        self._run_cmake_build(install_dirs, reconfigure)
+        self._run_cmake_build(reconfigure)
 
-    def _run_cmake_build(self, install_dirs: List[str], reconfigure: bool) -> None:
+    def _run_cmake_build(self, reconfigure: bool) -> None:
         cmake_builder = CMakeBuilder(
+            loader=self.loader,
+            dep_manifests=self.dep_manifests,
             build_opts=self.build_opts,
             ctx=self.ctx,
             manifest=self.manifest,
@@ -181,11 +186,10 @@ class PythonWheelBuilder(BuilderBase):
             src_dir=self.build_dir,
             build_dir=self.build_dir,
             inst_dir=self.inst_dir,
-            loader=None,
             defines={},
             final_install_prefix=None,
         )
-        cmake_builder.build(install_dirs=install_dirs, reconfigure=reconfigure)
+        cmake_builder.build(reconfigure=reconfigure)
 
     def _write_cmakelists(self, path_mapping: Dict[str, str], dependencies) -> None:
         cmake_path = os.path.join(self.build_dir, "CMakeLists.txt")

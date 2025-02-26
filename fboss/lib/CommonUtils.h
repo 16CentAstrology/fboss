@@ -4,7 +4,7 @@
 
 #include <optional>
 
-#include <folly/experimental/exception_tracer/ExceptionTracer.h>
+#include <folly/debugging/exception_tracer/ExceptionTracer.h>
 #include <folly/logging/xlog.h>
 
 #include <fb303/ThreadCachedServiceData.h>
@@ -45,9 +45,10 @@ void checkWithRetry(
   }
 }
 
-inline int64_t getCumulativeValue(
-    const fb303::ThreadCachedServiceData::TLTimeseries& stat) {
-  auto counterVal = fb303::fbData->getCounterIfExists(stat.name() + ".sum");
+template <typename StatT>
+inline int64_t getCumulativeValue(const StatT& stat, bool hasSumSuffix = true) {
+  auto counterVal = fb303::fbData->getCounterIfExists(
+      hasSumSuffix ? stat.name() + ".sum" : stat.name());
   return counterVal ? *counterVal : 0;
 }
 
@@ -94,7 +95,8 @@ inline int64_t getCumulativeValue(
         std::this_thread::sleep_for(sleepTime);                         \
       }                                                                 \
       /* Only switch to hard test on last retry */                      \
-      bool WITH_RETRIES_softTest = WITH_RETRIES_tries != maxRetries;    \
+      [[maybe_unused]] bool WITH_RETRIES_softTest =                     \
+          WITH_RETRIES_tries != maxRetries;                             \
       bool WITH_RETRIES_pass = true;                                    \
       /* _ASSERT_EVENTUALLY and _EXPECT_EVENTUALLY will read            \
        * WITH_RETRIES_softTest to decide how to assert.                 \
@@ -160,6 +162,13 @@ inline int64_t getCumulativeValue(
 #define ASSERT_EVENTUALLY_LT(expr1, expr2) \
   _ASSERT_EVENTUALLY(expr1 < expr2, ASSERT_LT(expr1, expr2))
 
+#define CO_ASSERT_EVENTUALLY_TRUE(expr) \
+  _ASSERT_EVENTUALLY((bool)(expr), CO_ASSERT_TRUE(expr))
+#define CO_ASSERT_EVENTUALLY_FALSE(expr) \
+  _ASSERT_EVENTUALLY(!expr, CO_ASSERT_FALSE(expr))
+#define CO_ASSERT_EVENTUALLY_EQ(expr1, expr2) \
+  _ASSERT_EVENTUALLY(expr1 == expr2, CO_ASSERT_EQ(expr1, expr2))
+
 #define EXPECT_EVENTUALLY_TRUE(expr) \
   _EXPECT_EVENTUALLY((bool)(expr), EXPECT_TRUE(expr))
 #define EXPECT_EVENTUALLY_FALSE(expr) \
@@ -197,5 +206,14 @@ void runWithExceptionTrace(Fn fn) {
   }
 }
 #endif
+
+void runAndRemoveScript(
+    const std::string& script,
+    const std::vector<std::string>& args = {});
+void runShellCommand(const std::string& command, bool throwOnError = true);
+void runCommand(const std::vector<std::string>& argv, bool throwOnError = true);
+void runCommandWithRetries(
+    const std::vector<std::string>& argv,
+    const std::chrono::milliseconds& ms = std::chrono::milliseconds(500));
 
 } // namespace facebook::fboss

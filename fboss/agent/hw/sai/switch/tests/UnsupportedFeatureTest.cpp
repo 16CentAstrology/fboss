@@ -9,9 +9,9 @@
  */
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/hw/sai/switch/tests/ManagerTestBase.h"
-#include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SwitchSettings.h"
 #include "fboss/agent/state/SwitchState.h"
+#include "fboss/agent/test/TestUtils.h"
 
 #include "fboss/agent/types.h"
 
@@ -21,18 +21,18 @@ using namespace facebook::fboss;
 
 TEST_F(ManagerTestBase, checkQcmSupport) {
   auto newState = std::make_shared<SwitchState>();
-  auto newSwitchSettings = newState->getSwitchSettings()->clone();
-  newSwitchSettings->setQcmEnable(true);
-  newState->resetSwitchSettings(newSwitchSettings);
+  addSwitchSettingsToState(newState);
+  auto switchSettings = utility::getFirstNodeIf(newState->getSwitchSettings());
+  switchSettings->setQcmEnable(true);
   EXPECT_THROW(applyNewState(newState), FbossError);
 }
 
 TEST_F(ManagerTestBase, checkInvalidL2LearningModeTransition) {
   saiPlatform->getHwSwitch()->switchRunStateChanged(SwitchRunState::CONFIGURED);
   auto newState = std::make_shared<SwitchState>();
-  auto newSwitchSettings = newState->getSwitchSettings()->clone();
-  newSwitchSettings->setL2LearningMode(cfg::L2LearningMode::SOFTWARE);
-  newState->resetSwitchSettings(newSwitchSettings);
+  addSwitchSettingsToState(newState);
+  auto switchSettings = utility::getFirstNodeIf(newState->getSwitchSettings());
+  switchSettings->setL2LearningMode(cfg::L2LearningMode::SOFTWARE);
   EXPECT_THROW(applyNewState(newState), FbossError);
 }
 
@@ -41,7 +41,8 @@ TEST_F(ManagerTestBase, checkTeFlowSupport) {
   auto newFlowTable = newState->getTeFlowTable();
   TeFlow flow;
   flow.srcPort() = 42;
-  newFlowTable->addNode(std::make_shared<TeFlowEntry>(flow));
+  auto entry = std::make_shared<TeFlowEntry>(flow);
+  newFlowTable->addNode(entry, scopeResolver().scope(entry));
   newState->resetTeFlowTable(newFlowTable);
   EXPECT_THROW(applyNewState(newState), FbossError);
 }

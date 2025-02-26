@@ -3,10 +3,10 @@
 #include "fboss/cli/fboss2/utils/clients/BmcClient.h"
 #include "common/http_client/CurlClient.h"
 #include "fboss/cli/fboss2/CmdGlobalOptions.h"
-#include "folly/dynamic.h"
+#include "folly/json/dynamic.h"
 
 #include <folly/String.h>
-#include <folly/json.h>
+#include <folly/json/json.h>
 
 namespace facebook::fboss {
 
@@ -36,7 +36,7 @@ folly::dynamic BmcClient::fetchRaw(const std::string& endpoint) {
     client.allowBadCertificate(true);
     auto result = client.fetchUrl(buildUrl(endpoint));
     return folly::parseJson(result->getString());
-  } catch (http_client::ErrorResponseException& ex) {
+  } catch (http_client::ErrorResponseException&) {
     return folly::dynamic();
   }
 }

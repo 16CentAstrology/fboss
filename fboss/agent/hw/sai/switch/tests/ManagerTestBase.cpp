@@ -11,6 +11,7 @@
 #include "fboss/agent/hw/sai/switch/tests/ManagerTestBase.h"
 
 #include "fboss/agent/HwSwitch.h"
+#include "fboss/agent/HwSwitchMatcher.h"
 #include "fboss/agent/hw/sai/store/SaiStore.h"
 #include "fboss/agent/hw/sai/switch/SaiNeighborManager.h"
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
@@ -37,6 +38,8 @@
 #endif
 
 namespace {
+constexpr auto kPrbsPolynomial = 31;
+
 facebook::fboss::cfg::AgentConfig getDummyConfig() {
   facebook::fboss::cfg::AgentConfig config;
 
@@ -44,6 +47,16 @@ facebook::fboss::cfg::AgentConfig getDummyConfig() {
   config.platform()->platformSettings()->insert(std::make_pair(
       facebook::fboss::cfg::PlatformAttributes::CONNECTION_HANDLE,
       "test connection handle"));
+  facebook::fboss::cfg::SwitchInfo info{};
+  info.switchType() = facebook::fboss::cfg::SwitchType::NPU;
+  info.asicType() = facebook::fboss::cfg::AsicType::ASIC_TYPE_MOCK;
+  facebook::fboss::cfg::Range64 portIdRange;
+  portIdRange.minimum() = 0;
+  portIdRange.maximum() = 0;
+  info.portIdRange() = portIdRange;
+  info.switchIndex() = 0;
+  info.connectionHandle() = "test connection handle";
+  config.sw()->switchSettings()->switchIdToSwitchInfo()->emplace(0, info);
   return config;
 }
 } // namespace
@@ -67,8 +80,9 @@ void ManagerTestBase::setupSaiPlatform() {
   saiPlatform->init(
       std::move(agentConfig),
       (HwSwitch::FeaturesDesired::PACKET_RX_DESIRED |
-       HwSwitch::FeaturesDesired::LINKSCAN_DESIRED));
-  saiPlatform->getHwSwitch()->init(nullptr, false);
+       HwSwitch::FeaturesDesired::LINKSCAN_DESIRED),
+      0);
+  auto ret = saiPlatform->getHwSwitch()->init(nullptr, nullptr, false);
   auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
   saiPlatform->initPorts();
   saiSwitch->switchRunStateChanged(SwitchRunState::INITIALIZED);
@@ -76,7 +90,21 @@ void ManagerTestBase::setupSaiPlatform() {
   saiStore = saiSwitch->getSaiStore();
   saiManagerTable = saiSwitch->managerTable();
 
-  auto setupState = std::make_shared<SwitchState>();
+  std::map<int64_t, cfg::SwitchInfo> switchId2SwitchInfo{};
+  cfg::SwitchInfo switchInfo{};
+  cfg::Range64 portIdRange;
+  portIdRange.minimum() =
+      cfg::switch_config_constants::DEFAULT_PORT_ID_RANGE_MIN();
+  portIdRange.maximum() =
+      cfg::switch_config_constants::DEFAULT_PORT_ID_RANGE_MAX();
+  switchInfo.portIdRange() = portIdRange;
+  switchInfo.switchIndex() = 0;
+  // defaulting to NPU
+  switchInfo.switchType() = cfg::SwitchType::NPU;
+  switchInfo.asicType() = saiPlatform->getAsic()->getAsicType();
+  switchId2SwitchInfo.emplace(SwitchID(0), switchInfo);
+  resolver = std::make_unique<SwitchIdScopeResolver>(switchId2SwitchInfo);
+  auto setupState = ret.switchState->clone();
   for (int i = 0; i < testInterfaces.size(); ++i) {
     if (i == 0) {
       testInterfaces[i] = TestInterface{i, 4};
@@ -84,36 +112,67 @@ void ManagerTestBase::setupSaiPlatform() {
       testInterfaces[i] = TestInterface{i, 1};
     }
   }
+  for (int i = 0; i < testRemoteInterfaces.size(); ++i) {
+    testRemoteInterfaces[i] = TestInterface{10 + i, 1};
+  }
+
+  HwSwitchMatcher scope(std::unordered_set<SwitchID>({SwitchID(0)}));
+  TestQosPolicy testQosPolicy{{10, 0, 2}, {42, 1, 4}};
+  auto qp = makeQosPolicy("default", testQosPolicy);
+  auto switchSettings = setupState->getSwitchSettings()
+                            ->getNode(scope.matcherString())
+                            ->modify(&setupState);
+  switchSettings->setDefaultDataPlaneQosPolicy(qp);
 
   if (setupStage & SetupStage::PORT) {
+    auto* ports = setupState->getPorts()->modify(&setupState);
     for (const auto& testInterface : testInterfaces) {
       for (const auto& remoteHost : testInterface.remoteHosts) {
         auto swPort = makePort(remoteHost.port);
-        setupState->getPorts()->addPort(swPort);
+        ports->addNode(swPort, scopeResolver().scope(swPort));
       }
     }
   }
   if (setupStage & SetupStage::SYSTEM_PORT) {
+    auto* ports = setupState->getSystemPorts()->modify(&setupState);
     for (const auto& testInterface : testInterfaces) {
       auto swPort =
-          makeSystemPort(std::nullopt, kSysPortOffset + testInterface.id);
-      setupState->getSystemPorts()->addSystemPort(swPort);
+          makeSystemPort("default", kSysPortOffset + testInterface.id);
+      ports->addNode(swPort, scope);
+    }
+    auto* remoteSysports =
+        setupState->getRemoteSystemPorts()->modify(&setupState);
+    for (const auto& testRemoteInterface : testRemoteInterfaces) {
+      auto swPort =
+          makeSystemPort("default", kSysPortOffset + testRemoteInterface.id);
+      remoteSysports->addNode(swPort, scope);
     }
   }
   if (setupStage & SetupStage::VLAN) {
+    auto* vlans = setupState->getVlans()->modify(&setupState);
     for (const auto& testInterface : testInterfaces) {
       auto swVlan = makeVlan(testInterface);
-      setupState->getVlans()->addVlan(swVlan);
+      vlans->addNode(swVlan, scopeResolver().scope(swVlan));
     }
   }
   if (setupStage & SetupStage::INTERFACE) {
+    auto* interfaces = setupState->getInterfaces()->modify(&setupState);
     for (const auto& testInterface : testInterfaces) {
       auto swInterface = makeInterface(testInterface);
-      setupState->getInterfaces()->addInterface(swInterface);
+      interfaces->addNode(swInterface, scope);
       if (setupStage & SetupStage::SYSTEM_PORT) {
         auto swPortInterface =
             makeInterface(testInterface, cfg::InterfaceType::SYSTEM_PORT);
-        setupState->getInterfaces()->addInterface(swPortInterface);
+        interfaces->addNode(swPortInterface, scope);
+      }
+    }
+    auto* remoteInterfaces =
+        setupState->getRemoteInterfaces()->modify(&setupState);
+    for (const auto& testRemoteInterface : testRemoteInterfaces) {
+      if (setupStage & SetupStage::SYSTEM_PORT) {
+        auto swPortInterface =
+            makeInterface(testRemoteInterface, cfg::InterfaceType::SYSTEM_PORT);
+        remoteInterfaces->addNode(swPortInterface, scope);
       }
     }
   }
@@ -121,8 +180,10 @@ void ManagerTestBase::setupSaiPlatform() {
     for (const auto& testInterface : testInterfaces) {
       for (const auto& remoteHost : testInterface.remoteHosts) {
         auto swNeighbor = makeArpEntry(testInterface.id, remoteHost);
-        auto vlan = setupState->getVlans()->getVlan(VlanID(testInterface.id));
-        auto arpTable = vlan->getArpTable();
+        auto existingVlanEntry =
+            setupState->getVlans()->getNode(VlanID(testInterface.id));
+        auto* vlan = existingVlanEntry->modify(&setupState);
+        auto arpTable = vlan->getArpTable()->modify(&vlan, &setupState);
         PortDescriptor portDesc(PortID(remoteHost.port.id));
         arpTable->addEntry(
             remoteHost.ip.asV4(),
@@ -214,6 +275,10 @@ std::shared_ptr<Port> ManagerTestBase::makePort(
     case cfg::PortSpeed::HUNDREDG:
       swPort->setProfileId(cfg::PortProfileID::PROFILE_100G_4_NRZ_CL91_OPTICAL);
       break;
+    case cfg::PortSpeed::HUNDREDANDSIXPOINTTWOFIVEG:
+      swPort->setProfileId(
+          cfg::PortProfileID::PROFILE_106POINT25G_1_PAM4_RS544_COPPER);
+      break;
     case cfg::PortSpeed::TWOHUNDREDG:
       swPort->setProfileId(
           cfg::PortProfileID::PROFILE_200G_4_PAM4_RS544X2N_OPTICAL);
@@ -253,6 +318,10 @@ std::shared_ptr<Port> ManagerTestBase::makePort(
     swPort->resetPinConfigs(
         saiPlatform->getPlatformMapping()->getPortIphyPinConfigs(matcher));
   }
+  phy::PortPrbsState prbsState;
+  prbsState.enabled() = true;
+  prbsState.polynominal() = kPrbsPolynomial;
+  swPort->setAsicPrbs(prbsState);
   return swPort;
 }
 
@@ -294,7 +363,8 @@ std::shared_ptr<AggregatePort> ManagerTestBase::makeAggregatePort(
       systemPriority,
       systemID,
       0,
-      folly::range(subports.begin(), subports.end()));
+      folly::range(subports.begin(), subports.end()),
+      {});
 }
 
 int64_t ManagerTestBase::getSysPortId(int id) const {
@@ -306,6 +376,9 @@ InterfaceID ManagerTestBase::getIntfID(int id, cfg::InterfaceType type) const {
       return InterfaceID(id);
     case cfg::InterfaceType::SYSTEM_PORT:
       return InterfaceID(getSysPortId(id));
+    case cfg::InterfaceType::PORT:
+      return InterfaceID(id);
+      break;
   }
   XLOG(FATAL) << "Unhandled interface type";
 }
@@ -333,6 +406,9 @@ std::shared_ptr<Interface> ManagerTestBase::makeInterface(
   addresses.emplace(
       testInterface.subnet.first.asV4(), testInterface.subnet.second);
   interface->setAddresses(addresses);
+  if (type == cfg::InterfaceType::PORT) {
+    interface->setPortID(PortID(testInterface.id));
+  }
   return interface;
 }
 
@@ -342,13 +418,14 @@ std::shared_ptr<SystemPort> ManagerTestBase::makeSystemPort(
     int64_t switchId) const {
   auto sysPort = std::make_shared<SystemPort>(SystemPortID(sysPortId));
   sysPort->setSwitchId(SwitchID(switchId));
-  sysPort->setPortName("sysPort1");
+  sysPort->setName("sysPort1");
   sysPort->setCoreIndex(42);
   sysPort->setCorePortIndex(24);
   sysPort->setSpeedMbps(10000);
   sysPort->setNumVoqs(8);
-  sysPort->setEnabled(true);
   sysPort->setQosPolicy(qosPolicy);
+  std::vector<uint8_t> queueIds = {0, 2, 6, 7};
+  sysPort->resetPortQueues(makeQueueConfig(queueIds));
   return sysPort;
 }
 
@@ -386,6 +463,7 @@ std::shared_ptr<ArpEntry> ManagerTestBase::makePendingArpEntry(
   return std::make_shared<ArpEntry>(
       testRemoteHost.ip.asV4(),
       getIntfID(id, intfType),
+      state::NeighborEntryType::DYNAMIC_ENTRY,
       NeighborState::PENDING);
 }
 
@@ -395,12 +473,14 @@ std::shared_ptr<ArpEntry> ManagerTestBase::makeArpEntry(
     std::optional<sai_uint32_t> metadata,
     std::optional<sai_uint32_t> encapIndex,
     bool isLocal,
-    cfg::InterfaceType intfType) const {
+    cfg::InterfaceType intfType,
+    bool noHostRoute) const {
   auto arpEntry = std::make_shared<ArpEntry>(
       testRemoteHost.ip.asV4(),
       testRemoteHost.mac,
       PortDescriptor(PortID(testRemoteHost.port.id)),
-      InterfaceID(getIntfID(id, intfType)));
+      InterfaceID(getIntfID(id, intfType)),
+      state::NeighborEntryType::DYNAMIC_ENTRY);
   if (metadata) {
     arpEntry->setClassID(static_cast<cfg::AclLookupClass>(metadata.value()));
   }
@@ -408,6 +488,7 @@ std::shared_ptr<ArpEntry> ManagerTestBase::makeArpEntry(
     arpEntry->setEncapIndex(static_cast<int64_t>(encapIndex.value()));
   }
   arpEntry->setIsLocal(isLocal);
+  arpEntry->setNoHostRoute(noHostRoute);
   return arpEntry;
 }
 
@@ -417,9 +498,10 @@ std::shared_ptr<ArpEntry> ManagerTestBase::resolveArp(
     cfg::InterfaceType intfType,
     std::optional<sai_uint32_t> metadata,
     std::optional<sai_uint32_t> encapIndex,
-    bool isLocal) {
-  auto arpEntry =
-      makeArpEntry(id, testRemoteHost, metadata, encapIndex, isLocal, intfType);
+    bool isLocal,
+    bool noHostRoute) {
+  auto arpEntry = makeArpEntry(
+      id, testRemoteHost, metadata, encapIndex, isLocal, intfType, noHostRoute);
   saiManagerTable->neighborManager().addNeighbor(arpEntry);
   if (intfType == cfg::InterfaceType::VLAN) {
     saiManagerTable->fdbManager().addFdbEntry(
@@ -441,7 +523,9 @@ std::shared_ptr<ArpEntry> ManagerTestBase::makeArpEntry(
       ip,
       mac,
       PortDescriptor(PortID(sysPort.getID())),
-      InterfaceID(static_cast<int>(sysPort.getID())));
+      InterfaceID(static_cast<int>(sysPort.getID())),
+      state::NeighborEntryType::DYNAMIC_ENTRY);
+
   arpEntry->setEncapIndex(static_cast<int64_t>(encapIndex.value()));
   arpEntry->setIsLocal(false);
   return arpEntry;
@@ -505,7 +589,7 @@ std::shared_ptr<PortQueue> ManagerTestBase::makePortQueue(
     cfg::QueueScheduling schedType,
     uint8_t weight,
     uint64_t minPps,
-    uint64_t maxPps) {
+    uint64_t maxPps) const {
   auto portQueue = std::make_shared<PortQueue>(queueId);
   std::string queueName = "queue";
   queueName.append(std::to_string(queueId));
@@ -528,7 +612,7 @@ QueueConfig ManagerTestBase::makeQueueConfig(
     cfg::QueueScheduling schedType,
     uint8_t weight,
     uint64_t minPps,
-    uint64_t maxPps) {
+    uint64_t maxPps) const {
   QueueConfig queueConfig;
   for (auto queueId : queueIds) {
     auto portQueue =
@@ -554,8 +638,7 @@ std::shared_ptr<QosPolicy> ManagerTestBase::makeQosPolicy(
 
 void ManagerTestBase::applyNewState(
     const std::shared_ptr<SwitchState>& newState) {
-  auto oldState =
-      programmedState ? programmedState : std::make_shared<SwitchState>();
+  auto oldState = saiPlatform->getHwSwitch()->getProgrammedState();
   StateDelta delta(oldState, newState);
   EXPECT_TRUE(saiPlatform->getHwSwitch()->isValidStateUpdate(delta));
   saiPlatform->getHwSwitch()->stateChanged(delta);
@@ -563,4 +646,8 @@ void ManagerTestBase::applyNewState(
   programmedState->publish();
 }
 
+const SwitchIdScopeResolver& ManagerTestBase::scopeResolver() const {
+  CHECK(resolver);
+  return *resolver;
+}
 } // namespace facebook::fboss

@@ -13,6 +13,7 @@
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_types.h"
 
 #include "fboss/agent/hw/HwCpuFb303Stats.h"
+#include "fboss/agent/hw/HwSysPortFb303Stats.h"
 #include "fboss/agent/hw/sai/api/CounterApi.h"
 #include "fboss/agent/hw/sai/api/HostifApi.h"
 #include "fboss/agent/hw/sai/store/SaiObject.h"
@@ -37,17 +38,26 @@ class SaiStore;
 using SaiHostifTrapGroup = SaiObject<SaiHostifTrapGroupTraits>;
 using SaiHostifTrap = SaiObject<SaiHostifTrapTraits>;
 using SaiHostifTrapCounter = SaiObject<SaiCounterTraits>;
+using SaiHostifUserDefinedTrap = SaiObject<SaiHostifUserDefinedTrapTraits>;
 
 struct SaiCpuPortHandle {
   PortSaiId cpuPortId;
+  std::optional<SystemPortSaiId> cpuSystemPortId;
   SaiQueueHandles queues;
   std::vector<SaiQueueHandle*> configuredQueues;
+  SaiQueueHandles voqs;
+  std::vector<SaiQueueHandle*> configuredVoqs;
 };
 
 struct SaiHostifTrapHandle {
   std::shared_ptr<SaiHostifTrapGroup> trapGroup;
   std::shared_ptr<SaiHostifTrap> trap;
   std::shared_ptr<SaiHostifTrapCounter> counter;
+};
+
+struct SaiHostifUserDefinedTrapHandle {
+  std::shared_ptr<SaiHostifTrapGroup> trapGroup;
+  std::shared_ptr<SaiHostifUserDefinedTrap> trap;
 };
 
 class SaiHostifManager {
@@ -67,8 +77,7 @@ class SaiHostifManager {
       cfg::PacketRxReason trapId,
       uint32_t queueId,
       uint16_t priority);
-  static std::pair<sai_hostif_trap_type_t, sai_packet_action_t>
-  packetReasonToHostifTrap(
+  static std::pair<sai_int32_t, sai_packet_action_t> packetReasonToHostifTrap(
       cfg::PacketRxReason reason,
       const SaiPlatform* platform);
   static SaiHostifTrapTraits::CreateAttributes makeHostifTrapAttributes(
@@ -76,42 +85,65 @@ class SaiHostifManager {
       HostifTrapGroupSaiId trapGroupId,
       uint16_t priority,
       const SaiPlatform* platform);
-  void processHostifDelta(const DeltaValue<ControlPlane>& delta);
+  static SaiHostifUserDefinedTrapTraits::CreateAttributes
+  makeHostifUserDefinedTrapAttributes(
+      HostifTrapGroupSaiId trapGroupId,
+      std::optional<uint16_t> priority,
+      std::optional<uint16_t> trapType);
+  std::shared_ptr<SaiHostifUserDefinedTrapHandle> ensureHostifUserDefinedTrap(
+      uint32_t queueId);
+  void processHostifDelta(const ThriftMapDelta<MultiControlPlane>& delta);
   SaiQueueHandle* getQueueHandle(const SaiQueueConfig& saiQueueConfig);
   const SaiQueueHandle* getQueueHandle(
+      const SaiQueueConfig& saiQueueConfig) const;
+  SaiQueueHandle* getVoqHandle(const SaiQueueConfig& saiQueueConfig);
+  const SaiQueueHandle* getVoqHandle(
       const SaiQueueConfig& saiQueueConfig) const;
   void updateStats(bool updateWatermarks = false);
   HwPortStats getCpuPortStats() const;
   QueueConfig getQueueSettings() const;
+  QueueConfig getVoqSettings() const;
   const HwCpuFb303Stats& getCpuFb303Stats() const {
     return cpuStats_;
+  }
+  const HwSysPortFb303Stats& getCpuSysPortFb303Stats() const {
+    return cpuSysPortStats_;
   }
   const SaiHostifTrapHandle* getHostifTrapHandle(
       cfg::PacketRxReason rxReason) const;
   SaiHostifTrapHandle* getHostifTrapHandle(cfg::PacketRxReason rxReason);
   std::shared_ptr<SaiHostifTrapCounter> createHostifTrapCounter(
       cfg::PacketRxReason rxReason);
+  void qosPolicyUpdated(const std::string& qosPolicy);
 
  private:
   uint32_t getMaxCpuQueues() const;
-  void setQosPolicy();
+  void setCpuQosPolicy(const std::optional<std::string>& qosPolicy);
   void clearQosPolicy();
-  void setCpuQosPolicy(QosMapSaiId dscpToTc, QosMapSaiId tcToQueue);
+  void setCpuPortQosPolicy(QosMapSaiId dscpToTc, QosMapSaiId tcToQueue);
+  void setCpuSystemPortQosPolicy(QosMapSaiId tcToQueue);
   std::shared_ptr<SaiHostifTrapGroup> ensureHostifTrapGroup(uint32_t queueId);
   void processQueueDelta(const DeltaValue<ControlPlane>& delta);
+  void processVoqDelta(const DeltaValue<ControlPlane>& delta);
   void processRxReasonToQueueDelta(const DeltaValue<ControlPlane>& delta);
   void processQosDelta(const DeltaValue<ControlPlane>& delta);
 
   void loadCpuPort();
   void loadCpuPortQueues();
+  void loadCpuSystemPortVoqs();
   void changeCpuQueue(
+      const ControlPlane::PortQueues& oldQueueConfig,
+      const ControlPlane::PortQueues& newQueueConfig);
+  void changeCpuVoq(
       const ControlPlane::PortQueues& oldQueueConfig,
       const ControlPlane::PortQueues& newQueueConfig);
   SaiQueueHandle* getQueueHandleImpl(
       const SaiQueueConfig& saiQueueConfig) const;
+  SaiQueueHandle* getVoqHandleImpl(const SaiQueueConfig& saiQueueConfig) const;
   SaiHostifTrapHandle* getHostifTrapHandleImpl(
       cfg::PacketRxReason rxReason) const;
   void publishCpuQueueWatermark(int cosq, uint64_t peakBytes) const;
+  void processHostifEntryDelta(const DeltaValue<ControlPlane>& delta);
 
   SaiStore* saiStore_;
   SaiManagerTable* managerTable_;
@@ -119,15 +151,16 @@ class SaiHostifManager {
   ConcurrentIndices* concurrentIndices_;
   folly::F14FastMap<cfg::PacketRxReason, std::unique_ptr<SaiHostifTrapHandle>>
       handles_;
-  /*
-   * We only permit a single QoS policy across the
-   * front panel and CPU ports. So when set, these
-   * pointers hold references to that policy
-   */
-  std::shared_ptr<SaiQosMap> globalDscpToTcQosMap_;
-  std::shared_ptr<SaiQosMap> globalTcToQueueQosMap_;
+
+  // single QoS policy applied accross the front panel ports and cpu port
+  // on all platforms except for J3 right now.
+  std::shared_ptr<SaiQosMap> dscpToTcQosMap_;
+  std::shared_ptr<SaiQosMap> tcToQueueQosMap_;
+  std::shared_ptr<SaiQosMap> tcToVoqMap_;
+  std::optional<std::string> qosPolicy_;
   std::unique_ptr<SaiCpuPortHandle> cpuPortHandle_;
   HwCpuFb303Stats cpuStats_;
+  HwSysPortFb303Stats cpuSysPortStats_;
   HwRxReasonStats rxReasonStats_;
 };
 

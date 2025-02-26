@@ -1,6 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #pragma once
+#include <memory>
+
 #include <folly/Singleton.h>
 #include "fboss/lib/bsp/BspPlatformMapping.h"
 #include "fboss/lib/bsp/BspSystemContainer.h"
@@ -15,12 +17,7 @@ class BspGenericSystemContainer : public BspSystemContainer {
   static std::shared_ptr<BspGenericSystemContainer> getInstance();
 
  private:
-  BspPlatformMapping* initBspPlatformMapping() {
-    bspPlatformMapping_ = new T();
-    return bspPlatformMapping_;
-  }
-
-  T* bspPlatformMapping_;
+  std::unique_ptr<BspPlatformMapping> initBspPlatformMapping();
 };
 
 } // namespace fboss

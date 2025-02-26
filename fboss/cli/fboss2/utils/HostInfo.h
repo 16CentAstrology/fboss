@@ -3,17 +3,14 @@
 #pragma once
 
 #include <folly/IPAddress.h>
-#include "fboss/cli/fboss2/utils/CmdUtils.h"
+#include "fboss/cli/fboss2/utils/CmdUtilsCommon.h"
 
 namespace facebook::fboss {
 
 class HostInfo {
  public:
   explicit HostInfo(const std::string& hostName)
-      : HostInfo(
-            hostName,
-            utils::getOobNameFromHost(hostName),
-            utils::getIPFromHost(hostName)) {}
+      : HostInfo(utils::getCanonicalNameAndIPFromHost(hostName)) {}
 
   HostInfo(
       const std::string& hostName,
@@ -37,7 +34,17 @@ class HostInfo {
     return ip_.str();
   }
 
+  bool isLocalHost() const {
+    return ip_.isLoopback();
+  }
+
  private:
+  explicit HostInfo(const std::pair<std::string, folly::IPAddress>& hostAndIp)
+      : HostInfo(
+            hostAndIp.first,
+            utils::getOobNameFromHost(hostAndIp.first),
+            hostAndIp.second) {}
+
   const std::string name_;
   const std::string oob_;
   const folly::IPAddress ip_;

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # Copyright (C) 2004-present Facebook. All Rights Reserved
 
+# pyre-unsafe
+
 import contextlib
 import socket
 from argparse import ArgumentParser
-from builtins import range, str
 
 import ipaddr
 from facebook.network.Address.ttypes import BinaryAddress
@@ -70,7 +71,7 @@ def format_ip(ip):
 
 def format_route(route):
     next_hops = ", ".join(format_ip(ip) for ip in route.nextHopAddrs)
-    return "%s --> %s" % (format_prefix(route.dest), next_hops)
+    return "{} --> {}".format(format_prefix(route.dest), next_hops)
 
 
 def format_prefix(prefix):
@@ -78,11 +79,11 @@ def format_prefix(prefix):
 
 
 def format_interface(intf):
-    return "%s (%s)" % (", ".join(format_prefix(i) for i in intf.address), intf.mac)
+    return "{} ({})".format(", ".join(format_prefix(i) for i in intf.address), intf.mac)
 
 
 def format_arp(arp):
-    return "%s -> %s" % (format_ip(arp.ip), arp.mac)
+    return "{} -> {}".format(format_ip(arp.ip), arp.mac)
 
 
 def list_routes(args):
@@ -101,9 +102,7 @@ def list_optics(args):
 def list_ports(args):
     details = args.details
     with get_client(args) as client:
-        for idx, intf in client.getPortStatus(
-            list(range(1, 65))
-        ).items():  # noqa: B301 T25377293 Grandfathered in
+        for idx, intf in client.getPortStatus(list(range(1, 65))).items():  # noqa: B301 T25377293 Grandfathered in
             stats = ""
             if details:
                 stats = " (%s)" % client.getPortStats(idx)
@@ -177,7 +176,7 @@ def get_qsfp_client(args, timeout=5.0):
     transport.close()
 
 
-if __name__ == "__main__":
+def main() -> None:
     ap = ArgumentParser()
     ap.add_argument(
         "--port", "-p", type=int, default=5909, help="the controller thrift port"
@@ -289,3 +288,7 @@ if __name__ == "__main__":
 
     args = ap.parse_args()
     args.func(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -23,16 +23,47 @@
 #include <folly/MacAddress.h>
 
 #include <memory>
+#include <string>
+
+DECLARE_bool(sai_user_defined_trap);
 
 namespace facebook::fboss {
 
 class SaiManagerTable;
 class SaiPlatform;
 class SaiStore;
+struct SaiHostifUserDefinedTrapHandle;
 
 using SaiAclTable = SaiObject<SaiAclTableTraits>;
 using SaiAclEntry = SaiObject<SaiAclEntryTraits>;
 using SaiAclCounter = SaiObject<SaiAclCounterTraits>;
+
+#if (                                                                  \
+    (SAI_API_VERSION >= SAI_VERSION(1, 14, 0) ||                       \
+     (defined(BRCM_SAI_SDK_GTE_11_0) && defined(BRCM_SAI_SDK_XGS))) && \
+    !defined(TAJO_SDK))
+using AclTableUdfGroup0 =
+    SaiAclTableTraits::Attributes::UserDefinedFieldGroupMin0;
+using AclTableUdfGroup1 =
+    SaiAclTableTraits::Attributes::UserDefinedFieldGroupMin1;
+using AclTableUdfGroup2 =
+    SaiAclTableTraits::Attributes::UserDefinedFieldGroupMin2;
+using AclTableUdfGroup3 =
+    SaiAclTableTraits::Attributes::UserDefinedFieldGroupMin3;
+using AclTableUdfGroup4 =
+    SaiAclTableTraits::Attributes::UserDefinedFieldGroupMin4;
+
+using AclEntryUdfGroup0 =
+    SaiAclEntryTraits::Attributes::UserDefinedFieldGroupMin0;
+using AclEntryUdfGroup1 =
+    SaiAclEntryTraits::Attributes::UserDefinedFieldGroupMin1;
+using AclEntryUdfGroup2 =
+    SaiAclEntryTraits::Attributes::UserDefinedFieldGroupMin2;
+using AclEntryUdfGroup3 =
+    SaiAclEntryTraits::Attributes::UserDefinedFieldGroupMin3;
+using AclEntryUdfGroup4 =
+    SaiAclEntryTraits::Attributes::UserDefinedFieldGroupMin4;
+#endif
 
 struct SaiAclEntryHandle {
   /*
@@ -45,6 +76,7 @@ struct SaiAclEntryHandle {
    * Declare SaiAclCounter before SaiAclEntry as class members are destructed
    * in the reverse order of declaration.
    */
+  std::shared_ptr<SaiHostifUserDefinedTrapHandle> userDefinedTrap;
   std::shared_ptr<SaiAclCounter> aclCounter;
   std::shared_ptr<SaiAclEntry> aclEntry;
   std::vector<std::pair<cfg::CounterType, std::string>> aclCounterTypeAndName;
@@ -78,6 +110,8 @@ class SaiAclTableManager {
    */
   static auto constexpr kDscpMask = 0x3F;
 
+  static auto constexpr kMaxUdfGroups = 5;
+
   /*
    * L4 Src/Dst Port Mask.
    * L4 Src/Dst Port is 16-bit.
@@ -91,7 +125,9 @@ class SaiAclTableManager {
   static auto constexpr kIcmpTypeMask = 0xFF;
   static auto constexpr kIcmpCodeMask = 0xFF;
   static auto constexpr kEtherTypeMask = 0xFFFF;
-  static auto constexpr kOuterVlanIdMask = 0xFFFF;
+  static auto constexpr kOuterVlanIdMask = 0xFFF;
+  static auto constexpr kBthOpcodeMask = 0xFF;
+  static auto constexpr kIpv6NextHeaderMask = 0xFF;
 
   static const folly::MacAddress& kMacMask() {
     static const folly::MacAddress macMask{"FF:FF:FF:FF:FF:FF"};
@@ -111,12 +147,39 @@ class SaiAclTableManager {
       const std::shared_ptr<AclTable>& oldAclTable,
       const std::shared_ptr<AclTable>& newAclTable,
       cfg::AclStage aclStage);
+  std::shared_ptr<AclTable> reconstructAclTable(
+      int priority,
+      const std::string& name) const;
+  std::shared_ptr<AclEntry> reconstructAclEntry(
+      const std::string& tableName,
+      const std::string& aclEntryName,
+      int priority) const;
+  bool needsAclTableRecreate(
+      const std::shared_ptr<AclTable>& oldAclTable,
+      const std::shared_ptr<AclTable>& newAclTable);
+  void removeAclEntriesFromTable(const std::shared_ptr<AclTable>& aclTable);
+  void addAclEntriesToTable(
+      const std::shared_ptr<AclTable>& aclTable,
+      std::shared_ptr<AclMap>& aclMap);
 
   const SaiAclTableHandle* FOLLY_NULLABLE
   getAclTableHandle(const std::string& aclTableName) const;
   SaiAclTableHandle* FOLLY_NULLABLE
   getAclTableHandle(const std::string& aclTableName);
 
+#if (                                                                  \
+    (SAI_API_VERSION >= SAI_VERSION(1, 14, 0) ||                       \
+     (defined(BRCM_SAI_SDK_GTE_11_0) && defined(BRCM_SAI_SDK_XGS))) && \
+    !defined(TAJO_SDK))
+  void updateUdfGroupAttributes(
+      const std::shared_ptr<AclEntry>& addedAclEntry,
+      const std::string& aclTableName,
+      std::optional<AclEntryUdfGroup0>& udfGroup0,
+      std::optional<AclEntryUdfGroup1>& udfGroup1,
+      std::optional<AclEntryUdfGroup2>& udfGroup2,
+      std::optional<AclEntryUdfGroup3>& udfGroup3,
+      std::optional<AclEntryUdfGroup4>& udfGroup4);
+#endif
   AclEntrySaiId addAclEntry(
       const std::shared_ptr<AclEntry>& addedAclEntry,
       const std::string& aclTableName);
@@ -165,10 +228,13 @@ class SaiAclTableManager {
 
   void updateStats();
 
-  std::set<cfg::AclTableQualifier> getSupportedQualifierSet() const;
+  std::pair<int32_t, int32_t> getAclResourceUsage();
 
-  void addDefaultAclTable();
-  void removeDefaultAclTable();
+  std::set<cfg::AclTableQualifier> getSupportedQualifierSet(
+      cfg::AclStage stage) const;
+
+  void addDefaultIngressAclTable();
+  void removeDefaultIngressAclTable();
 
   bool isQualifierSupported(
       const std::string& aclTableName,
@@ -201,6 +267,8 @@ class SaiAclTableManager {
 
   void removeUnclaimedAclCounter();
 
+  AclStats getAclStats() const;
+
  private:
   SaiAclTableHandle* FOLLY_NULLABLE
   getAclTableHandleImpl(const std::string& aclTableName) const;
@@ -213,6 +281,7 @@ class SaiAclTableManager {
   std::vector<sai_int32_t> getActionTypeList(
       const std::shared_ptr<AclTable>& addedAclTable);
   std::set<cfg::AclTableQualifier> getQualifierSet(
+      sai_acl_stage_t aclStage,
       const std::shared_ptr<AclTable>& addedAclTable);
 
   std::pair<
@@ -243,6 +312,16 @@ class SaiAclTableManager {
       std::shared_ptr<SaiAclTable>& exisitingTable,
       const SaiAclTableTraits::CreateAttributes& attributes);
 
+  bool isSameAclCounterAttributes(
+      const SaiAclCounterTraits::CreateAttributes& fromStore,
+      const SaiAclCounterTraits::CreateAttributes& fromSw);
+
+  std::set<cfg::AclTableQualifier> getSupportedQualifierSet(
+      sai_acl_stage_t aclStage) const;
+
+  void addDefaultAclTable(cfg::AclStage stage, const std::string& name);
+  void removeDefaultAclTable(cfg::AclStage stage, const std::string& name);
+
   SaiStore* saiStore_;
   SaiManagerTable* managerTable_;
   const SaiPlatform* platform_;
@@ -257,6 +336,23 @@ class SaiAclTableManager {
   SaiAclTableHandles handles_;
 
   HwFb303Stats aclStats_;
+  /*
+   * 1. During an acl addition, we add an acl counter and the corresponding
+   * fb303 counter.
+   * 2. During acl deletion, we remove acl counter and the corresponding fb303
+   * counter.
+   * If the old acls list is A->B->C and the new one is A->C, then as
+   * a part of the delta processing, we process the second node as a changed
+   * AclEntry (where B is removed and C is added) and the third node as a
+   * removed AclEntry (Where C gets removed). This causes the counters for
+   * AclEntry C to be added during processing of the second node and
+   * subsequently removed during the third node processing. To avoid this, keep
+   * a ref count for acl counters. During delta processing, add and remove only
+   * the entries which have count as 1 and 0 respectively.
+   * NOTE: https://fburl.com/gdoc/96rz0n7q contains details of the
+   * issue
+   */
+  folly::F14FastMap<std::string, int> aclCounterRefMap;
 
   const sai_uint32_t aclEntryMinimumPriority_;
   const sai_uint32_t aclEntryMaximumPriority_;

@@ -9,13 +9,13 @@
  */
 #pragma once
 
-#include "fboss/agent/platforms/sai/SaiHwPlatform.h"
+#include "fboss/agent/platforms/sai/SaiPlatform.h"
 
 namespace facebook::fboss {
 
-class SaiTajoPlatform : public SaiHwPlatform {
+class SaiTajoPlatform : public SaiPlatform {
  public:
-  explicit SaiTajoPlatform(
+  SaiTajoPlatform(
       std::unique_ptr<PlatformProductInfo> productInfo,
       std::unique_ptr<PlatformMapping> platformMapping,
       folly::MacAddress localMac);
@@ -28,7 +28,7 @@ class SaiTajoPlatform : public SaiHwPlatform {
     return {};
   }
   std::vector<FlexPortMode> getSupportedFlexPortModes() const override {
-    return {};
+    return {FlexPortMode::ONEX400G};
   }
   std::optional<sai_port_interface_type_t> getInterfaceType(
       TransmitterTechnology /*transmitterTech*/,
@@ -44,8 +44,12 @@ class SaiTajoPlatform : public SaiHwPlatform {
   }
   void initLEDs() override {}
 
+  const std::set<sai_api_t>& getSupportedApiList() const override;
+
   const std::unordered_map<std::string, std::string>
   getSaiProfileVendorExtensionValues() const override;
+
+  std::string getHwConfig() override;
 };
 
 } // namespace facebook::fboss

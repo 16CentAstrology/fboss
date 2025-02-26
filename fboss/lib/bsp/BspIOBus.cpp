@@ -12,7 +12,7 @@ void BspIOBus::moduleRead(
     unsigned int module,
     const TransceiverAccessParameter& param,
     uint8_t* buf) {
-  XLOG(DBG1) << fmt::format("BspTrace: moduleRead() for module={:d}", module);
+  XLOG(DBG5) << fmt::format("BspTrace: moduleRead() for module={:d}", module);
   CHECK(module >= 1 && module <= systemContainer_->getNumTransceivers());
   systemContainer_->tcvrRead(module, param, buf);
 }
@@ -24,7 +24,7 @@ void BspIOBus::moduleWrite(
     unsigned int module,
     const TransceiverAccessParameter& param,
     const uint8_t* data) {
-  XLOG(DBG1) << fmt::format("BspTrace: moduleWrite() for module={:d}", module);
+  XLOG(DBG5) << fmt::format("BspTrace: moduleWrite() for module={:d}", module);
   CHECK(module >= 1 && module <= systemContainer_->getNumTransceivers());
   systemContainer_->tcvrWrite(module, param, data);
 }
@@ -33,7 +33,7 @@ void BspIOBus::moduleWrite(
 bool BspIOBus::isPresent(unsigned int module) {
   CHECK(module >= 1 && module <= systemContainer_->getNumTransceivers());
 
-  XLOG(DBG1) << fmt::format(
+  XLOG(DBG5) << fmt::format(
       "BspTrace: isPresent() detecting presence of qsfp={:d}", module);
 
   return systemContainer_->isTcvrPresent(module);
@@ -78,6 +78,32 @@ void BspIOBus::initTransceivers() {
   XLOG(DBG1) << "BspTrace: initTransceivers()";
 
   systemContainer_->initAllTransceivers();
+}
+
+/*
+ * Start the I2c read/write time profiling
+ */
+void BspIOBus::i2cTimeProfilingStart(unsigned int module) const {
+  CHECK(module >= 1 && module <= systemContainer_->getNumTransceivers());
+  systemContainer_->i2cTimeProfilingStart(module);
+}
+
+/*
+ * Stop the I2c read/write time profiling
+ */
+void BspIOBus::i2cTimeProfilingEnd(unsigned int module) const {
+  CHECK(module >= 1 && module <= systemContainer_->getNumTransceivers());
+  systemContainer_->i2cTimeProfilingEnd(module);
+}
+
+/*
+ * Return the result of i2c timing profiling in the format of
+ * <readTimeMsec, writeTimeMsec>
+ */
+std::pair<uint64_t, uint64_t> BspIOBus::getI2cTimeProfileMsec(
+    unsigned int module) const {
+  CHECK(module >= 1 && module <= systemContainer_->getNumTransceivers());
+  return systemContainer_->getI2cTimeProfileMsec(module);
 }
 
 } // namespace facebook::fboss

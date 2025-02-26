@@ -8,21 +8,13 @@
  *
  */
 #include "fboss/mdio/BspDeviceMdio.h"
-#include <errno.h>
 #include <fcntl.h>
 #include <folly/Format.h>
 #include <folly/Range.h>
-#include <folly/lang/Bits.h>
 #include <folly/logging/xlog.h>
-#include <gflags/gflags.h>
-#include <linux/mdio.h>
-#include <linux/mii.h>
-#include <linux/sockios.h>
-#include <net/if.h>
-#include <stdint.h>
 #include <sys/ioctl.h>
-#include <algorithm>
-#include <chrono>
+#include <cerrno>
+#include <cstdint>
 #include "fboss/mdio/MdioError.h"
 
 // TODO(rajank):

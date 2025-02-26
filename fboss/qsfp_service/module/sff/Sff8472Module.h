@@ -19,8 +19,9 @@ enum class Sff8472Pages : int {
 class Sff8472Module : public QsfpModule {
  public:
   explicit Sff8472Module(
-      TransceiverManager* transceiverManager,
-      std::unique_ptr<TransceiverImpl> qsfpImpl);
+      std::set<std::string> portNames,
+      TransceiverImpl* qsfpImpl,
+      std::string tcvrName);
   virtual ~Sff8472Module() override;
 
   /*
@@ -45,15 +46,14 @@ class Sff8472Module : public QsfpModule {
     return DOMDataUnion();
   }
 
-  unsigned int numHostLanes() const override {
-    return 1;
-  }
+  void customizeTransceiverLocked(
+      TransceiverPortState& /* portState */) override {}
 
-  unsigned int numMediaLanes() const override {
-    return 1;
-  }
+  bool tcvrPortStateSupported(TransceiverPortState& portState) const override;
 
-  void customizeTransceiverLocked(cfg::PortSpeed) override {}
+  virtual bool ensureTransceiverReadyLocked() override {
+    return true;
+  }
 
   const uint8_t* getQsfpValuePtr(int, int, int) const override {
     return nullptr;
@@ -63,9 +63,7 @@ class Sff8472Module : public QsfpModule {
 
   void setPowerOverrideIfSupportedLocked(PowerControlState) override {}
 
-  TransmitterTechnology getQsfpTransmitterTechnology() const override {
-    return TransmitterTechnology::OPTICAL;
-  }
+  TransmitterTechnology getQsfpTransmitterTechnology() const override;
 
   std::optional<AlarmThreshold> getThresholdInfo() override {
     return std::nullopt;
@@ -102,7 +100,7 @@ class Sff8472Module : public QsfpModule {
 
   TransceiverSettings getTransceiverSettingsInfo() override;
 
-  PowerControlState getPowerControlValue() override {
+  PowerControlState getPowerControlValue(bool /* readFromCache */) override {
     return PowerControlState::HIGH_POWER_OVERRIDE;
   }
 
@@ -118,7 +116,9 @@ class Sff8472Module : public QsfpModule {
 
   void updateQsfpData(bool allPages = true) override;
 
-  bool remediateFlakyTransceiver() override;
+  void remediateFlakyTransceiver(
+      bool allPortsDown,
+      const std::vector<std::string>& ports) override;
 
   double getQsfpDACLength() const override {
     return 0;
@@ -141,6 +141,8 @@ class Sff8472Module : public QsfpModule {
   void readSff8472Field(Sff8472Field field, uint8_t* data);
   void writeSff8472Field(Sff8472Field field, uint8_t* data);
 
+  MediaInterfaceCode getModuleMediaInterface() const override;
+
  protected:
   uint8_t a0LowerPage_[MAX_QSFP_PAGE_SIZE] = {0};
   uint8_t a2LowerPage_[MAX_QSFP_PAGE_SIZE] = {0};
@@ -161,6 +163,19 @@ class Sff8472Module : public QsfpModule {
   uint8_t getSettingsValue(Sff8472Field field, uint8_t mask = 0xff) const;
 
   Ethernet10GComplianceCode getEthernet10GComplianceCode() const;
+  ExtendedSpecComplianceCode getExtendedSpecComplianceCode() const;
+
+  std::vector<uint8_t> configuredHostLanes(
+      uint8_t /* hostStartLane */) const override {
+    return {0};
+  }
+
+  std::vector<uint8_t> configuredMediaLanes(
+      uint8_t /* hostStartLane */) const override {
+    return {0};
+  }
+
+  bool domImplemented() const;
 };
 
 } // namespace fboss

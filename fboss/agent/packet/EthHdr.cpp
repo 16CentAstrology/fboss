@@ -39,8 +39,15 @@ EthHdr::EthHdr(Cursor& cursor) {
       etherType =
           (static_cast<uint16_t>(buf[2]) << 8) | static_cast<uint16_t>(buf[3]);
     }
-  } catch (const std::out_of_range& e) {
+  } catch (const std::out_of_range&) {
     throw HdrParseError("Ethernet header too small");
+  }
+}
+
+void EthHdr::addVlans(const std::vector<VlanID>& vlans, ETHERTYPE ether) {
+  for (auto vlan : vlans) {
+    vlanTags.emplace_back(
+        VlanTag(static_cast<uint16_t>(vlan), static_cast<uint16_t>(ether)));
   }
 }
 

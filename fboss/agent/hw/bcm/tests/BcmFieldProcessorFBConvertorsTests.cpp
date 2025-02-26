@@ -15,7 +15,6 @@
 #include "fboss/agent/FbossError.h"
 
 #include "fboss/agent/hw/bcm/BcmFieldProcessorFBConvertors.h"
-#include "fboss/agent/hw/bcm/tests/BcmUnitTestUtils.h"
 
 extern "C" {
 #include <bcm/field.h>
@@ -37,8 +36,7 @@ TEST(FPBcmConvertors, priorityToFromBcm) {
 }
 
 TEST(FPBcmConvertors, cfgIpFragToFromBcm) {
-  for (auto cfgIpFragAndName : cfg::_IpFragMatch_VALUES_TO_NAMES) {
-    auto cfgIpFrag = cfgIpFragAndName.first;
+  for (auto cfgIpFrag : apache::thrift::TEnumTraits<cfg::IpFragMatch>::values) {
     auto bcmIpFrag = cfgIpFragToBcmIpFrag(cfgIpFrag);
     EXPECT_EQ(cfgIpFrag, bcmIpFragToCfgIpFrag(bcmIpFrag));
   }
@@ -46,8 +44,11 @@ TEST(FPBcmConvertors, cfgIpFragToFromBcm) {
 }
 
 TEST(FPBcmConvertors, ipTypeToFromBcm) {
-  for (auto cfgIpTypeAndName : cfg::_IpType_VALUES_TO_NAMES) {
-    auto cfgIpType = cfgIpTypeAndName.first;
+  for (auto cfgIpType :
+       {cfg::IpType::ANY,
+        cfg::IpType::IP,
+        cfg::IpType::IP4,
+        cfg::IpType::IP6}) {
     auto bcmIpType = cfgIpTypeToBcmIpType(cfgIpType);
     EXPECT_EQ(cfgIpType, bcmIpTypeToCfgIpType(bcmIpType));
   }
@@ -101,8 +102,8 @@ TEST(FPBcmConvertors, icmpTypeAndCode) {
 }
 
 TEST(FPBcmConvertors, cfgCountertypeToFromBcm) {
-  for (auto cfgCounterTypeAndName : cfg::_CounterType_VALUES_TO_NAMES) {
-    auto cfgCounterType = cfgCounterTypeAndName.first;
+  for (auto cfgCounterType :
+       apache::thrift::TEnumTraits<cfg::CounterType>::values) {
     auto bcmCounterType = cfgCounterTypeToBcmCounterType(cfgCounterType);
     EXPECT_EQ(cfgCounterType, bcmCounterTypeToCfgCounterType(bcmCounterType));
   }

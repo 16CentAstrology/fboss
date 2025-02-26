@@ -141,6 +141,14 @@ class AclTableStoreTest : public SaiStoreTest {
     return std::make_pair(2000, 0xFFFF);
   }
 
+  std::pair<sai_uint8_t, sai_uint8_t> kBthOpcode() const {
+    return std::make_pair(17, 0xFF);
+  }
+
+  std::pair<sai_uint8_t, sai_uint8_t> kIpv6NextHeader() const {
+    return std::make_pair(17, 0xFF);
+  }
+
   sai_uint32_t kPacketAction() const {
     return SAI_PACKET_ACTION_DROP;
   }
@@ -151,6 +159,14 @@ class AclTableStoreTest : public SaiStoreTest {
 
   sai_object_id_t kMacsecFlow() const {
     return 42;
+  }
+
+  sai_object_id_t kSetUserTrap() const {
+    return 50;
+  }
+
+  bool kDisableArsForwarding() const {
+    return false;
   }
 
   sai_uint8_t kSetTC() const {
@@ -192,10 +208,23 @@ class AclTableStoreTest : public SaiStoreTest {
     return 0;
   }
 
+  sai_object_id_t kUdfGroupId() const {
+    return 1;
+  }
+
+  std::pair<std::vector<sai_uint8_t>, std::vector<sai_uint8_t>> kUdfGroupData()
+      const {
+    std::vector<sai_uint8_t> data = {0x11, 0x22};
+    std::vector<sai_uint8_t> mask = {0xFF, 0xFF};
+    return std::make_pair(std::move(data), std::move(mask));
+  }
+
   AclTableSaiId createAclTable(sai_int32_t stage) const {
     return saiApiTable->aclApi().create<SaiAclTableTraits>(
         {
-            stage, kBindPointTypeList(), kActionTypeList(),
+            stage,
+            kBindPointTypeList(),
+            kActionTypeList(),
             true, // srcIpv6
             true, // dstIpv6
             true, // srcIpv4
@@ -220,6 +249,13 @@ class AclTableStoreTest : public SaiStoreTest {
             true, // neighbor meta
             true, // ethertype
             true, // outer vlan id
+            true, // bth opcode
+            true, // ipv6 next header
+            kUdfGroupId(), // udf group 0
+            kUdfGroupId() + 1, // udf group 1
+            kUdfGroupId() + 2, // udf group 2
+            kUdfGroupId() + 3, // udf group 3
+            kUdfGroupId() + 4, // udf group 4
         },
         0);
   }
@@ -255,6 +291,13 @@ class AclTableStoreTest : public SaiStoreTest {
             AclEntryFieldU32(this->kNeighborDstUserMeta()),
             AclEntryFieldU16(this->kEtherType()),
             AclEntryFieldU16(this->kOuterVlanId()),
+            AclEntryFieldU8(this->kBthOpcode()),
+            AclEntryFieldU8(this->kIpv6NextHeader()),
+            AclEntryFieldU8List(this->kUdfGroupData()),
+            AclEntryFieldU8List(this->kUdfGroupData()),
+            AclEntryFieldU8List(this->kUdfGroupData()),
+            AclEntryFieldU8List(this->kUdfGroupData()),
+            AclEntryFieldU8List(this->kUdfGroupData()),
             AclEntryActionU32(this->kPacketAction()),
             AclEntryActionSaiObjectIdT(this->kCounter()),
             AclEntryActionU8(this->kSetTC()),
@@ -262,6 +305,8 @@ class AclTableStoreTest : public SaiStoreTest {
             AclEntryActionSaiObjectIdList(this->kMirrorIngress()),
             AclEntryActionSaiObjectIdList(this->kMirrorEgress()),
             AclEntryActionSaiObjectIdT(this->kMacsecFlow()),
+            AclEntryActionSaiObjectIdT(this->kSetUserTrap()),
+            AclEntryActionBool(this->kDisableArsForwarding()),
         },
         0);
   }
@@ -270,12 +315,14 @@ class AclTableStoreTest : public SaiStoreTest {
     SaiAclCounterTraits::Attributes::TableId aclTableIdAttribute{aclTableId};
     return saiApiTable->aclApi().create<SaiAclCounterTraits>(
         {
-          aclTableIdAttribute,
+            aclTableIdAttribute,
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
-              this->kCounterLabel(),
+            this->kCounterLabel(),
 #endif
-              this->kEnablePacketCount(), this->kEnableByteCount(),
-              this->kCounterPackets(), this->kCounterBytes(),
+            this->kEnablePacketCount(),
+            this->kEnableByteCount(),
+            this->kCounterPackets(),
+            this->kCounterBytes(),
         },
         0);
   }
@@ -287,7 +334,8 @@ TEST_F(AclTableStoreTest, loadAclTables) {
   s.reload();
   auto& store = s.get<SaiAclTableTraits>();
 
-  SaiAclTableTraits::AdapterHostKey k{"AclTable1"};
+  SaiAclTableTraits::AdapterHostKey k{
+      cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE()};
 
   auto got = store.get(k);
   EXPECT_NE(got, nullptr);
@@ -319,13 +367,13 @@ TEST_P(AclTableStoreParamTest, loadAclCounter) {
   s.reload();
   auto& store = s.get<SaiAclCounterTraits>();
 
-  SaiAclCounterTraits::AdapterHostKey k {
-    aclTableId,
+  SaiAclCounterTraits::AdapterHostKey k{
+      aclTableId,
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
-        this->kCounterLabel(),
+      this->kCounterLabel(),
 #endif
-        this->kEnablePacketCount(), this->kEnableByteCount()
-  };
+      this->kEnablePacketCount(),
+      this->kEnableByteCount()};
 
   auto got = store.get(k);
   EXPECT_NE(got, nullptr);
@@ -334,7 +382,8 @@ TEST_P(AclTableStoreParamTest, loadAclCounter) {
 
 TEST_P(AclTableStoreParamTest, aclTableCtorLoad) {
   auto aclTableId = createAclTable(GetParam());
-  auto obj = createObj<SaiAclTableTraits>(aclTableId, "AclTable1");
+  auto obj = createObj<SaiAclTableTraits>(
+      aclTableId, cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE());
   EXPECT_EQ(obj.adapterKey(), aclTableId);
 }
 
@@ -357,7 +406,9 @@ TEST_P(AclTableStoreParamTest, aclCounterLoadCtor) {
 
 TEST_P(AclTableStoreParamTest, aclTableCtorCreate) {
   SaiAclTableTraits::CreateAttributes c{
-      GetParam(), this->kBindPointTypeList(), this->kActionTypeList(),
+      GetParam(),
+      this->kBindPointTypeList(),
+      this->kActionTypeList(),
       true, // srcIpv6
       true, // dstIpv6
       true, // srcIpv4
@@ -382,9 +433,17 @@ TEST_P(AclTableStoreParamTest, aclTableCtorCreate) {
       true, // neighbor meta
       true, // ethertype
       true, // outer vlan id
+      true, // bth opcode
+      true, // ipv6 next header
+      kUdfGroupId(), // udf group 0
+      kUdfGroupId() + 1, // udf group 1
+      kUdfGroupId() + 2, // udf group 2
+      kUdfGroupId() + 3, // udf group 3
+      kUdfGroupId() + 4, // udf group 4
   };
 
-  SaiAclTableTraits::AdapterHostKey k{"AclTable1"};
+  SaiAclTableTraits::AdapterHostKey k{
+      cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE()};
 
   SaiObject<SaiAclTableTraits> obj = createObj<SaiAclTableTraits>(k, c, 0);
   EXPECT_EQ(GET_ATTR(AclTable, Stage, obj.attributes()), GetParam());
@@ -423,13 +482,22 @@ TEST_P(AclTableStoreParamTest, AclEntryCreateCtor) {
       this->kNeighborDstUserMeta(),
       this->kEtherType(),
       this->kOuterVlanId(),
+      this->kBthOpcode(),
+      this->kIpv6NextHeader(),
+      this->kUdfGroupData(),
+      this->kUdfGroupData(),
+      this->kUdfGroupData(),
+      this->kUdfGroupData(),
+      this->kUdfGroupData(),
       this->kPacketAction(),
       this->kCounter(),
       this->kSetTC(),
       this->kSetDSCP(),
       this->kMirrorIngress(),
       this->kMirrorEgress(),
-      this->kMacsecFlow()};
+      this->kMacsecFlow(),
+      this->kSetUserTrap(),
+      this->kDisableArsForwarding()};
 
   SaiObject<SaiAclEntryTraits> obj = createObj<SaiAclEntryTraits>(k, c, 0);
   EXPECT_EQ(GET_ATTR(AclEntry, TableId, obj.attributes()), aclTableId);
@@ -438,22 +506,23 @@ TEST_P(AclTableStoreParamTest, AclEntryCreateCtor) {
 TEST_P(AclTableStoreParamTest, AclCounterCreateCtor) {
   auto aclTableId = createAclTable(GetParam());
 
-  SaiAclCounterTraits::CreateAttributes c {
-    aclTableId,
+  SaiAclCounterTraits::CreateAttributes c{
+      aclTableId,
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
-        this->kCounterLabel(),
+      this->kCounterLabel(),
 #endif
-        this->kEnablePacketCount(), this->kEnableByteCount(),
-        this->kCounterPackets(), this->kCounterBytes()
-  };
+      this->kEnablePacketCount(),
+      this->kEnableByteCount(),
+      this->kCounterPackets(),
+      this->kCounterBytes()};
 
-  SaiAclCounterTraits::AdapterHostKey k {
-    aclTableId,
+  SaiAclCounterTraits::AdapterHostKey k{
+      aclTableId,
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
-        this->kCounterLabel(),
+      this->kCounterLabel(),
 #endif
-        this->kEnablePacketCount(), this->kEnableByteCount()
-  };
+      this->kEnablePacketCount(),
+      this->kEnableByteCount()};
 
   SaiObject<SaiAclCounterTraits> obj = createObj<SaiAclCounterTraits>(k, c, 0);
   EXPECT_EQ(GET_ATTR(AclCounter, TableId, obj.attributes()), aclTableId);

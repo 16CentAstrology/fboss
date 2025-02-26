@@ -44,7 +44,7 @@ void ManagedFdbEntry::createObject(PublisherObjects objects) {
   auto vlan = SaiApiTable::getInstance()->routerInterfaceApi().getAttribute(
       std::get<RouterInterfaceSaiId>(saiPortAndIntf_),
       SaiVlanRouterInterfaceTraits::Attributes::VlanId{});
-  SaiFdbTraits::FdbEntry entry{switchId_, vlan, getMac()};
+  SaiFdbTraits::FdbEntry entry{saiSwitchId_, vlan, getMac()};
 
   auto bridgePort = std::get<BridgePortWeakPtr>(objects).lock();
   auto bridgePortId = bridgePort->adapterKey();
@@ -107,11 +107,11 @@ SaiFdbTraits::FdbEntry ManagedFdbEntry::makeFdbEntry(
       rifHandle->routerInterface);
   auto vlan =
       GET_ATTR(VlanRouterInterface, VlanId, vlanRouterInterface->attributes());
-  return SaiFdbTraits::FdbEntry{switchId_, vlan, getMac()};
+  return SaiFdbTraits::FdbEntry{saiSwitchId_, vlan, getMac()};
 }
 
 void ManagedFdbEntry::handleLinkDown() {
-  XLOG(DBG2) << "fdb entry (" << getInterfaceID() << ", " << getMac().toString()
+  XLOG(DBG2) << "fdb entry (" << toString()
              << ") notifying link down to subscribed neighbors";
   SaiObjectEventPublisher::getInstance()->get<SaiFdbTraits>().notifyLinkDown(
       intfIDAndMac_);
@@ -371,12 +371,12 @@ L2EntryThrift SaiFdbManager::fdbToL2Entry(
       BridgePortSaiId{bridgePortSaiId},
       SaiBridgePortTraits::Attributes::PortId{});
   const auto portItr =
-      concurrentIndices_->portIds.find(PortSaiId{portOrLagSaiId});
+      concurrentIndices_->portSaiId2PortInfo.find(PortSaiId{portOrLagSaiId});
   const auto lagItr =
       concurrentIndices_->aggregatePortIds.find(LagSaiId{portOrLagSaiId});
 
-  if (portItr != concurrentIndices_->portIds.cend()) {
-    entry.port() = portItr->second;
+  if (portItr != concurrentIndices_->portSaiId2PortInfo.cend()) {
+    entry.port() = portItr->second.portID;
   } else if (lagItr != concurrentIndices_->aggregatePortIds.cend()) {
     entry.trunk() = lagItr->second;
   } else {
@@ -393,10 +393,18 @@ L2EntryThrift SaiFdbManager::fdbToL2Entry(
 
 std::vector<L2EntryThrift> SaiFdbManager::getL2Entries() const {
   std::vector<L2EntryThrift> entries;
-  entries.reserve(managedFdbEntries_.size());
   for (const auto& publisherAndFdbEntry : managedFdbEntries_) {
-    entries.emplace_back(
-        fdbToL2Entry(publisherAndFdbEntry.second->makeFdbEntry(managerTable_)));
+    /*
+     * Try to read the fdb entry from the store. If a mac entry
+     * has aged out and state delta for mac entry is not yet
+     * processed, the sdk will return item not found error.
+     */
+    try {
+      entries.emplace_back(fdbToL2Entry(
+          publisherAndFdbEntry.second->makeFdbEntry(managerTable_)));
+    } catch (const std::exception& ex) {
+      XLOG(ERR) << "Failed to get l2 entry: " << ex.what();
+    }
   }
   return entries;
 }

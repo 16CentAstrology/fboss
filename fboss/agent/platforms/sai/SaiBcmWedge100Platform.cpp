@@ -14,7 +14,6 @@
 #include "fboss/agent/platforms/common/utils/Wedge100LedUtils.h"
 #include "fboss/agent/platforms/common/wedge100/Wedge100PlatformMapping.h"
 
-#include <cstdio>
 #include <cstring>
 namespace facebook::fboss {
 
@@ -30,16 +29,18 @@ SaiBcmWedge100Platform::SaiBcmWedge100Platform(
           localMac) {}
 
 void SaiBcmWedge100Platform::setupAsic(
-    cfg::SwitchType switchType,
     std::optional<int64_t> switchId,
-    std::optional<cfg::Range64> systemPortRange) {
-  asic_ = std::make_unique<TomahawkAsic>(switchType, switchId, systemPortRange);
+    const cfg::SwitchInfo& switchInfo,
+    std::optional<HwAsic::FabricNodeRole> fabricNodeRole) {
+  CHECK(!fabricNodeRole.has_value());
+  asic_ = std::make_unique<TomahawkAsic>(switchId, switchInfo);
 }
+
 HwAsic* SaiBcmWedge100Platform::getAsic() const {
   return asic_.get();
 }
 
-SaiBcmWedge100Platform::~SaiBcmWedge100Platform() {}
+SaiBcmWedge100Platform::~SaiBcmWedge100Platform() = default;
 
 void SaiBcmWedge100Platform::initLEDs() {
   // The LED mode can be reset by power cycle or by BMC push. Set the LED

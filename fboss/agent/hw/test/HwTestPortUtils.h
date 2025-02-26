@@ -25,8 +25,17 @@ void setPortLoopbackMode(
 
 TransceiverInfo getTransceiverInfo(cfg::PortProfileID profileID);
 
-void setPortTxEnable(const HwSwitch* hw, PortID port, bool enable);
+void setCreditWatchdogAndPortTx(const HwSwitch* hw, PortID port, bool enable);
+void enableCreditWatchdog(const HwSwitch* hw, bool enable);
 
+void setPortTx(const HwSwitch* hw, PortID port, bool enable);
 void enableTransceiverProgramming(bool enable);
+int getLoopbackMode(cfg::PortLoopbackMode loopbackMode);
+
+void injectFecError(
+    std::vector<int> hwPorts,
+    const HwSwitch* hw,
+    bool injectCorrectable);
+
 } // namespace utility
 } // namespace facebook::fboss

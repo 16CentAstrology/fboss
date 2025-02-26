@@ -12,7 +12,7 @@ void HwTestLearningUpdateObserver::startObserving(HwSwitchEnsemble* ensemble) {
   std::lock_guard<std::mutex> lock(mtx_);
   ensemble_ = ensemble;
 
-  applyStateUpdateThread_ = std::make_unique<std::thread>([=]() {
+  applyStateUpdateThread_ = std::make_unique<std::thread>([=, this]() {
     initThread("apply state");
     applyStateUpdateEventBase_.loopForever();
   });
@@ -25,7 +25,7 @@ void HwTestLearningUpdateObserver::stopObserving() {
   HwSwitchEnsemble::HwSwitchEventObserverIf::stopObserving();
 
   if (applyStateUpdateThread_) {
-    applyStateUpdateEventBase_.runInEventBaseThreadAndWait(
+    applyStateUpdateEventBase_.runInFbossEventBaseThreadAndWait(
         [this] { applyStateUpdateEventBase_.terminateLoopSoon(); });
     applyStateUpdateThread_->join();
     applyStateUpdateThread_.reset();
@@ -50,7 +50,7 @@ void HwTestLearningUpdateObserver::l2LearningUpdateReceived(
    * another state update or else we will try to acquire same lock and hang.
    * To avoid, schedule state delta processing in a different context.
    */
-  applyStateUpdateEventBase_.runInEventBaseThread(
+  applyStateUpdateEventBase_.runInFbossEventBaseThread(
       [this, l2Entry, l2EntryUpdateType]() {
         this->applyStateUpdateHelper(l2Entry, l2EntryUpdateType);
       });
@@ -76,19 +76,22 @@ HwTestLearningUpdateObserver::waitForLearningUpdates(
     int numUpdates,
     std::optional<int> secondsToWait) {
   std::unique_lock<std::mutex> lock(mtx_);
+  // wait for at least numUpdates, call reset before waiting for accurate
+  // waiting
+  auto predicate = [this, numUpdates] { return data_.size() >= numUpdates; };
+  if (predicate()) {
+    return data_;
+  }
   if (secondsToWait) {
-    cv_.wait_for(
-        lock, std::chrono::seconds(secondsToWait.value()), [this, numUpdates] {
-          return data_.size() == numUpdates;
-        });
+    cv_.wait_for(lock, std::chrono::seconds(secondsToWait.value()), predicate);
   } else {
-    cv_.wait(lock, [this, numUpdates] { return data_.size() == numUpdates; });
+    cv_.wait(lock, predicate);
   }
   return data_;
 }
 
 void HwTestLearningUpdateObserver::waitForStateUpdate() {
-  applyStateUpdateEventBase_.runInEventBaseThreadAndWait([]() { return; });
+  applyStateUpdateEventBase_.runInFbossEventBaseThreadAndWait([]() { return; });
 }
 
 HwTestLearningUpdateAutoObserver::HwTestLearningUpdateAutoObserver(

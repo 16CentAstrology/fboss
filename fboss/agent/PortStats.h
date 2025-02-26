@@ -59,7 +59,9 @@ class PortStats {
   void dhcpV6BadPkt();
   void dhcpV6DropPkt();
 
-  void linkStateChange(bool isUp);
+  void
+  linkStateChange(bool isUp, bool isDrained, std::optional<bool> activeState);
+  void linkActiveStateChange(bool isActive);
 
   void ipv4DstLookupFailure();
   void ipv6DstLookupFailure();
@@ -67,11 +69,17 @@ class PortStats {
   void setPortStatus(bool isUp);
   void clearPortStatusCounter();
 
+  void setPortActiveStatus(bool isActive);
+  void clearPortActiveStatusCounter();
+
   void pktTooBig();
 
   void setPortName(const std::string& portName);
-  std::string getPortName() {
+  std::string getPortName() const {
     return portName_;
+  }
+  PortID getPortId() const {
+    return portID_;
   }
 
   void MkPduRecvdPkt();
@@ -85,13 +93,25 @@ class PortStats {
 
   void pfcDeadlockRecoveryCount();
   void pfcDeadlockDetectionCount();
+  void
+  inErrors(int64_t inErrors, bool isDrained, std::optional<bool> activeState);
+
+  void fecUncorrectableErrors(
+      int64_t fecUncorrectableErrors,
+      bool isDrained,
+      std::optional<bool> activeState);
 
  private:
   // Forbidden copy constructor and assignment operator
   PortStats(PortStats const&) = delete;
   PortStats& operator=(PortStats const&) = delete;
 
-  std::string getCounterKey(const std::string& key);
+  std::string getCounterKey(const std::string& key) const;
+  void updateLoadBearingTLStatValue(
+      const std::string& counter,
+      bool isDrained,
+      std::optional<bool> activeState,
+      int64_t val) const;
 
   /*
    * It's useful to store this
@@ -108,6 +128,8 @@ class PortStats {
   SwitchStats* switchStats_;
 
   std::chrono::steady_clock::time_point lastMkPduTime_;
+  int64_t curInErrors_{0};
+  int64_t curFecUncorrectableErrors_{0};
 };
 
 } // namespace facebook::fboss

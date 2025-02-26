@@ -16,7 +16,7 @@
 #include "fboss/cli/fboss2/utils/CmdUtils.h"
 #include "fboss/cli/fboss2/utils/Table.h"
 #include "fboss/cli/fboss2/utils/clients/BmcClient.h"
-#include "folly/json.h"
+#include "folly/json/json.h"
 #include "neteng/fboss/bgp/if/gen-cpp2/TBgpService.h"
 
 #include <boost/algorithm/string.hpp>
@@ -104,9 +104,31 @@ class CmdShowHardware
       for (const auto& [pim, pimdata] : pimInfo->second.items()) {
         cli::HWModule hwmod;
         hwmod.moduleName() = pim.asString();
+        // TODO: This is a quick and dirty hack to restore functionality until
+        // T184560911 is resolved.
+        if (product == "MINIPACK2") {
+          if (pim.asString() == "PIM2") {
+            hwmod.moduleName() = "pim1";
+          } else if (pim.asString() == "PIM3") {
+            hwmod.moduleName() = "pim2";
+          } else if (pim.asString() == "PIM4") {
+            hwmod.moduleName() = "pim3";
+          } else if (pim.asString() == "PIM5") {
+            hwmod.moduleName() = "pim4";
+          } else if (pim.asString() == "PIM6") {
+            hwmod.moduleName() = "pim5";
+          } else if (pim.asString() == "PIM7") {
+            hwmod.moduleName() = "pim6";
+          } else if (pim.asString() == "PIM8") {
+            hwmod.moduleName() = "pim7";
+          } else if (pim.asString() == "PIM9") {
+            hwmod.moduleName() = "pim8";
+          }
+        }
         hwmod.moduleType() = "PIM";
         hwmod.serialNumber() = data["PIMSERIAL"][pim].asString();
-        std::string lower_pim = boost::algorithm::to_lower_copy(pim.asString());
+        std::string lower_pim =
+            boost::algorithm::to_lower_copy(hwmod.get_moduleName());
         std::string pim_status = "";
         // Unfortunately, BMC does not adhere to a single standard so detecting
         // PIM presence is on a per platform basis.  So far we have observerd

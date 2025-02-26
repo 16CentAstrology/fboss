@@ -16,7 +16,6 @@
 #include "fboss/agent/hw/bcm/BcmFieldProcessorUtils.h"
 #include "fboss/agent/hw/bcm/BcmSwitch.h"
 #include "fboss/agent/hw/test/HwTestCoppUtils.h"
-#include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SwitchState.h"
 
 #include "fboss/agent/hw/test/ConfigFactory.h"
@@ -33,17 +32,19 @@ void checkCoppAclMatch(
   auto& swAcls = state->getAcls();
   int coppAclsCount = fpGroupNumAclEntries(
       unit, hw->getPlatform()->getAsic()->getDefaultACLGroupID());
-  ASSERT_EQ(swAcls->size(), coppAclsCount);
+  ASSERT_EQ(swAcls->numNodes(), coppAclsCount);
   // check all coop acls are sync between h/w and s/w
-  for (auto& iter : std::as_const(*swAcls)) {
-    const auto& swAcl = iter.second;
-    auto hwAcl = hw->getAclTable()->getAclIf(swAcl->getPriority());
-    ASSERT_NE(nullptr, hwAcl);
-    ASSERT_TRUE(BcmAclEntry::isStateSame(
-        hw,
-        hw->getPlatform()->getAsic()->getDefaultACLGroupID(),
-        hwAcl->getHandle(),
-        swAcl));
+  for (auto& mIter : std::as_const(*swAcls)) {
+    for (auto& iter : std::as_const(*mIter.second)) {
+      const auto& swAcl = iter.second;
+      auto hwAcl = hw->getAclTable()->getAclIf(swAcl->getPriority());
+      ASSERT_NE(nullptr, hwAcl);
+      ASSERT_TRUE(BcmAclEntry::isStateSame(
+          hw,
+          hw->getPlatform()->getAsic()->getDefaultACLGroupID(),
+          hwAcl->getHandle(),
+          swAcl));
+    }
   }
 }
 
@@ -79,7 +80,10 @@ class BcmAclCoppTest : public BcmTest {
   cfg::SwitchConfig initialConfig() const override {
     auto cfg = utility::oneL3IntfNoIPAddrConfig(
         getHwSwitch(), masterLogicalPortIds()[0]);
-    utility::setDefaultCpuTrafficPolicyConfig(cfg, getAsic());
+    utility::setDefaultCpuTrafficPolicyConfig(
+        cfg,
+        getHwSwitchEnsemble()->getL3Asics(),
+        getHwSwitchEnsemble()->isSai());
     return cfg;
   }
 };

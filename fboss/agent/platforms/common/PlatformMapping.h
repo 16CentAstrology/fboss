@@ -14,8 +14,11 @@
 #include "fboss/lib/phy/gen-cpp2/phy_types.h"
 #include "fboss/qsfp_service/if/gen-cpp2/transceiver_types.h"
 
-namespace facebook {
-namespace fboss {
+DECLARE_string(platform_mapping_override_path);
+DECLARE_bool(multi_npu_platform_mapping);
+DECLARE_int32(platform_mapping_profile);
+
+namespace facebook::fboss {
 
 cfg::PlatformPortConfigOverrideFactor buildPlatformPortConfigOverrideFactor(
     const TransceiverInfo& transceiverInfo);
@@ -69,7 +72,7 @@ class PlatformPortProfileConfigMatcher {
 
 class PlatformMapping {
  public:
-  PlatformMapping() {}
+  PlatformMapping() = default;
   explicit PlatformMapping(const std::string& jsonPlatformMappingStr);
   explicit PlatformMapping(const cfg::PlatformMapping& mapping);
   virtual ~PlatformMapping() = default;
@@ -79,6 +82,8 @@ class PlatformMapping {
   const std::map<int32_t, cfg::PlatformPortEntry>& getPlatformPorts() const {
     return platformPorts_;
   }
+
+  const cfg::PlatformPortEntry& getPlatformPort(int32_t portId) const;
 
   const std::optional<phy::PortProfileConfig> getPortProfileConfig(
       PlatformPortProfileConfigMatcher matcher) const;
@@ -96,13 +101,33 @@ class PlatformMapping {
   std::optional<std::vector<phy::PinConfig>> getPortTransceiverPinConfigs(
       PlatformPortProfileConfigMatcher matcher) const;
 
+  std::set<uint8_t> getTransceiverHostLanes(
+      PlatformPortProfileConfigMatcher matcher) const;
+
+  int getTransceiverIdFromSwPort(PortID swPort) const;
+
+  std::vector<PortID> getSwPortListFromTransceiverId(int tcvrId) const;
+
   const std::map<std::string, phy::DataPlanePhyChip>& getChips() const {
     return chips_;
   }
 
+  std::map<std::string, phy::DataPlanePhyChip> getPortDataplaneChips(
+      PlatformPortProfileConfigMatcher matcher) const;
+
   int getPimID(PortID portID) const;
 
   int getPimID(const cfg::PlatformPortEntry& platformPort) const;
+
+  cfg::PortProfileID getProfileIDBySpeed(PortID portID, cfg::PortSpeed speed)
+      const;
+
+  std::optional<cfg::PortProfileID> getProfileIDBySpeedIf(
+      PortID portID,
+      cfg::PortSpeed speed) const;
+
+  std::map<std::string, std::vector<cfg::PortProfileID>> getAllPortProfiles()
+      const;
 
   const phy::DataPlanePhyChip& getPortIphyChip(PortID port) const;
 
@@ -120,6 +145,7 @@ class PlatformMapping {
   void merge(PlatformMapping* mapping);
 
   cfg::PortSpeed getPortMaxSpeed(PortID portID) const;
+  cfg::Scope getPortScope(PortID portID) const;
 
   const std::vector<cfg::PlatformPortConfigOverride>& getPortConfigOverrides()
       const {
@@ -134,6 +160,10 @@ class PlatformMapping {
   // Converts port name -> logical portID
   const PortID getPortID(const std::string& portName) const;
 
+  std::optional<std::string> getPortNameByPortId(PortID portId) const;
+
+  std::optional<int32_t> getVirtualDeviceID(const std::string& portName) const;
+
   /*
    * Some platforms need customize their raw override factor generated from
    * Transceiver or Chip to match their PlatformMapping PortConfigOverrides
@@ -144,6 +174,19 @@ class PlatformMapping {
 
   std::map<phy::DataPlanePhyChip, std::vector<phy::PinConfig>>
   getCorePinMapping(const std::vector<cfg::Port>& ports) const;
+
+  virtual bool supportsInterPacketGapBits() const {
+    return false;
+  }
+
+  std::vector<cfg::PortProfileID> getPortProfileFromLinkProperties(
+      cfg::PortSpeed speed,
+      uint16_t numLanes,
+      phy::IpModulation modulation,
+      phy::FecMode fec,
+      std::optional<TransmitterTechnology> medium) const;
+
+  std::vector<PortID> getPlatformPorts(cfg::PortType portType) const;
 
  protected:
   std::map<int32_t, cfg::PlatformPortEntry> platformPorts_;
@@ -161,5 +204,4 @@ class PlatformMapping {
   PlatformMapping(PlatformMapping const&) = delete;
   PlatformMapping& operator=(PlatformMapping const&) = delete;
 };
-} // namespace fboss
-} // namespace facebook
+} // namespace facebook::fboss

@@ -2,7 +2,6 @@
 
 #include "fboss/qsfp_service/module/QsfpUtil.h"
 #include <folly/logging/xlog.h>
-#include <sysexits.h>
 
 namespace facebook::fboss {
 
@@ -53,6 +52,24 @@ void QsfpUtil::setChannelStateBitmask(
 }
 
 /*
+ * This function returns the transceiver management interface
+ * through either qsfp_service query or direct_i2c operation
+ */
+std::map<int32_t, TransceiverManagementInterface> QsfpUtil::getModuleType(
+    const std::vector<unsigned int>& ports) {
+  std::map<int32_t, TransceiverManagementInterface> moduleTypes;
+
+  if (!directAccess_) {
+    moduleTypes = getModuleTypeViaService(ports);
+  } else {
+    for (auto port : ports) {
+      moduleTypes[port] = getModuleTypeDirect(port);
+    }
+  }
+  return moduleTypes;
+}
+
+/*
  * This function returns the transceiver management interfaces
  * by reading the register 0 indirectly from modules. If there is an error,
  * this function returns an empty interface map.
@@ -67,7 +84,7 @@ QsfpUtil::getModuleTypeViaService(const std::vector<unsigned int>& ports) {
   std::map<int32_t, ReadResponse> readResp;
   readViaServiceFn_(
       idx,
-      {TransceiverI2CApi::ADDR_QSFP, offset, length, page},
+      {TransceiverAccessParameter::ADDR_QSFP, offset, length, page},
       *evb_,
       readResp);
 
@@ -92,14 +109,16 @@ QsfpUtil::getModuleTypeViaService(const std::vector<unsigned int>& ports) {
  * This function returns the transceiver management interface
  * by reading the register 0 directly from module
  */
-TransceiverManagementInterface QsfpUtil::getModuleType(unsigned int port) {
+TransceiverManagementInterface QsfpUtil::getModuleTypeDirect(
+    unsigned int port) {
   uint8_t moduleId = static_cast<uint8_t>(TransceiverModuleIdentifier::UNKNOWN);
 
   // Get the module id to differentiate between CMIS (0x1e) and SFF
   for (auto retry = 0; retry < kNumRetryGetModuleType; retry++) {
     try {
-      readViaDirectIoFn_(port, {TransceiverI2CApi::ADDR_QSFP, 0, 1}, &moduleId);
-    } catch (const I2cError& ex) {
+      readViaDirectIoFn_(
+          port, {TransceiverAccessParameter::ADDR_QSFP, 0, 1}, &moduleId);
+    } catch (const I2cError&) {
       fprintf(
           stderr, "QSFP %d: not present or read error, retrying...\n", port);
     }

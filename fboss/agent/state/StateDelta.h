@@ -30,6 +30,7 @@
 #include "fboss/agent/state/LoadBalancerMap.h"
 #include "fboss/agent/state/Mirror.h"
 #include "fboss/agent/state/MirrorMap.h"
+#include "fboss/agent/state/MirrorOnDropReportMap.h"
 #include "fboss/agent/state/NodeMapDelta.h"
 #include "fboss/agent/state/PortMap.h"
 #include "fboss/agent/state/QosPolicyMap.h"
@@ -45,10 +46,13 @@
 
 #include "fboss/thrift_cow/nodes/Types.h"
 
+DECLARE_bool(verify_apply_oper_delta);
+
 namespace facebook::fboss {
 
 class SwitchState;
 class ControlPlane;
+class MultiControlPlane;
 
 /*
  * StateDelta contains code for examining the differences between two
@@ -56,11 +60,11 @@ class ControlPlane;
  */
 class StateDelta {
  public:
-  StateDelta() {}
+  StateDelta() = default;
   StateDelta(
       std::shared_ptr<SwitchState> oldState,
-      std::shared_ptr<SwitchState> newState)
-      : old_(oldState), new_(newState) {}
+      std::shared_ptr<SwitchState> newState);
+  StateDelta(std::shared_ptr<SwitchState> oldState, fsdb::OperDelta operDelta);
   virtual ~StateDelta();
 
   const std::shared_ptr<SwitchState>& oldState() const {
@@ -69,44 +73,47 @@ class StateDelta {
   const std::shared_ptr<SwitchState>& newState() const {
     return new_;
   }
-  bool operator==(const StateDelta& other) const {
-    return other.oldState() == old_ && other.newState() == new_;
-  }
 
-  thrift_cow::ThriftMapDelta<PortMap> getPortsDelta() const;
-  VlanMapDelta getVlansDelta() const;
-  InterfaceMapDelta getIntfsDelta() const;
+  MultiSwitchMapDelta<MultiSwitchPortMap> getPortsDelta() const;
+  MultiSwitchMapDelta<MultiSwitchVlanMap> getVlansDelta() const;
+  MultiSwitchInterfaceMapDelta getIntfsDelta() const;
   DeltaValue<QosPolicy> getDefaultDataPlaneQosPolicyDelta() const;
   AclMapDelta getAclsDelta(
       cfg::AclStage aclStage = cfg::AclStage::INGRESS,
       std::optional<std::string> tableName = std::nullopt) const;
-  thrift_cow::ThriftMapDelta<AclTableMap> getAclTablesDelta(
-      cfg::AclStage aclStage) const;
-  thrift_cow::ThriftMapDelta<AclTableGroupMap> getAclTableGroupsDelta() const;
-  QosPolicyMapDelta getQosPoliciesDelta() const;
-  thrift_cow::ThriftMapDelta<AggregatePortMap> getAggregatePortsDelta() const;
-  thrift_cow::ThriftMapDelta<SflowCollectorMap> getSflowCollectorsDelta() const;
-  thrift_cow::ThriftMapDelta<LoadBalancerMap> getLoadBalancersDelta() const;
-  DeltaValue<ControlPlane> getControlPlaneDelta() const;
-  thrift_cow::ThriftMapDelta<UdfPacketMatcherMap> getUdfPacketMatcherDelta()
+  ThriftMapDelta<AclTableMap> getAclTablesDelta(cfg::AclStage aclStage) const;
+  MultiSwitchMapDelta<MultiSwitchAclTableGroupMap> getAclTableGroupsDelta()
       const;
-  thrift_cow::ThriftMapDelta<UdfGroupMap> getUdfGroupDelta() const;
+  MultiSwitchMapDelta<MultiSwitchQosPolicyMap> getQosPoliciesDelta() const;
+  MultiSwitchMapDelta<MultiSwitchAggregatePortMap> getAggregatePortsDelta()
+      const;
+  MultiSwitchMapDelta<MultiSwitchSflowCollectorMap> getSflowCollectorsDelta()
+      const;
+  MultiSwitchMapDelta<MultiSwitchLoadBalancerMap> getLoadBalancersDelta() const;
+  ThriftMapDelta<MultiControlPlane> getControlPlaneDelta() const;
+  ThriftMapDelta<UdfPacketMatcherMap> getUdfPacketMatcherDelta() const;
+  ThriftMapDelta<UdfGroupMap> getUdfGroupDelta() const;
 
-  thrift_cow::ThriftMapDelta<MirrorMap> getMirrorsDelta() const;
+  MultiSwitchMapDelta<MultiSwitchMirrorMap> getMirrorsDelta() const;
+  MultiSwitchMapDelta<MultiSwitchMirrorOnDropReportMap>
+  getMirrorOnDropReportsDelta() const;
 
-  thrift_cow::ThriftMapDelta<TransceiverMap> getTransceiversDelta() const;
-  ForwardingInformationBaseMapDelta getFibsDelta() const;
-  thrift_cow::ThriftMapDelta<LabelForwardingInformationBase>
+  MultiSwitchMapDelta<MultiSwitchTransceiverMap> getTransceiversDelta() const;
+  MultiSwitchForwardingInformationBaseMapDelta getFibsDelta() const;
+  MultiSwitchMapDelta<MultiLabelForwardingInformationBase>
   getLabelForwardingInformationBaseDelta() const;
-  DeltaValue<SwitchSettings> getSwitchSettingsDelta() const;
+  ThriftMapDelta<MultiSwitchSettings> getSwitchSettingsDelta() const;
   DeltaValue<FlowletSwitchingConfig> getFlowletSwitchingConfigDelta() const;
-  thrift_cow::ThriftMapDelta<SystemPortMap> getSystemPortsDelta() const;
-  thrift_cow::ThriftMapDelta<IpTunnelMap> getIpTunnelsDelta() const;
-  thrift_cow::ThriftMapDelta<TeFlowTable> getTeFlowEntriesDelta() const;
+  MultiSwitchMapDelta<MultiSwitchSystemPortMap> getSystemPortsDelta() const;
+  ThriftMapDelta<IpTunnelMap> getIpTunnelsDelta() const;
+  MultiSwitchMapDelta<MultiTeFlowTable> getTeFlowEntriesDelta() const;
   // Remote object deltas
-  thrift_cow::ThriftMapDelta<SystemPortMap> getRemoteSystemPortsDelta() const;
-  InterfaceMapDelta getRemoteIntfsDelta() const;
-  thrift_cow::ThriftMapDelta<DsfNodeMap> getDsfNodesDelta() const;
+  MultiSwitchMapDelta<MultiSwitchSystemPortMap> getRemoteSystemPortsDelta()
+      const;
+  MultiSwitchInterfaceMapDelta getRemoteIntfsDelta() const;
+  MultiSwitchMapDelta<MultiSwitchDsfNodeMap> getDsfNodesDelta() const;
+
+  const fsdb::OperDelta& getOperDelta() const;
 
  private:
   // Forbidden copy constructor and assignment operator
@@ -115,8 +122,10 @@ class StateDelta {
 
   std::shared_ptr<SwitchState> old_;
   std::shared_ptr<SwitchState> new_;
+  // on-demand populate oper delta and keep it cached
+  mutable std::optional<fsdb::OperDelta> operDelta_;
 };
 
-std::ostream& operator<<(std::ostream& out, const StateDelta& stateDelta);
+bool isStateDeltaEmpty(const StateDelta& stateDelta);
 
 } // namespace facebook::fboss

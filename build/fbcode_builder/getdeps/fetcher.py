@@ -4,6 +4,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import errno
 import hashlib
 import os
@@ -153,6 +155,9 @@ class LocalDirFetcher(object):
     def get_src_dir(self):
         return self.path
 
+    def clean(self) -> None:
+        pass
+
 
 class SystemPackageFetcher(object):
     def __init__(self, build_options, packages) -> None:
@@ -239,7 +244,9 @@ class GitFetcher(Fetcher):
                     if not m:
                         raise Exception("Failed to parse rev from %s" % hash_file)
                     rev = m.group(1)
-                    print("Using pinned rev %s for %s" % (rev, repo_url))
+                    print(
+                        "Using pinned rev %s for %s" % (rev, repo_url), file=sys.stderr
+                    )
 
         self.rev = rev or "main"
         self.origin_repo = repo_url
@@ -361,10 +368,8 @@ def copy_if_different(src_name, dest_name) -> bool:
             if exc.errno != errno.ENOENT:
                 raise
         target = os.readlink(src_name)
-        print("Symlinking %s -> %s" % (dest_name, target))
         os.symlink(target, dest_name)
     else:
-        print("Copying %s -> %s" % (src_name, dest_name))
         shutil.copy2(src_name, dest_name)
 
     return True
@@ -469,7 +474,7 @@ class ShipitPathMap(object):
                 raise Exception(
                     "%s doesn't exist; check your sparse profile!" % dir_to_mirror
                 )
-
+            update_count = 0
             for root, dirs, files in os.walk(dir_to_mirror):
                 dirs[:] = [d for d in dirs if root_dev == st_dev(os.path.join(root, d))]
 
@@ -483,6 +488,13 @@ class ShipitPathMap(object):
                         full_file_list.add(target_name)
                         if copy_if_different(full_name, target_name):
                             change_status.record_change(target_name)
+                            if update_count < 10:
+                                print("Updated %s -> %s" % (full_name, target_name))
+                            elif update_count == 10:
+                                print("...")
+                            update_count += 1
+            if update_count:
+                print("Updated %s for %s" % (update_count, fbsource_subdir))
 
         # Compare the list of previously shipped files; if a file is
         # in the old list but not the new list then it has been
@@ -585,13 +597,63 @@ class SimpleShipitTransformerFetcher(Fetcher):
         return self.repo_dir
 
 
+class SubFetcher(Fetcher):
+    """Fetcher for a project with subprojects"""
+
+    def __init__(self, base, subs) -> None:
+        self.base = base
+        self.subs = subs
+
+    def update(self) -> ChangeStatus:
+        base = self.base.update()
+        changed = base.build_changed() or base.sources_changed()
+        for fetcher, dir in self.subs:
+            stat = fetcher.update()
+            if stat.build_changed() or stat.sources_changed():
+                changed = True
+            link = self.base.get_src_dir() + "/" + dir
+            if not os.path.exists(link):
+                os.symlink(fetcher.get_src_dir(), link)
+        return ChangeStatus(changed)
+
+    def clean(self) -> None:
+        self.base.clean()
+        for fetcher, _ in self.subs:
+            fetcher.clean()
+
+    def hash(self) -> None:
+        hash = self.base.hash()
+        for fetcher, _ in self.subs:
+            hash += fetcher.hash()
+
+    def get_src_dir(self):
+        return self.base.get_src_dir()
+
+
 class ShipitTransformerFetcher(Fetcher):
-    SHIPIT = "/var/www/scripts/opensource/shipit/run_shipit.php"
+    @classmethod
+    def _shipit_paths(cls, build_options):
+        www_path = ["/var/www/scripts/opensource/codesync"]
+        if build_options.fbsource_dir:
+            fbcode_path = [
+                os.path.join(
+                    build_options.fbsource_dir,
+                    "fbcode/opensource/codesync/codesync-cli/codesync",
+                )
+            ]
+        else:
+            fbcode_path = []
+        return www_path + fbcode_path
 
     def __init__(self, build_options, project_name) -> None:
         self.build_options = build_options
         self.project_name = project_name
         self.repo_dir = os.path.join(build_options.scratch_dir, "shipit", project_name)
+        self.shipit = None
+        for path in ShipitTransformerFetcher._shipit_paths(build_options):
+            if os.path.exists(path):
+                self.shipit = path
+                break
 
     def update(self) -> ChangeStatus:
         if os.path.exists(self.repo_dir):
@@ -604,20 +666,24 @@ class ShipitTransformerFetcher(Fetcher):
             shutil.rmtree(self.repo_dir)
 
     @classmethod
-    def available(cls):
-        return os.path.exists(cls.SHIPIT)
+    def available(cls, build_options):
+        return any(
+            os.path.exists(path)
+            for path in ShipitTransformerFetcher._shipit_paths(build_options)
+        )
 
     def run_shipit(self) -> None:
         tmp_path = self.repo_dir + ".new"
         try:
             if os.path.exists(tmp_path):
                 shutil.rmtree(tmp_path)
+            os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
 
             # Run shipit
             run_cmd(
                 [
-                    "php",
-                    ShipitTransformerFetcher.SHIPIT,
+                    self.shipit,
+                    "shipit",
                     "--project=" + self.project_name,
                     "--create-new-repo",
                     "--source-repo-dir=" + self.build_options.fbsource_dir,
@@ -626,7 +692,6 @@ class ShipitTransformerFetcher(Fetcher):
                     "--skip-source-pull",
                     "--skip-source-clean",
                     "--skip-push",
-                    "--skip-reset",
                     "--destination-use-anonymous-https",
                     "--create-new-repo-output-path=" + tmp_path,
                 ]
@@ -681,15 +746,18 @@ def download_url_to_file_with_progress(url: str, file_name) -> None:
     start = time.time()
     try:
         if os.environ.get("GETDEPS_USE_WGET") is not None:
-            subprocess.run(
+            procargs = (
                 [
                     "wget",
+                ]
+                + os.environ.get("GETDEPS_WGET_ARGS", "").split()
+                + [
                     "-O",
                     file_name,
                     url,
                 ]
             )
-
+            subprocess.run(procargs, capture_output=True)
             headers = None
 
         elif os.environ.get("GETDEPS_USE_LIBCURL") is not None:
@@ -807,6 +875,7 @@ class ArchiveFetcher(Fetcher):
 
         if not os.path.exists(self.file_name):
             self._download()
+            self._verify_hash()
 
         if tarfile.is_tarfile(self.file_name):
             opener = tarfile.open
@@ -816,19 +885,20 @@ class ArchiveFetcher(Fetcher):
             raise Exception("don't know how to extract %s" % self.file_name)
         os.makedirs(self.src_dir)
         print("Extract %s -> %s" % (self.file_name, self.src_dir))
-        t = opener(self.file_name)
         if is_windows():
             # Ensure that we don't fall over when dealing with long paths
             # on windows
             src = r"\\?\%s" % os.path.normpath(self.src_dir)
         else:
             src = self.src_dir
-        # The `str` here is necessary to ensure that we don't pass a unicode
-        # object down to tarfile.extractall on python2.  When extracting
-        # the boost tarball it makes some assumptions and tries to convert
-        # a non-ascii path to ascii and throws.
-        src = str(src)
-        t.extractall(src)
+
+        with opener(self.file_name) as t:
+            # The `str` here is necessary to ensure that we don't pass a unicode
+            # object down to tarfile.extractall on python2.  When extracting
+            # the boost tarball it makes some assumptions and tries to convert
+            # a non-ascii path to ascii and throws.
+            src = str(src)
+            t.extractall(src)
 
         with open(self.hash_file, "w") as f:
             f.write(self.sha256)

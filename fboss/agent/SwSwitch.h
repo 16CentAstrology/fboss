@@ -9,27 +9,41 @@
  */
 #pragma once
 
-#include "fboss/agent/HwSwitch.h"
+#include "fboss/agent/FbossEventBase.h"
+#include "fboss/agent/HwSwitchHandler.h"
+#include "fboss/agent/L2LearnEventObserver.h"
+#include "fboss/agent/MultiHwSwitchHandler.h"
+#include "fboss/agent/MultiSwitchFb303Stats.h"
 #include "fboss/agent/PacketObserver.h"
-#include "fboss/agent/RestartTimeTracker.h"
+#include "fboss/agent/SwRxPacket.h"
 #include "fboss/agent/SwSwitchRouteUpdateWrapper.h"
+#include "fboss/agent/SwitchInfoTable.h"
+#include "fboss/agent/SwitchStats.h"
 #include "fboss/agent/Utils.h"
+#include "fboss/agent/gen-cpp2/agent_stats_types.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
+#include "fboss/agent/gen-cpp2/switch_reachability_types.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
 #include "fboss/agent/rib/RoutingInformationBase.h"
+#include "fboss/agent/single/MonolithicHwSwitchHandler.h"
 #include "fboss/agent/state/StateUpdate.h"
 #include "fboss/agent/types.h"
+#include "fboss/lib/HwWriteBehavior.h"
 #include "fboss/lib/ThreadHeartbeat.h"
-#include "fboss/lib/link_snapshots/SnapshotManager-defs.h"
 #include "fboss/lib/phy/gen-cpp2/phy_types.h"
+#include "fboss/lib/restart_tracker/RestartTimeTracker.h"
 
 #include <folly/IntrusiveList.h>
 #include <folly/Range.h>
 #include <folly/SpinLock.h>
 #include <folly/ThreadLocal.h>
-#include <folly/io/async/EventBase.h>
+#include <folly/concurrency/ConcurrentHashMap.h>
 #include <optional>
+
+#if FOLLY_HAS_COROUTINES
+#include <folly/coro/BoundedQueue.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -38,8 +52,11 @@
 #include <thread>
 #include <type_traits>
 
+DECLARE_bool(rx_sw_priority);
+
 namespace facebook::fboss {
 
+struct AgentConfig;
 class ArpHandler;
 class InterfaceStats;
 class IPv4Handler;
@@ -48,7 +65,8 @@ class LinkAggregationManager;
 class LldpManager;
 class MPLSHandler;
 class PktCaptureManager;
-class Platform;
+class PlatformMapping;
+class PlatformProductInfo;
 class Port;
 class PortDescriptor;
 class PortStats;
@@ -56,6 +74,7 @@ class PortUpdateHandler;
 class RxPacket;
 class SwitchState;
 class SwitchStats;
+class SwitchIdScopeResolver;
 class StateDelta;
 class NeighborUpdater;
 class PacketLogger;
@@ -63,7 +82,6 @@ class RouteUpdateLogger;
 class StateObserver;
 class TunManager;
 class MirrorManager;
-template <size_t interval>
 class PhySnapshotManager;
 class AclNexthopHandler;
 class LookupClassUpdater;
@@ -79,6 +97,24 @@ class Interface;
 class FsdbSyncer;
 class TeFlowNexthopHandler;
 class DsfSubscriber;
+class HwAsicTable;
+class MultiHwSwitchHandler;
+class MonolithicHwSwitchHandler;
+class SwitchStatsObserver;
+class MultiSwitchPacketStreamMap;
+class SwSwitchWarmBootHelper;
+class AgentDirectoryUtil;
+class HwSwitchThriftClientTable;
+class ResourceAccountant;
+class RemoteNeighborUpdater;
+
+inline static const int kHiPriorityBufferSize{1000};
+inline static const int kMidPriorityBufferSize{1000};
+inline static const int kLowPriorityBufferSize{1000};
+
+namespace fsdb {
+enum class FsdbSubscriptionState;
+}
 
 enum class SwitchFlags : int {
   DEFAULT = 0,
@@ -116,7 +152,7 @@ inline bool operator&(SwitchFlags lhs, SwitchFlags rhs) {
  * must be used in conjunction with a HwSwitch object, which provides an
  * interface to the switch hardware.
  */
-class SwSwitch : public HwSwitch::Callback {
+class SwSwitch : public HwSwitchCallback {
  public:
   typedef std::function<std::shared_ptr<SwitchState>(
       const std::shared_ptr<SwitchState>&)>
@@ -127,35 +163,64 @@ class SwSwitch : public HwSwitch::Callback {
   using AllThreadsSwitchStats =
       folly::ThreadLocalPtr<SwitchStats, SwSwitch>::Accessor;
 
-  explicit SwSwitch(std::unique_ptr<Platform> platform);
+  SwSwitch(
+      HwSwitchHandlerInitFn hwSwitchHandlerInitFn,
+      const AgentDirectoryUtil* agentDirUtil,
+      bool supportsAddRemovePort,
+      const AgentConfig* config,
+      const std::shared_ptr<SwitchState>& initialState = nullptr);
+
+  /*
+   * Needed for mock platforms that do cannot initialize platform mapping
+   * based on fruid file
+   */
+  SwSwitch(
+      HwSwitchHandlerInitFn hwSwitchHandlerInitFn,
+      std::unique_ptr<PlatformMapping> platformMapping,
+      const AgentDirectoryUtil* agentDirUtil,
+      bool supportsAddRemovePort,
+      const AgentConfig* config);
+
+  /* used in tests */
+  SwSwitch(
+      HwSwitchHandlerInitFn hwSwitchHandlerInitFn,
+      std::unique_ptr<PlatformMapping> platformMapping,
+      const AgentDirectoryUtil* agentDirUtil,
+      bool supportsAddRemovePort,
+      const AgentConfig* config,
+      const std::shared_ptr<SwitchState>& initialState = nullptr);
+
   ~SwSwitch() override;
 
-  HwSwitch* getHw() const {
-    return hw_;
+  MultiHwSwitchHandler* getHwSwitchHandler() {
+    return multiHwSwitchHandler_.get();
   }
 
-  const Platform* getPlatform() const {
-    return platform_.get();
+  const MultiHwSwitchHandler* getHwSwitchHandler() const {
+    return multiHwSwitchHandler_.get();
   }
-  Platform* getPlatform() {
-    return platform_.get();
+
+  const PlatformMapping* getPlatformMapping() const {
+    return platformMapping_.get();
+  }
+  PlatformMapping* getPlatformMapping() {
+    return platformMapping_.get();
   }
 
   TunManager* getTunManager() {
     return tunMgr_.get();
   }
+  const SwitchIdScopeResolver* getScopeResolver() const {
+    return scopeResolver_.get();
+  }
 
-  /**
-   * Return the vlan where the CPU sits
-   *
-   * This vlan ID is used to encode the l2 vlan info when CPU sends traffic
-   * through the HW.
-   * Note: It does not mean the HW will send the packet with this vlan value.
-   * For example, Broadcom HW will overwrite this value based on its egress
-   * programming.
-   */
-  std::optional<VlanID> getCPUVlan() const;
+  HwSwitchThriftClientTable* getHwSwitchThriftClientTable() const {
+    return hwSwitchThriftClientTable_.get();
+  }
 
+  ResourceAccountant* getResourceAccountant() const {
+    return resourceAccountant_.get();
+  }
   /*
    * Initialize the switch.
    *
@@ -182,14 +247,21 @@ class SwSwitch : public HwSwitch::Callback {
    */
   void init(
       std::unique_ptr<TunManager> tunMgr,
+      HwSwitchInitFn hwSwitchInitFn,
       SwitchFlags flags = SwitchFlags::DEFAULT);
 
   // can be used in the tests, where a test orchestrating ensemble can be
   // injected between HwSwitch and SwSwitch an ensemble must dispatch events to
   // SwSwitch as soon as it receives.
   void init(
-      HwSwitch::Callback* callback,
+      HwSwitchCallback* callback,
       std::unique_ptr<TunManager> tunMgr,
+      HwSwitchInitFn hwSwitchInitFn,
+      const HwWriteBehavior& hwWriteBehavior,
+      SwitchFlags flags = SwitchFlags::DEFAULT);
+
+  void init(
+      const HwWriteBehavior& hwWriteBehavior,
       SwitchFlags flags = SwitchFlags::DEFAULT);
 
   bool isFullyInitialized() const;
@@ -204,9 +276,13 @@ class SwSwitch : public HwSwitch::Callback {
 
   void updateLldpStats();
 
+  void publishStatsToFsdb();
+
+  AgentStats fillFsdbStats();
+
   void updateStats();
 
-  std::tuple<folly::dynamic, state::WarmbootState> gracefulExitState() const;
+  state::WarmbootState gracefulExitState() const;
 
   /*
    * Get a pointer to the current switch state.
@@ -333,8 +409,9 @@ class SwSwitch : public HwSwitch::Callback {
    * The only required method for observers is stateUpdated and observers can
    * count on this always being called from the update thread.
    */
-  void registerStateObserver(StateObserver* observer, const std::string name);
-  void unregisterStateObserver(StateObserver* observer);
+  void registerStateObserver(StateObserver* observer, const std::string& name)
+      override;
+  void unregisterStateObserver(StateObserver* observer) override;
 
   /*
    * Signal to the switch that initial config is applied.
@@ -428,6 +505,16 @@ class SwSwitch : public HwSwitch::Callback {
   void getProductInfo(ProductInfo& productInfo) const;
 
   /*
+   * Get Platform Type information.
+   */
+  PlatformType getPlatformType() const;
+
+  /*
+   * Get Platform data supportsAddRemovePort
+   */
+  bool getPlatformSupportsAddRemovePort() const;
+
+  /*
    * Get the PortStats for the ingress port of this packet.
    */
   PortStats* portStats(const RxPacket* pkt);
@@ -438,28 +525,28 @@ class SwSwitch : public HwSwitch::Callback {
   /*
    * Get the EventBase for the background thread
    */
-  folly::EventBase* getBackgroundEvb() {
+  FbossEventBase* getBackgroundEvb() {
     return &backgroundEventBase_;
   }
 
   /*
    * Get the EventBase over which LacpController and LacpMachines should execute
    */
-  folly::EventBase* getLacpEvb() {
+  FbossEventBase* getLacpEvb() {
     return &lacpEventBase_;
   }
 
   /*
    * Get the EventBase for the update thread
    */
-  folly::EventBase* getUpdateEvb() {
+  FbossEventBase* getUpdateEvb() {
     return &updateEventBase_;
   }
 
   /*
    * Get the EventBase for Arp/Ndp Cache
    */
-  folly::EventBase* getNeighborCacheEvb() {
+  FbossEventBase* getNeighborCacheEvb() {
     return &neighborCacheEventBase_;
   }
 
@@ -472,13 +559,25 @@ class SwSwitch : public HwSwitch::Callback {
    */
   void packetReceivedThrowExceptionOnError(std::unique_ptr<RxPacket> pkt);
 
-  // HwSwitch::Callback methods
+  // HwSwitchCallback methods
   void packetReceived(std::unique_ptr<RxPacket> pkt) noexcept override;
   void linkStateChanged(
       PortID port,
       bool up,
+      cfg::PortType portType,
       std::optional<phy::LinkFaultStatus> iPhyFaultStatus =
           std::nullopt) override;
+  void linkActiveStateChangedOrFwIsolated(
+      const std::map<PortID, bool>& port2IsActive,
+      bool fwIsolated,
+      const std::optional<uint32_t>& numActiveFabricPortsAtFwIsolate) override;
+  void linkConnectivityChanged(
+      const std::map<PortID, multiswitch::FabricConnectivityDelta>&
+          port2OldAndNewConnectivity) override;
+  void switchReachabilityChanged(
+      const SwitchID switchId,
+      const std::map<SwitchID, std::set<PortID>>& switchReachabilityInfo)
+      override;
   void pfcWatchdogStateChanged(
       const PortID& portId,
       const bool deadlockDetected) override;
@@ -492,7 +591,7 @@ class SwSwitch : public HwSwitch::Callback {
   /*
    * Allocate a new TxPacket.
    */
-  std::unique_ptr<TxPacket> allocatePacket(uint32_t size);
+  std::unique_ptr<TxPacket> allocatePacket(uint32_t size) const;
 
   /**
    * Allocate a TxPacket, which is used to send out through HW
@@ -515,7 +614,21 @@ class SwSwitch : public HwSwitch::Callback {
    */
   void sendNetworkControlPacketAsync(
       std::unique_ptr<TxPacket> pkt,
-      std::optional<PortDescriptor> port) noexcept;
+      std::optional<PortDescriptor> portDescriptor) noexcept;
+
+  /*
+   * Pipeline bypass if portDescriptor it set.
+   * Pipeline lookup otherwise.
+   *
+   * VOQ switches will use pipeline bypass (no VLANs, no bcast domain).
+   * NPU switches will use pipeline bypass or pipeline lookup.
+   *
+   * Egress queue to send the packet out from can be set for pipeline bypass.
+   */
+  void sendPacketAsync(
+      std::unique_ptr<TxPacket> pkt,
+      std::optional<PortDescriptor> portDescriptor = std::nullopt,
+      std::optional<uint8_t> queueId = std::nullopt) noexcept;
 
   void sendPacketOutOfPortAsync(
       std::unique_ptr<TxPacket> pkt,
@@ -527,6 +640,14 @@ class SwSwitch : public HwSwitch::Callback {
       AggregatePortID aggPortID,
       std::optional<uint8_t> queue = std::nullopt) noexcept;
 
+  /*
+   * Send a packet to HwSwitch using thrift stream
+   */
+  void sendPacketOutViaThriftStream(
+      std::unique_ptr<TxPacket> pkt,
+      SwitchID switchId,
+      std::optional<PortID> portID,
+      std::optional<uint8_t> queue = std::nullopt) noexcept;
   /*
    * Send a packet, using switching logic to send it out the correct port(s)
    * for the specified VLAN and destination MAC.
@@ -553,9 +674,7 @@ class SwSwitch : public HwSwitch::Callback {
    *
    * @param pkt The packet that has L3 packet stored to send out
    */
-  void sendL3Packet(
-      std::unique_ptr<TxPacket> pkt,
-      std::optional<InterfaceID> ifID = std::nullopt) noexcept;
+  void sendL3Packet(std::unique_ptr<TxPacket> pkt, InterfaceID ifID) noexcept;
 
   /**
    * method to send out a packet from HW to host.
@@ -604,6 +723,10 @@ class SwSwitch : public HwSwitch::Callback {
 
   PacketObservers* getPacketObservers() {
     return pktObservers_.get();
+  }
+
+  L2LearnEventObservers* getL2LearnEventObservers() {
+    return l2LearnEventObservers_.get();
   }
 
   /*
@@ -709,37 +832,23 @@ class SwSwitch : public HwSwitch::Callback {
       const std::vector<std::string>& added,
       const std::vector<std::string>& deleted);
 
-  /*
-   * Returns true if the arp/ndp entry for the passed in ip has been hit.
-   */
-  bool getAndClearNeighborHit(RouterID vrf, folly::IPAddress ip);
+  std::string getConfigStr() const;
+  cfg::SwitchConfig getConfig() const;
+  cfg::AgentConfig getAgentConfig() const;
 
-  const std::string& getConfigStr() const {
-    return curConfigStr_;
-  }
-  const cfg::SwitchConfig& getConfig() const {
-    return curConfig_;
-  }
   AdminDistance clientIdToAdminDistance(int clientId) const;
-  void publishRxPacket(RxPacket* packet, uint16_t ethertype);
-  void publishTxPacket(TxPacket* packet, uint16_t ethertype);
 
   /*
    * Clear PortStats of the specified port.
    */
   void clearPortStats(const std::unique_ptr<std::vector<int32_t>>& ports);
 
-  std::vector<PrbsLaneStats> getPortAsicPrbsStats(int32_t portId);
-  void clearPortAsicPrbsStats(int32_t portId);
+  std::vector<phy::PrbsLaneStats> getPortAsicPrbsStats(PortID portId);
+  void clearPortAsicPrbsStats(PortID portId);
 
-  std::vector<PrbsLaneStats> getPortGearboxPrbsStats(
-      int32_t portId,
-      phy::Side side);
-  void clearPortGearboxPrbsStats(int32_t portId, phy::Side side);
   SwitchRunState getSwitchRunState() const;
 
-  std::vector<prbs::PrbsPolynomial> getPortPrbsPolynomials(
-      int32_t /* portId */);
+  std::vector<prbs::PrbsPolynomial> getPortPrbsPolynomials(PortID /* portId */);
   prbs::InterfacePrbsState getPortPrbsState(PortID /* portId */);
 
   template <typename AddressT>
@@ -754,13 +863,14 @@ class SwSwitch : public HwSwitch::Callback {
 
   void setFibSyncTimeForClient(ClientID clientId);
 
-  FsdbSyncer* fsdbSyncer() {
-    return fsdbSyncer_.get();
+  std::optional<cfg::SdkVersion> getSdkVersion() {
+    return sdkVersion_;
   }
+
   /*
    * Public use only in tests
    */
-  void stop(bool revertToMinAlpmState = false);
+  void stop(bool isGracefulStop = true, bool revertToMinAlpmState = false);
 
   void publishPhyInfoSnapshots(PortID portID) const;
 
@@ -777,13 +887,107 @@ class SwSwitch : public HwSwitch::Callback {
 
   TeFlowStats getTeFlowStats();
 
-  HwBufferPoolStats getBufferPoolStats() const;
-
   VlanID getVlanIDHelper(std::optional<VlanID> vlanID) const;
+  std::optional<VlanID> getVlanIDForPkt(VlanID vlanID) const;
 
-  InterfaceID getInterfaceIDForPort(PortID portID) const;
+  InterfaceID getInterfaceIDForAggregatePort(
+      AggregatePortID aggregatePortID) const;
+
+  void sentArpRequest(
+      const std::shared_ptr<Interface>& intf,
+      folly::IPAddressV4 ip);
+
+  void sentNeighborSolicitation(
+      const std::shared_ptr<Interface>& intf,
+      const folly::IPAddressV6& target);
+
+  const SwitchInfoTable& getSwitchInfoTable() const {
+    return switchInfoTable_;
+  }
+
+  HwAsicTable* getHwAsicTable() const {
+    return hwAsicTable_.get();
+  }
+  bool fsdbStatPublishReady() const;
+  bool fsdbStatePublishReady() const;
+
+  // Helper function to clone a new SwitchState to modify the original
+  // TransceiverMap if there's a change.
+  // This can be removed after deleting qsfp cache
+  static std::shared_ptr<SwitchState> modifyTransceivers(
+      const std::shared_ptr<SwitchState>& state,
+      const std::unordered_map<TransceiverID, TransceiverInfo>& currentTcvrs,
+      const PlatformMapping* platformMapping,
+      const SwitchIdScopeResolver* scopeResolver);
+
+  folly::MacAddress getLocalMac(SwitchID switchId) const;
+
+  TransceiverIdxThrift getTransceiverIdxThrift(PortID port) const;
+
+  std::optional<uint32_t> getHwLogicalPortId(PortID port) const;
+
+  const AgentDirectoryUtil* getDirUtil() const;
+
+  MultiSwitchPacketStreamMap* getPacketStreamMap() {
+    return packetStreamMap_.get();
+  }
+
+  void updateDsfSubscriberState(
+      const std::string& remoteEndpoint,
+      fsdb::FsdbSubscriptionState oldState,
+      fsdb::FsdbSubscriptionState newState);
+
+  // used by tests to avoid having to reload config from disk
+  void setConfig(std::unique_ptr<AgentConfig> config);
+
+  bool needL2EntryForNeighbor() const;
+
+  SwSwitchWarmBootHelper* getWarmBootHelper() {
+    return swSwitchWarmbootHelper_.get();
+  }
+
+  void updateHwSwitchStats(
+      uint16_t switchIndex,
+      multiswitch::HwSwitchStats hwStats);
+
+  // Returns a copy of hwswitch exported stats.
+  // To be used only in tests as copy is expensive.
+  multiswitch::HwSwitchStats getHwSwitchStatsExpensive(
+      uint16_t switchIndex) const;
+  std::map<uint16_t, multiswitch::HwSwitchStats> getHwSwitchStatsExpensive()
+      const;
+
+  FabricReachabilityStats getFabricReachabilityStats();
+  void setPortsDownForSwitch(SwitchID switchId);
+
+  std::map<PortID, HwPortStats> getHwPortStats(
+      std::vector<PortID> portId) const;
+  void getAllHwSysPortStats(
+      std::map<std::string, HwSysPortStats>& hwSysPortStats) const;
+  std::map<SystemPortID, HwSysPortStats> getHwSysPortStats(
+      const std::vector<SystemPortID>& portId) const;
+  void getAllHwPortStats(std::map<std::string, HwPortStats>& hwPortStats) const;
+  void getAllCpuPortStats(std::map<int, CpuPortStats>& hwCpuPortStats) const;
+  bool isRunModeMultiSwitch() const;
+  bool isRunModeMonolithic() const {
+    return !isRunModeMultiSwitch();
+  }
+  MonolithicHwSwitchHandler* getMonolithicHwSwitchHandler() const;
+  int16_t getSwitchIndexForInterface(const std::string& interface) const;
+  const folly::
+      ConcurrentHashMap<std::pair<RouterID, folly::IPAddress>, InterfaceID>&
+      getAddrToLocalIntfMap() const {
+    return addrToLocalIntf_;
+  }
+  const std::map<SwitchID, switch_reachability::SwitchReachability>&
+  getSwitchReachability() const {
+    return *hwSwitchReachability_.rlock();
+  }
+  void rxPacketReceived(std::unique_ptr<SwRxPacket> pkt);
 
  private:
+  std::optional<folly::MacAddress> getSourceMac(
+      const std::shared_ptr<Interface>& intf) const;
   void updateStateBlockingImpl(
       folly::StringPiece name,
       StateUpdateFn fn,
@@ -810,16 +1014,20 @@ class SwSwitch : public HwSwitch::Callback {
    */
   void setStateInternal(std::shared_ptr<SwitchState> newAppliedState);
 
-  void setDesiredState(std::shared_ptr<SwitchState> newDesiredState);
-
-  void publishInitTimes(std::string name, const float& time);
   void updatePortInfo();
   void updateRouteStats();
   void updateTeFlowStats();
-  void publishSwitchInfo(const HwInitResult& hwInitRet);
+  void updateFlowletStats();
   void setSwitchRunState(SwitchRunState desiredState);
   SwitchStats* createSwitchStats();
+
+  PortDescriptor getPortFromPkt(const RxPacket* pkt) const;
+
   void handlePacket(std::unique_ptr<RxPacket> pkt);
+  template <typename VlanOrIntfT>
+  void handlePacketImpl(
+      std::unique_ptr<RxPacket> pkt,
+      const std::shared_ptr<VlanOrIntfT>& vlanOrIntf);
 
   void updatePtpTcCounter();
   static void handlePendingUpdatesHelper(SwSwitch* sw);
@@ -863,17 +1071,95 @@ class SwSwitch : public HwSwitch::Callback {
 
   void onSwitchRunStateChange(SwitchRunState newState);
 
+  uint64_t fsdbPublishQueueLength() const;
+
   // Sets the counter that tracks port status
   void setPortStatusCounter(PortID port, bool up);
+  void setPortActiveStatusCounter(PortID port, bool isActive);
 
   void updateConfigAppliedInfo();
 
-  std::string curConfigStr_;
-  cfg::SwitchConfig curConfig_;
+  std::shared_ptr<SwitchState> stateChanged(
+      const StateDelta& delta,
+      bool transaction) const;
 
-  // The HwSwitch object.  This object is owned by the Platform.
-  HwSwitch* hw_;
-  std::unique_ptr<Platform> platform_;
+  template <typename FsdbFunc>
+  void runFsdbSyncFunction(FsdbFunc&& fn);
+
+  void storeWarmBootState(const state::WarmbootState& state);
+
+  std::unique_ptr<AgentConfig> loadConfig();
+
+  void applyConfigImpl(
+      const std::string& reason,
+      const cfg::SwitchConfig& newConfig);
+
+  void setConfigImpl(std::unique_ptr<AgentConfig> config);
+
+  std::shared_ptr<SwitchState> preInit(
+      SwitchFlags flags = SwitchFlags::DEFAULT);
+
+  void postInit();
+
+  void updateMultiSwitchGlobalFb303Stats();
+
+  void stopHwSwitchHandler();
+
+  void packetRxThread();
+
+  // TODO: To be removed once switchWatermarkStats is available in prod
+  HwBufferPoolStats getBufferPoolStatsFromSwitchWatermarkStats();
+
+  void updateAddrToLocalIntf(const StateDelta& delta);
+
+#if FOLLY_HAS_COROUTINES
+  using BoundedRxPktQueue = folly::coro::BoundedQueue<
+      std::unique_ptr<SwRxPacket>,
+      false /*SingleProducer*/,
+      true /* SingleConsumer*/>;
+  class RxPacketHandlerQueues {
+   public:
+    folly::coro::Task<void> enqueue(
+        std::unique_ptr<SwRxPacket> pkt,
+        SwitchStats* stats) {
+      auto cosQueue = pkt->cosQueue();
+      if (!cosQueue || CpuCosQueueId(*cosQueue) == CpuCosQueueId::HIPRI) {
+        co_await hiPriQueue_.enqueue(std::move(pkt));
+        stats->hiPriPktsReceived();
+      } else if (CpuCosQueueId(*cosQueue) == CpuCosQueueId::MIDPRI) {
+        midPriQueue_.try_enqueue(std::move(pkt)) ? stats->midPriPktsReceived()
+                                                 : stats->midPriPktsDropped();
+      } else {
+        loPriQueue_.try_enqueue(std::move(pkt)) ? stats->loPriPktsReceived()
+                                                : stats->loPriPktsDropped();
+      }
+      co_return;
+    }
+    bool hasPacketsToProcess() {
+      return hiPriQueue_.size() || midPriQueue_.size() || loPriQueue_.size();
+    }
+    BoundedRxPktQueue& getHiPriRxPktQueue() {
+      return hiPriQueue_;
+    }
+    BoundedRxPktQueue& getMidPriRxPktQueue() {
+      return midPriQueue_;
+    }
+    BoundedRxPktQueue& getLoPriRxPktQueue() {
+      return loPriQueue_;
+    }
+
+   private:
+    BoundedRxPktQueue hiPriQueue_{kHiPriorityBufferSize};
+    BoundedRxPktQueue midPriQueue_{kMidPriorityBufferSize};
+    BoundedRxPktQueue loPriQueue_{kLowPriorityBufferSize};
+  };
+#endif
+
+  std::optional<cfg::SdkVersion> sdkVersion_;
+  std::unique_ptr<MultiHwSwitchHandler> multiHwSwitchHandler_;
+  const AgentDirectoryUtil* agentDirUtil_;
+  bool supportsAddRemovePort_;
+  const std::unique_ptr<PlatformProductInfo> platformProductInfo_;
   std::atomic<SwitchRunState> runState_{SwitchRunState::UNINITIALIZED};
   folly::ThreadLocalPtr<SwitchStats, SwSwitch> stats_;
   /**
@@ -910,7 +1196,7 @@ class SwSwitch : public HwSwitch::Callback {
    * A thread for performing various background tasks.
    */
   std::unique_ptr<std::thread> backgroundThread_;
-  folly::EventBase backgroundEventBase_;
+  FbossEventBase backgroundEventBase_{"SwSwitchBackgroundEventBase"};
   std::shared_ptr<ThreadHeartbeat> bgThreadHeartbeat_;
 
   /*
@@ -919,35 +1205,43 @@ class SwSwitch : public HwSwitch::Callback {
    * ASIC front panel ports
    */
   std::unique_ptr<std::thread> packetTxThread_;
-  folly::EventBase packetTxEventBase_;
+  FbossEventBase packetTxEventBase_{"SwSwitchPacketTxEventBase"};
   std::shared_ptr<ThreadHeartbeat> packetTxThreadHeartbeat_;
 
   /*
    * A thread for sending packets to the distribution process
    */
   std::shared_ptr<std::thread> pcapDistributionThread_;
-  folly::EventBase pcapDistributionEventBase_;
+  FbossEventBase pcapDistributionEventBase_{
+      "SwSwitchPcapDistributionEventBase"};
 
   /*
    * A thread for processing SwitchState updates.
    */
   std::unique_ptr<std::thread> updateThread_;
-  folly::EventBase updateEventBase_;
+  FbossEventBase updateEventBase_{"SwSwitchUpdateEventBase"};
   std::shared_ptr<ThreadHeartbeat> updThreadHeartbeat_;
 
   /*
    * A thread dedicated to LACP processing.
    */
   std::unique_ptr<std::thread> lacpThread_;
-  folly::EventBase lacpEventBase_;
+  FbossEventBase lacpEventBase_{"SwSwitchLacpEventBase"};
   std::shared_ptr<ThreadHeartbeat> lacpThreadHeartbeat_;
 
   /*
    * A thread dedicated to Arp and Ndp cache entry processing.
    */
   std::unique_ptr<std::thread> neighborCacheThread_;
-  folly::EventBase neighborCacheEventBase_;
+  FbossEventBase neighborCacheEventBase_{"SwSwitchNeighborCacheEventBase"};
   std::shared_ptr<ThreadHeartbeat> neighborCacheThreadHeartbeat_;
+
+  /*
+   * A thread for processing rx packets from thrift stream
+   */
+  std::unique_ptr<std::thread> packetRxThread_;
+  folly::EventBase packetRxEventBase_;
+  std::shared_ptr<ThreadHeartbeat> packetRxThreadHeartbeat_;
 
   /*
    * A thread dedicated to monitor above thread heartbeats
@@ -970,6 +1264,7 @@ class SwSwitch : public HwSwitch::Callback {
    */
   std::map<StateObserver*, std::string> stateObservers_;
   std::unique_ptr<PacketObservers> pktObservers_;
+  std::unique_ptr<L2LearnEventObservers> l2LearnEventObservers_;
 
   std::unique_ptr<ArpHandler> arp_;
   std::unique_ptr<IPv4Handler> ipv4_;
@@ -987,6 +1282,7 @@ class SwSwitch : public HwSwitch::Callback {
 
   BootType bootType_{BootType::UNINITIALIZED};
   std::unique_ptr<LldpManager> lldpManager_;
+  std::unique_ptr<RemoteNeighborUpdater> remoteNeighborUpdater_;
   std::unique_ptr<PortUpdateHandler> portUpdateHandler_;
   SwitchFlags flags_{SwitchFlags::DEFAULT};
 
@@ -999,21 +1295,49 @@ class SwSwitch : public HwSwitch::Callback {
 #endif
 
   static constexpr auto kIphySnapshotIntervalSeconds = 1;
-  // Collecting phy Info is currently inefficient on some platforms. Instead of
-  // collecting them every second, tune down the frequency to only collect once
-  // every update_phy_info_interval_s seconds (default to be 10).
-  int phyInfoUpdateTime_{0};
 
-  std::unique_ptr<PhySnapshotManager<kIphySnapshotIntervalSeconds>>
-      phySnapshotManager_;
+  std::unique_ptr<PhySnapshotManager> phySnapshotManager_;
   std::unique_ptr<AclNexthopHandler> aclNexthopHandler_;
-  std::unique_ptr<FsdbSyncer> fsdbSyncer_;
+  folly::Synchronized<std::unique_ptr<FsdbSyncer>> fsdbSyncer_;
   std::unique_ptr<TeFlowNexthopHandler> teFlowNextHopHandler_;
   std::unique_ptr<DsfSubscriber> dsfSubscriber_;
+  std::shared_ptr<ThreadHeartbeat> dsfSubscriberReconnectThreadHeartbeat_;
+  std::shared_ptr<ThreadHeartbeat> dsfSubscriberStreamThreadHeartbeat_;
+  SwitchInfoTable switchInfoTable_;
+  std::unique_ptr<PlatformMapping> platformMapping_;
+  std::unique_ptr<HwAsicTable> hwAsicTable_;
+  std::unique_ptr<SwitchIdScopeResolver> scopeResolver_;
+  std::unique_ptr<SwitchStatsObserver> switchStatsObserver_;
+  std::unique_ptr<ResourceAccountant> resourceAccountant_;
 
   folly::Synchronized<ConfigAppliedInfo> configAppliedInfo_;
   std::optional<std::chrono::time_point<std::chrono::steady_clock>>
       publishedStatsToFsdbAt_;
+  std::unique_ptr<MultiSwitchPacketStreamMap> packetStreamMap_;
+  std::unique_ptr<SwSwitchWarmBootHelper> swSwitchWarmbootHelper_;
+  std::unique_ptr<HwSwitchThriftClientTable> hwSwitchThriftClientTable_;
+  std::unique_ptr<MultiSwitchFb303Stats> multiSwitchFb303Stats_{nullptr};
+  std::atomic<std::chrono::time_point<std::chrono::steady_clock>>
+      lastPacketRxTime_{std::chrono::steady_clock::time_point::min()};
+  folly::Synchronized<std::unique_ptr<AgentConfig>> agentConfig_;
+  folly::Synchronized<std::map<uint16_t, multiswitch::HwSwitchStats>>
+      hwSwitchStats_;
+  // Map to lookup local interface address to interface id, for fask look up in
+  // rx handling path.
+  folly::ConcurrentHashMap<std::pair<RouterID, folly::IPAddress>, InterfaceID>
+      addrToLocalIntf_;
+  folly::Synchronized<
+      std::map<SwitchID, switch_reachability::SwitchReachability>>
+      hwSwitchReachability_;
+  std::unordered_map<
+      SwitchID,
+      std::map<SwitchID, std::tuple<std::set<PortID>, uint64_t>>>
+      hwReachabilityInfo_;
+#if FOLLY_HAS_COROUTINES
+  RxPacketHandlerQueues rxPacketHandlerQueues_;
+#endif
+  std::atomic<bool> packetRxRunning_{false};
+  std::condition_variable rxPktThreadCV_;
+  std::mutex rxPktMutex_;
 };
-
 } // namespace facebook::fboss

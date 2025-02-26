@@ -5,7 +5,6 @@
 #include "fboss/agent/test/EcmpSetupHelper.h"
 
 #include "fboss/agent/hw/sai/switch/SaiNextHopGroupManager.h"
-#include "fboss/agent/hw/sai/switch/SaiPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiRouteManager.h"
 #include "fboss/agent/hw/sai/switch/SaiVirtualRouterManager.h"
 
@@ -21,7 +20,9 @@ class SaiNextHopGroupTest : public SaiLinkStateDependentTests {
 
   cfg::SwitchConfig initialConfig() const override {
     return utility::onePortPerInterfaceConfig(
-        getHwSwitch(), masterLogicalPortIds());
+        getHwSwitch(),
+        masterLogicalPortIds(),
+        getAsic()->desiredLoopbackModes());
   }
 
   void addRoute(int nextHopGroupMemberCount) {
@@ -33,9 +34,19 @@ class SaiNextHopGroupTest : public SaiLinkStateDependentTests {
         helper_->resolveNextHops(getProgrammedState(), neighborCount));
   }
 
+  void resolveNeighbor(PortID port) {
+    applyNewState(
+        helper_->resolveNextHops(getProgrammedState(), {PortDescriptor(port)}));
+  }
+
   void unresolveNeighbors(int neighborCount) {
     applyNewState(
         helper_->unresolveNextHops(getProgrammedState(), neighborCount));
+  }
+
+  void unresolveNeighbor(PortID port) {
+    applyNewState(helper_->unresolveNextHops(
+        getProgrammedState(), {PortDescriptor(port)}));
   }
 
   SaiRouteTraits::RouteEntry routeEntry() const {
@@ -80,69 +91,77 @@ class SaiNextHopGroupTest : public SaiLinkStateDependentTests {
   std::unique_ptr<utility::EcmpSetupAnyNPorts6> helper_;
 };
 
+class SaiNextHopGroupTestWithWBWrites : public SaiNextHopGroupTest {
+ public:
+  bool failHwCallsOnWarmboot() const override {
+    return false;
+  }
+};
+
 TEST_F(SaiNextHopGroupTest, addNextHopGroupWithUnresolvedNeighbors) {
-  auto setup = [=]() { addRoute(4); };
-  auto verify = [=]() { verifyMemberCount(0); };
+  auto setup = [=, this]() { addRoute(4); };
+  auto verify = [=, this]() { verifyMemberCount(0); };
   verifyAcrossWarmBoots(setup, verify);
 }
 
 TEST_F(SaiNextHopGroupTest, addNextHopGroupWithResolvedNeighbors) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     resolveNeighbors(4);
     addRoute(4);
   };
-  auto verify = [=]() { verifyMemberCount(4); };
+  auto verify = [=, this]() { verifyMemberCount(4); };
   verifyAcrossWarmBoots(setup, verify);
 }
 
 TEST_F(SaiNextHopGroupTest, addNextHopGroupThenResolveAll) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     addRoute(4);
     resolveNeighbors(4);
   };
-  auto verify = [=]() { verifyMemberCount(4); };
+  auto verify = [=, this]() { verifyMemberCount(4); };
   verifyAcrossWarmBoots(setup, verify);
 }
 
 TEST_F(SaiNextHopGroupTest, addNextHopGroupThenUnresolveAll) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     resolveNeighbors(4);
     addRoute(4);
     unresolveNeighbors(4);
   };
-  auto verify = [=]() { verifyMemberCount(0); };
+  auto verify = [=, this]() { verifyMemberCount(0); };
   verifyAcrossWarmBoots(setup, verify);
 }
 
 TEST_F(SaiNextHopGroupTest, addNextHopGroupThenUnresolveSome) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     resolveNeighbors(4);
     addRoute(4);
     unresolveNeighbors(2);
   };
-  auto verify = [=]() { verifyMemberCount(2); };
+  auto verify = [=, this]() { verifyMemberCount(2); };
   verifyAcrossWarmBoots(setup, verify);
 }
 
-TEST_F(SaiNextHopGroupTest, addNextHopGroupPortDown) {
-  auto setup = [=]() {
+// WB is expected to create next hop/group corresponding to port brought down
+TEST_F(SaiNextHopGroupTestWithWBWrites, addNextHopGroupPortDown) {
+  auto setup = [=, this]() {
     resolveNeighbors(4);
     addRoute(4);
     bringDownPort(masterLogicalInterfacePortIds()[0]);
   };
-  auto verify = [=]() { verifyMemberCount(3); };
+  auto verify = [=, this]() { verifyMemberCount(3); };
   verifyAcrossWarmBoots(setup, verify);
 }
 
 TEST_F(SaiNextHopGroupTest, addNextHopGroupInterfacePortDownInterfacePortUp) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     resolveNeighbors(4);
     addRoute(4);
     bringDownPort(masterLogicalInterfacePortIds()[0]);
-    unresolveNeighbors(1);
+    unresolveNeighbor(masterLogicalInterfacePortIds()[0]);
     bringUpPort(masterLogicalInterfacePortIds()[0]);
-    resolveNeighbors(1);
+    resolveNeighbor(masterLogicalInterfacePortIds()[0]);
   };
-  auto verify = [=]() { verifyMemberCount(4); };
+  auto verify = [=, this]() { verifyMemberCount(4); };
   verifyAcrossWarmBoots(setup, verify);
 }

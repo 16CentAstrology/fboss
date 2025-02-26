@@ -5,10 +5,11 @@
 #include "fboss/fsdb/client/FsdbStreamClient.h"
 #include "fboss/fsdb/common/Flags.h"
 #include "fboss/lib/CommonUtils.h"
+#include "fboss/lib/thrift_service_client/ConnectionOptions.h"
 
 #include <fb303/ServiceData.h>
-#include <folly/experimental/coro/AsyncGenerator.h>
-#include <folly/experimental/coro/AsyncPipe.h>
+#include <folly/coro/AsyncGenerator.h>
+#include <folly/coro/AsyncPipe.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/logging/xlog.h>
 #include <algorithm>
@@ -24,6 +25,7 @@ class TestFsdbStreamClient : public FsdbStreamClient {
             streamEvb,
             timerEvb,
             "test_fsdb_client",
+            false,
             [this](auto oldState, auto newState) {
               EXPECT_NE(oldState, newState);
               lastStateUpdateSeen_ = newState;
@@ -52,8 +54,8 @@ class TestFsdbStreamClient : public FsdbStreamClient {
   std::optional<FsdbStreamClient::State> lastStateUpdateSeen() const {
     return lastStateUpdateSeen_.load();
   }
-  void markConnected() {
-    setState(State::CONNECTED);
+  void markConnecting() {
+    setState(State::CONNECTING);
   }
 
  private:
@@ -100,13 +102,15 @@ class StreamClientTest : public ::testing::Test {
 };
 
 TEST_F(StreamClientTest, connectAndCancel) {
-  streamClient_->setServerOptions(
-      FsdbStreamClient::ServerOptions("::1", FLAGS_fsdbPort));
+  streamClient_->setConnectionOptions(
+      utils::ConnectionOptions("::1", FLAGS_fsdbPort));
   auto counterPrefix = streamClient_->getCounterPrefix();
   EXPECT_EQ(counterPrefix, "test_fsdb_client");
   EXPECT_EQ(
       fb303::ServiceData::get()->getCounter(counterPrefix + ".connected"), 0);
-  streamClient_->markConnected();
+  streamClient_->markConnecting();
+  WITH_RETRIES(
+      { EXPECT_EVENTUALLY_TRUE(streamClient_->isConnectedToServer()); });
   EXPECT_EQ(
       fb303::ServiceData::get()->getCounter(counterPrefix + ".connected"), 1);
   EXPECT_EQ(
@@ -125,8 +129,12 @@ TEST_F(StreamClientTest, connectAndCancel) {
 TEST_F(StreamClientTest, multipleStreamClientsOnSameEvb) {
   auto streamClient2 = std::make_unique<TestFsdbStreamClient>(
       streamEvbThread_->getEventBase(), connRetryEvbThread_->getEventBase());
-  streamClient_->markConnected();
-  streamClient2->markConnected();
+  streamClient_->markConnecting();
+  streamClient2->markConnecting();
+  WITH_RETRIES(
+      { EXPECT_EVENTUALLY_TRUE(streamClient_->isConnectedToServer()); });
+  WITH_RETRIES(
+      { EXPECT_EVENTUALLY_TRUE(streamClient2->isConnectedToServer()); });
   verifyServiceLoopRunning(true, {streamClient_.get(), streamClient2.get()});
   streamClient_->cancel();
   streamClient2->cancel();

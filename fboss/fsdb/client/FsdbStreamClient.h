@@ -2,22 +2,27 @@
 
 #pragma once
 
+#include "fboss/fsdb/common/Utils.h"
+#include "fboss/fsdb/if/gen-cpp2/FsdbService.h"
+#include "fboss/fsdb/if/gen-cpp2/fsdb_oper_types.h"
+#include "fboss/lib/CommonThriftUtils.h"
+#include "fboss/lib/thrift_service_client/ConnectionOptions.h"
+
 #include <fb303/ThreadCachedServiceData.h>
 #include <folly/SocketAddress.h>
-#include <folly/experimental/coro/AsyncScope.h>
+#include <folly/coro/AsyncScope.h>
 #include <folly/io/async/AsyncSocketTransport.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
+#include <folly/synchronization/Baton.h>
 #include <gtest/gtest_prod.h>
 #include <thrift/lib/cpp2/async/ClientBufferedStream.h>
+#include <thrift/lib/cpp2/async/RpcOptions.h>
 #include <thrift/lib/cpp2/async/Sink.h>
-#include <optional>
-#include <string>
-#ifndef IS_OSS
-#include "fboss/fsdb/if/gen-cpp2/fsdb_oper_types.h"
-#endif
 
 #include <atomic>
 #include <functional>
+#include <optional>
+#include <string>
 
 namespace folly {
 class CancellationToken;
@@ -29,125 +34,166 @@ template <class>
 class Client;
 } // namespace apache::thrift
 
+DECLARE_int32(fsdb_state_chunk_timeout);
+DECLARE_int32(fsdb_stat_chunk_timeout);
+DECLARE_int32(
+    fsdb_reconnect_ms); // TODO: clean up after migrating to exponential backoff
+DECLARE_int32(fsdb_initial_backoff_reconnect_ms);
+DECLARE_int32(fsdb_max_backoff_reconnect_ms);
+
+using State = facebook::fboss::ReconnectingThriftClient::State;
+
 namespace facebook::fboss::fsdb {
 class FsdbService;
 
-class FsdbStreamClient {
+class FsdbStreamClient : public ReconnectingThriftClient {
  public:
-  enum class State : uint16_t { DISCONNECTED, CONNECTED, CANCELLED };
-  enum class Priority : uint8_t { NORMAL, PRIORITY, CRITICAL };
+  using FsdbStreamStateChangeCb = std::function<void(State, State)>;
 
-  struct ServerOptions {
-    ServerOptions(const std::string& dstIp, uint16_t dstPort)
-        : dstAddr(folly::SocketAddress(dstIp, dstPort)) {}
-
-    ServerOptions(const std::string& dstIp, uint16_t dstPort, std::string srcIp)
-        : dstAddr(folly::SocketAddress(dstIp, dstPort)),
-          srcAddr(folly::SocketAddress(srcIp, 0)) {}
-
-    ServerOptions(
-        const std::string& dstIp,
-        uint16_t dstPort,
-        std::string srcIp,
-        Priority priority)
-        : dstAddr(folly::SocketAddress(dstIp, dstPort)),
-          srcAddr(folly::SocketAddress(srcIp, 0)),
-          priority{priority} {}
-
-    folly::SocketAddress dstAddr;
-    std::string fsdbPort;
-    std::optional<folly::SocketAddress> srcAddr;
-    std::optional<Priority> priority;
+  class FsdbClientGRDisconnectException : public FsdbException {
+   public:
+    explicit FsdbClientGRDisconnectException(std::string msg) {
+      this->message_ref() = std::move(msg);
+      this->errorCode_ref() = FsdbErrorCode::PUBLISHER_GR_DISCONNECT;
+    }
   };
 
-  using FsdbStreamStateChangeCb = std::function<void(State, State)>;
   FsdbStreamClient(
       const std::string& clientId,
       folly::EventBase* streamEvb,
       folly::EventBase* connRetryEvb,
       const std::string& counterPrefix,
-      FsdbStreamStateChangeCb stateChangeCb = [](State /*old*/,
-                                                 State /*newState*/) {});
+      bool isStats = false,
+      StreamStateChangeCb stateChangeCb = [](State /*old*/,
+                                             State /*newState*/) {},
+      int fsdbInitialBackoffReconnectMs =
+          FLAGS_fsdb_initial_backoff_reconnect_ms,
+      int fsdbMaxBackoffReconnectMs = FLAGS_fsdb_max_backoff_reconnect_ms);
   virtual ~FsdbStreamClient();
 
-  void setServerOptions(
-      ServerOptions&& options,
-      /* allow reset for use in tests*/
-      bool allowReset = false);
-
-  void cancel();
-
-  bool isConnectedToServer() const;
-  bool isCancelled() const;
-  const std::string& clientId() const {
-    return clientId_;
-  }
-  State getState() const {
-    return *state_.rlock();
-  }
   bool serviceLoopRunning() const {
     return serviceLoopRunning_.load();
   }
-  const std::string& getCounterPrefix() const {
-    return counterPrefix_;
+  bool isStats() const {
+    return isStats_;
   }
+  fsdb::FsdbErrorCode getDisconnectReason() const {
+    return *disconnectReason_.rlock();
+  }
+  void onCancellation() override {}
 
-#ifndef IS_OSS
   template <typename PubUnit>
   using PubStreamT = apache::thrift::ClientSink<PubUnit, OperPubFinalResponse>;
   template <typename SubUnit>
   using SubStreamT = apache::thrift::ClientBufferedStream<SubUnit>;
   using StatePubStreamT = PubStreamT<OperState>;
   using DeltaPubStreamT = PubStreamT<OperDelta>;
+  using PatchPubStreamT = PubStreamT<PublisherMessage>;
   using StateSubStreamT = SubStreamT<OperState>;
   using DeltaSubStreamT = SubStreamT<OperDelta>;
+  using PatchSubStreamT = SubStreamT<SubscriberMessage>;
   using StateExtSubStreamT = SubStreamT<OperSubPathUnit>;
   using DeltaExtSubStreamT = SubStreamT<OperSubDeltaUnit>;
 
   using StreamT = std::variant<
       StatePubStreamT,
       DeltaPubStreamT,
+      PatchPubStreamT,
       StateSubStreamT,
       DeltaSubStreamT,
+      PatchSubStreamT,
       StateExtSubStreamT,
       DeltaExtSubStreamT>;
-#endif
 
  private:
-  void createClient(const ServerOptions& options);
-  void resetClient();
-  void connectToServer(const ServerOptions& options);
+  void createClient(const utils::ConnectionOptions& options);
+  void resetClient() override;
+  void connectToServer(const utils::ConnectionOptions& options) override;
   void timeoutExpired() noexcept;
 
-#if FOLLY_HAS_COROUTINES && !defined(IS_OSS)
-  folly::coro::Task<void> serviceLoopWrapper();
+#if FOLLY_HAS_COROUTINES
+  folly::coro::Task<void> serviceLoopWrapper() override;
   virtual folly::coro::Task<StreamT> setupStream() = 0;
   virtual folly::coro::Task<void> serveStream(StreamT&& stream) = 0;
 #endif
 
  protected:
-  void setState(State state);
-#ifndef IS_OSS
+  folly::EventBase* getStreamEventBase() const {
+    return streamEvb_;
+  }
+  void setDisconnectReason(FsdbErrorCode reason) {
+    auto disconnectReason = disconnectReason_.wlock();
+    *disconnectReason = reason;
+  }
+  virtual void setState(State state) override {
+    if (state == State::CONNECTED) {
+      setDisconnectReason(FsdbErrorCode::NONE);
+    }
+    ReconnectingThriftClient::setState(state);
+  }
+  void setStateDisconnectedWithReason(fsdb::FsdbErrorCode reason) {
+    setDisconnectReason(reason);
+    setState(State::DISCONNECTED);
+    updateDisconnectReasonCounter(reason);
+  }
   std::unique_ptr<apache::thrift::Client<FsdbService>> client_;
-#endif
+
+  apache::thrift::RpcOptions& getRpcOptions() {
+    return rpcOptions_;
+  }
+  folly::Synchronized<FsdbErrorCode> disconnectReason_{FsdbErrorCode::NONE};
 
  private:
-  std::string getConnectedCounterName() {
-    return counterPrefix_ + ".connected";
+  void updateDisconnectReasonCounter(fsdb::FsdbErrorCode reason) {
+    switch (reason) {
+      case fsdb::FsdbErrorCode::CLIENT_CHUNK_TIMEOUT:
+        disconnectReasonChunkTimeout_.add(1);
+        break;
+      case fsdb::FsdbErrorCode::SUBSCRIPTION_DATA_CALLBACK_ERROR:
+        disconnectReasonDataCbError_.add(1);
+        break;
+      case fsdb::FsdbErrorCode::CLIENT_TRANSPORT_EXCEPTION:
+        disconnectReasonTransportError_.add(1);
+        break;
+      case fsdb::FsdbErrorCode::ID_ALREADY_EXISTS:
+        disconnectReasonIdExists_.add(1);
+        break;
+      case fsdb::FsdbErrorCode::EMPTY_PUBLISHER_ID:
+      case fsdb::FsdbErrorCode::UNKNOWN_PUBLISHER:
+      case fsdb::FsdbErrorCode::EMPTY_SUBSCRIBER_ID:
+      case fsdb::FsdbErrorCode::INVALID_PATH:
+        disconnectReasonBadArgs_.add(1);
+        break;
+      default:
+        break;
+    };
   }
-  std::string clientId_;
+
   folly::EventBase* streamEvb_;
-  folly::EventBase* connRetryEvb_;
-  folly::Synchronized<State> state_{State::DISCONNECTED};
-  std::string counterPrefix_;
-  folly::Synchronized<std::optional<ServerOptions>> serverOptions_;
-  FsdbStreamStateChangeCb stateChangeCb_;
   std::atomic<bool> serviceLoopRunning_{false};
-  std::unique_ptr<folly::AsyncTimeout> timer_;
-#if FOLLY_HAS_COROUTINES
-  folly::coro::CancellableAsyncScope serviceLoopScope_;
-#endif
-  fb303::TimeseriesWrapper disconnectEvents_;
+  const bool isStats_;
+  apache::thrift::RpcOptions rpcOptions_;
+  // counters for various disconnect reasons
+  fb303::TimeseriesWrapper disconnectReasonChunkTimeout_{
+      getCounterPrefix() + ".disconnectReason.chunkTimeout",
+      fb303::SUM,
+      fb303::RATE};
+  fb303::TimeseriesWrapper disconnectReasonDataCbError_{
+      getCounterPrefix() + ".disconnectReason.dataCbError",
+      fb303::SUM,
+      fb303::RATE};
+  fb303::TimeseriesWrapper disconnectReasonTransportError_{
+      getCounterPrefix() + ".disconnectReason.transportError",
+      fb303::SUM,
+      fb303::RATE};
+  fb303::TimeseriesWrapper disconnectReasonIdExists_{
+      getCounterPrefix() + ".disconnectReason.dupId",
+      fb303::SUM,
+      fb303::RATE};
+  fb303::TimeseriesWrapper disconnectReasonBadArgs_{
+      getCounterPrefix() + ".disconnectReason.badArgs",
+      fb303::SUM,
+      fb303::RATE};
 };
 
 } // namespace facebook::fboss::fsdb

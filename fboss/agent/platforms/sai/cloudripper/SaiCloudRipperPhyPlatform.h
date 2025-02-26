@@ -9,13 +9,13 @@
  */
 #pragma once
 
-#include "fboss/agent/platforms/sai/SaiHwPlatform.h"
+#include "fboss/agent/platforms/sai/SaiPlatform.h"
 
 namespace facebook::fboss {
 
 class CredoPhyAsic;
 
-class SaiCloudRipperPhyPlatform : public SaiHwPlatform {
+class SaiCloudRipperPhyPlatform : public SaiPlatform {
  public:
   static const std::string& getFirmwareDirectory();
 
@@ -35,13 +35,6 @@ class SaiCloudRipperPhyPlatform : public SaiHwPlatform {
   bool isSerdesApiSupported() const override;
   bool supportInterfaceType() const override;
   void initLEDs() override;
-  std::string getPersistentStateDir() const override {
-    return FLAGS_persistent_state_dir_phy + "/" +
-        folly::to<std::string>(phyId_);
-  }
-  std::string getVolatileStateDir() const override {
-    return FLAGS_volatile_state_dir_phy + "/" + folly::to<std::string>(phyId_);
-  }
 
   sai_service_method_table_t* getServiceMethodTable() const override;
 
@@ -52,22 +45,27 @@ class SaiCloudRipperPhyPlatform : public SaiHwPlatform {
   SaiSwitchTraits::CreateAttributes getSwitchAttributes(
       bool /*mandatoryOnly*/,
       cfg::SwitchType switchType,
-      std::optional<int64_t> switchId) override {
+      std::optional<int64_t> switchId,
+      BootType /*bootType*/) override {
     CHECK(switchCreateAttrs_);
     return *switchCreateAttrs_;
   }
   void setSwitchAttributes(SaiSwitchTraits::CreateAttributes attrs) {
     switchCreateAttrs_ = attrs;
   }
+  const AgentDirectoryUtil* getDirectoryUtil() const override {
+    return agentDirUtil_.get();
+  }
 
  private:
   void setupAsic(
-      cfg::SwitchType switchType,
       std::optional<int64_t> switchId,
-      std::optional<cfg::Range64> systemPortRange) override;
+      const cfg::SwitchInfo& switchInfo,
+      std::optional<HwAsic::FabricNodeRole> fabricRole) override;
   int phyId_{0};
   std::unique_ptr<CredoPhyAsic> asic_;
   std::optional<SaiSwitchTraits::CreateAttributes> switchCreateAttrs_;
+  std::unique_ptr<AgentDirectoryUtil> agentDirUtil_;
 
   void initImpl(uint32_t hwFeaturesDesired) override;
 };

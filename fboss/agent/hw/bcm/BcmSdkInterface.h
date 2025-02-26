@@ -76,11 +76,9 @@ class BcmSdkInterface {
       bcm_port_phy_control_t type,
       uint32* value) = 0;
 
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_22))
   virtual int bcm_pktio_txpmd_stat_attach(int unit, uint32 counter_id) = 0;
 
   virtual int bcm_pktio_txpmd_stat_detach(int unit) = 0;
-#endif
 
   virtual int bcm_cosq_gport_traverse(
       int unit,
@@ -442,14 +440,10 @@ class BcmSdkInterface {
       bcm_field_hintid_t hint_id,
       bcm_field_hint_t* hint) = 0;
 
-// workaround to make 6.5.17 build work
-// flag will be removed once 6.5.17 is gone
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_19))
   virtual int bcm_l3_alpm_resource_get(
       int unit,
       bcm_l3_route_group_t grp,
       bcm_l3_alpm_resource_t* resource) = 0;
-#endif
 
   virtual int bcm_field_entry_multi_get(
       int unit,
@@ -581,6 +575,39 @@ class BcmSdkInterface {
   virtual int
   bcm_udf_get(int unit, bcm_udf_id_t udf_id, bcm_udf_t* udf_info) = 0;
 
+  virtual int bcm_field_qset_id_multi_set(
+      int unit,
+      bcm_field_qualify_t qualifier,
+      int num_objects,
+      int* object_list,
+      bcm_field_qset_t* qset) = 0;
+
+  virtual int bcm_field_qualify_UdfClass(
+      int unit,
+      bcm_field_entry_t entry,
+      uint32 data,
+      uint32 mask) = 0;
+
+  virtual int bcm_field_qualify_udf(
+      int unit,
+      bcm_field_entry_t eid,
+      bcm_udf_id_t udf_id,
+      int length,
+      uint8* data,
+      uint8* mask) = 0;
+
+  virtual int bcm_field_qualify_udf_get(
+      int unit,
+      bcm_field_entry_t eid,
+      bcm_udf_id_t udf_id,
+      int max_length,
+      uint8* data,
+      uint8* mask,
+      int* actual_length) = 0;
+
+  virtual void bcm_field_group_config_t_init(
+      bcm_field_group_config_t* group_config) = 0;
+
   virtual int bcm_cosq_bst_stat_sync(int unit, bcm_bst_stat_id_t bid) = 0;
   virtual int bcm_stat_custom_add(
       int unit,
@@ -605,6 +632,14 @@ class BcmSdkInterface {
       int unit,
       bcm_field_group_t group,
       bcm_field_qset_t* qset) = 0;
+
+  virtual int bcm_field_qset_id_multi_get(
+      int unit,
+      bcm_field_qset_t qset,
+      bcm_field_qualify_t qualifier,
+      int max_objects,
+      int* object_list,
+      int* count_objects) = 0;
 
   virtual int bcm_field_group_status_get(
       int unit,
@@ -876,6 +911,19 @@ class BcmSdkInterface {
       int intf_size,
       bcm_if_t* intf_array,
       int* intf_count) = 0;
+
+  virtual void bcm_l3_ecmp_dlb_port_quality_attr_t_init(
+      bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr) = 0;
+
+  virtual int bcm_l3_ecmp_dlb_port_quality_attr_set(
+      int unit,
+      bcm_port_t port,
+      bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr) = 0;
+
+  virtual int bcm_l3_ecmp_dlb_port_quality_attr_get(
+      int unit,
+      bcm_port_t port,
+      bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr) = 0;
 
   virtual int bcm_l3_enable_set(int unit, int enable) = 0;
 
@@ -1210,6 +1258,11 @@ class BcmSdkInterface {
       uint32* stat_counter_id) = 0;
 
   virtual int bcm_flexctr_action_destroy(int unit, uint32 stat_counter_id) = 0;
+
+  virtual int bcm_flexctr_action_traverse(
+      int unit,
+      bcm_flexctr_action_traverse_cb trav_fn,
+      void* user_data) = 0;
 
   virtual int bcm_l3_route_stat_attach(
       int unit,

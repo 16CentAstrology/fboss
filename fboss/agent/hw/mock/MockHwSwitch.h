@@ -17,6 +17,7 @@
 #include "folly/MacAddress.h"
 
 #include <gmock/gmock.h>
+#include <memory>
 #include <optional>
 
 namespace facebook::fboss {
@@ -30,16 +31,16 @@ class MockHwSwitch : public HwSwitch {
  public:
   explicit MockHwSwitch(MockPlatform* platform);
 
-  MOCK_METHOD4(
-      initImpl,
-      HwInitResult(Callback*, bool, cfg::SwitchType, std::optional<int64_t>));
+  MOCK_METHOD3(initImpl, HwInitResult(Callback*, BootType, bool));
   MOCK_METHOD1(
-      stateChanged,
+      stateChangedImpl,
       std::shared_ptr<SwitchState>(const StateDelta& delta));
-  MOCK_METHOD1(
+  MOCK_METHOD2(
       stateChangedTransaction,
-      std::shared_ptr<SwitchState>(const StateDelta& delta));
-  MOCK_METHOD2(getAndClearNeighborHit, bool(RouterID, folly::IPAddress&));
+      std::shared_ptr<SwitchState>(
+          const StateDelta& delta,
+          const HwWriteBehaviorRAII&));
+  MOCK_CONST_METHOD0(reconstructSwitchState, std::shared_ptr<SwitchState>());
 
   std::unique_ptr<TxPacket> allocatePacket(uint32_t size) const override;
 
@@ -69,17 +70,16 @@ class MockHwSwitch : public HwSwitch {
       std::optional<uint8_t> queue = std::nullopt) noexcept override;
 
   MOCK_CONST_METHOD0(transactionsSupported, bool());
-  MOCK_METHOD1(updateStatsImpl, void(SwitchStats* switchStats));
+  MOCK_METHOD0(updateStatsImpl, void());
   MOCK_CONST_METHOD0(
       getPortStats,
       folly::F14FastMap<std::string, HwPortStats>());
+  MOCK_CONST_METHOD0(getCpuPortStats, CpuPortStats());
   MOCK_CONST_METHOD0(getSysPortStats, std::map<std::string, HwSysPortStats>());
+  MOCK_CONST_METHOD0(getFabricReachabilityStats, FabricReachabilityStats());
+  MOCK_CONST_METHOD0(getSwitchDropStats, HwSwitchDropStats());
   MOCK_CONST_METHOD1(fetchL2Table, void(std::vector<L2EntryThrift>* l2Table));
-  MOCK_METHOD2(
-      gracefulExitImpl,
-      void(
-          folly::dynamic& follySwitchState,
-          state::WarmbootState& thriftSwitchState));
+  MOCK_METHOD0(gracefulExitImpl, void());
   MOCK_CONST_METHOD0(toFollyDynamic, folly::dynamic());
   MOCK_CONST_METHOD0(exitFatal, void());
   MOCK_METHOD0(unregisterCallbacks, void());
@@ -90,6 +90,11 @@ class MockHwSwitch : public HwSwitch {
       clearPortStats,
       void(const std::unique_ptr<std::vector<int32_t>>&));
   MOCK_CONST_METHOD0(getBootType, BootType());
+  MOCK_CONST_METHOD0(getTeFlowStats, TeFlowStats());
+  MOCK_CONST_METHOD0(getHwFlowletStats, HwFlowletStats());
+  MOCK_CONST_METHOD0(getAllEcmpDetails, std::vector<EcmpDetails>());
+  MOCK_CONST_METHOD0(getAclStats, AclStats());
+  MOCK_CONST_METHOD0(getSwitchWatermarkStats, HwSwitchWatermarkStats());
 
   MockPlatform* getPlatform() const override {
     return platform_;
@@ -106,6 +111,8 @@ class MockHwSwitch : public HwSwitch {
   uint64_t getDeviceWatermarkBytes() const override {
     return 0;
   }
+
+  void injectSwitchReachabilityChangeNotification() override {}
 
   uint32_t generateDeterministicSeed(
       LoadBalancerID loadBalancerID,
@@ -128,11 +135,27 @@ class MockHwSwitch : public HwSwitch {
   MOCK_CONST_METHOD2(
       listObjects,
       std::string(const std::vector<HwObjectType>&, bool));
-  MOCK_METHOD0(updateAllPhyInfo, std::map<PortID, phy::PhyInfo>());
-  MOCK_CONST_METHOD0(getFabricReachability, std::map<PortID, FabricEndpoint>());
+  MOCK_METHOD0(updateAllPhyInfoImpl, std::map<PortID, phy::PhyInfo>());
+  MOCK_CONST_METHOD0(
+      getFabricConnectivity,
+      const std::map<PortID, FabricEndpoint>&());
+  MOCK_CONST_METHOD1(
+      getSwitchReachability,
+      std::vector<PortID>(SwitchID switchId));
+
+  void setInitialState(const std::shared_ptr<SwitchState>& state) {
+    setProgrammedState(state);
+  }
+
+  MOCK_CONST_METHOD0(getResourceStats, HwResourceStats());
 
  private:
   MOCK_METHOD1(switchRunStateChangedImpl, void(SwitchRunState newState));
+  MOCK_METHOD0(initialStateApplied, void());
+  MOCK_METHOD0(syncLinkStates, void());
+  MOCK_METHOD0(syncLinkActiveStates, void());
+  MOCK_METHOD0(syncLinkConnectivity, void());
+  MOCK_METHOD0(syncSwitchReachability, void());
 
   MockPlatform* platform_;
 

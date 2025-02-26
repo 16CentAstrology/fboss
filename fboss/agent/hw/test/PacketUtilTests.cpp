@@ -4,8 +4,9 @@
 
 #include "fboss/agent/hw/mock/MockHwSwitch.h"
 #include "fboss/agent/hw/mock/MockPlatform.h"
-#include "fboss/agent/packet/PktFactory.h"
+#include "fboss/agent/packet/EthFrame.h"
 #include "fboss/agent/packet/PktUtil.h"
+#include "fboss/agent/packet/UDPHeader.h"
 #include "fboss/agent/test/TestUtils.h"
 
 #include <folly/io/Cursor.h>
@@ -150,7 +151,7 @@ TEST(PacketUtilTests, IpV6Packet) {
 
   auto ip6Pkt = utility::IPv6Packet(cursor);
   auto ip6Hdr = ip6Pkt.header();
-  auto ip6Payload = ip6Pkt.payload();
+  auto ip6Payload = ip6Pkt.udpPayload();
   verifyIP6Hdr(ip6Hdr);
   auto udpPkt = ip6Payload.value();
   verifyUdp(udpPkt.header(), udpPkt.payload());
@@ -175,7 +176,7 @@ TEST(PacketUtilTests, IpV4Packet) {
 
   auto ip4Pkt = utility::IPv4Packet(cursor);
   auto ip4Hdr = ip4Pkt.header();
-  auto ip4Payload = ip4Pkt.payload();
+  auto ip4Payload = ip4Pkt.udpPayload();
   verifyIP4Hdr(ip4Hdr);
   auto udpPkt = ip4Payload.value();
   verifyUdp(udpPkt.header(), udpPkt.payload());
@@ -204,7 +205,7 @@ TEST(PacketUtilTests, MPLSPacket) {
   verifyMPLSHdr(mplsHdr);
   auto ip6Pkt = mplsPkt.v6PayLoad().value();
   auto ip6Hdr = ip6Pkt.header();
-  auto ip6Payload = ip6Pkt.payload();
+  auto ip6Payload = ip6Pkt.udpPayload();
   verifyIP6Hdr(ip6Hdr);
   auto udpPkt = ip6Payload.value();
   verifyUdp(udpPkt.header(), udpPkt.payload());
@@ -236,7 +237,7 @@ TEST(PacketUtilTests, EthFrame) {
   verifyMPLSHdr(mplsHdr);
   auto ip6Pkt = mplsPkt.v6PayLoad().value();
   auto ip6Hdr = ip6Pkt.header();
-  auto ip6Payload = ip6Pkt.payload();
+  auto ip6Payload = ip6Pkt.udpPayload();
   verifyIP6Hdr(ip6Hdr);
   auto udpPkt = ip6Payload.value();
   verifyUdp(udpPkt.header(), udpPkt.payload());
@@ -270,6 +271,7 @@ TEST(PacketUtilTest, TxMPLSv4UDP) {
   IPv4Hdr v4Hdr;
   v4Hdr.srcAddr = folly::IPAddressV4("10.0.0.1");
   v4Hdr.dstAddr = folly::IPAddressV4("10.0.0.1");
+  v4Hdr.setProtocol(static_cast<uint8_t>(IP_PROTO::IP_PROTO_UDP));
 
   UDPHeader udpHdr;
   udpHdr.srcPort = 10001;
@@ -283,7 +285,8 @@ TEST(PacketUtilTest, TxMPLSv4UDP) {
           mplsHdr,
           utility::IPv4Packet(v4Hdr, utility::UDPDatagram(udpHdr, payload))));
 
-  auto txPacket = ethPkt.getTxPacket(&hwSwitch);
+  auto txPacket = ethPkt.getTxPacket(
+      [&hwSwitch](uint32_t size) { return hwSwitch.allocatePacket(size); });
   folly::io::Cursor cursor{txPacket->buf()};
   auto ethPkt2 = utility::EthFrame(cursor);
   EXPECT_EQ(ethPkt, ethPkt2);
@@ -308,6 +311,7 @@ TEST(PacketUtilTest, TxMPLSv6UDP) {
   IPv6Hdr v6Hdr;
   v6Hdr.srcAddr = folly::IPAddressV6("1001::1");
   v6Hdr.dstAddr = folly::IPAddressV6("1001::2");
+  v6Hdr.setProtocol(static_cast<uint8_t>(IP_PROTO::IP_PROTO_UDP));
 
   UDPHeader udpHdr;
   udpHdr.srcPort = 10001;
@@ -321,7 +325,8 @@ TEST(PacketUtilTest, TxMPLSv6UDP) {
           mplsHdr,
           utility::IPv6Packet(v6Hdr, utility::UDPDatagram(udpHdr, payload))));
 
-  auto txPacket = ethPkt.getTxPacket(&hwSwitch);
+  auto txPacket = ethPkt.getTxPacket(
+      [&hwSwitch](uint32_t size) { return hwSwitch.allocatePacket(size); });
   folly::io::Cursor cursor{txPacket->buf()};
   auto ethPkt2 = utility::EthFrame(cursor);
   EXPECT_EQ(ethPkt, ethPkt2);
@@ -340,7 +345,8 @@ TEST(PacketUtilTest, GetEthFrameV4) {
       10020,
       kVlan1);
 
-  auto txPkt = ethFrame0.getTxPacket(&hwSwitch);
+  auto txPkt = ethFrame0.getTxPacket(
+      [&hwSwitch](uint32_t size) { return hwSwitch.allocatePacket(size); });
   folly::io::Cursor cursor(txPkt->buf());
 
   auto ethFrame1 = utility::EthFrame(cursor);
@@ -361,7 +367,8 @@ TEST(PacketUtilTest, GetEthFrameV6) {
       10020,
       kVlan1);
 
-  auto txPkt = ethFrame0.getTxPacket(&hwSwitch);
+  auto txPkt = ethFrame0.getTxPacket(
+      [&hwSwitch](uint32_t size) { return hwSwitch.allocatePacket(size); });
   folly::io::Cursor cursor(txPkt->buf());
 
   auto ethFrame1 = utility::EthFrame(cursor);
@@ -387,7 +394,8 @@ TEST(PacketUtilTest, GetEthFrameV4MPLS) {
       10010,
       10020);
 
-  auto txPkt = ethFrame0.getTxPacket(&hwSwitch);
+  auto txPkt = ethFrame0.getTxPacket(
+      [&hwSwitch](uint32_t size) { return hwSwitch.allocatePacket(size); });
   folly::io::Cursor cursor(txPkt->buf());
 
   auto ethFrame1 = utility::EthFrame(cursor);
@@ -413,7 +421,8 @@ TEST(PacketUtilTest, GetEthFrameV6MPLS) {
       10010,
       10020);
 
-  auto txPkt = ethFrame0.getTxPacket(&hwSwitch);
+  auto txPkt = ethFrame0.getTxPacket(
+      [&hwSwitch](uint32_t size) { return hwSwitch.allocatePacket(size); });
   folly::io::Cursor cursor(txPkt->buf());
 
   auto ethFrame1 = utility::EthFrame(cursor);

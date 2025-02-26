@@ -10,24 +10,19 @@
 #include "fboss/agent/hw/sai/hw_test/SaiSwitchEnsemble.h"
 
 #include "fboss/agent/SetupThrift.h"
-#include "fboss/agent/hw/sai/hw_test/SaiLinkStateToggler.h"
 #include "fboss/agent/hw/sai/switch/SaiAclTableManager.h"
 #include "fboss/agent/hw/sai/switch/SaiLagManager.h"
-#include "fboss/agent/hw/sai/switch/SaiPortManager.h"
 
 #include <folly/io/async/AsyncSignalHandler.h>
 #include "fboss/agent/hw/sai/diag/SaiRepl.h"
 #include "fboss/agent/hw/sai/hw_test/SaiTestHandler.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
-#include "fboss/agent/hw/test/HwLinkStateToggler.h"
 #include "fboss/agent/platforms/sai/SaiPlatformInit.h"
+#include "fboss/agent/test/LinkStateToggler.h"
 
 #include "fboss/agent/HwSwitch.h"
-#include "fboss/agent/SwitchStats.h"
 
 #include <folly/gen/Base.h>
-
-#include <boost/container/flat_set.hpp>
 
 #include <csignal>
 #include <memory>
@@ -36,6 +31,7 @@
 DECLARE_int32(thrift_port);
 DECLARE_bool(setup_thrift);
 DECLARE_string(config);
+DECLARE_bool(classid_for_unresolved_routes);
 
 namespace {
 using namespace facebook::fboss;
@@ -78,22 +74,18 @@ SaiSwitchEnsemble::SaiSwitchEnsemble(
 std::unique_ptr<std::thread> SaiSwitchEnsemble::createThriftThread(
     const SaiSwitch* hwSwitch) {
   return std::make_unique<std::thread>([hwSwitch] {
-    folly::EventBase* eventBase = new folly::EventBase();
+    FbossEventBase* eventBase =
+        new FbossEventBase("SaiSwitchEnsembleSignalHandler");
     auto handler = std::make_shared<SaiTestHandler>(hwSwitch);
     auto server = setupThriftServer(
-        *eventBase,
-        handler,
-        FLAGS_thrift_port,
-        false /* isDuplex */,
-        true /* setupSSL*/);
+        *eventBase, handler, {FLAGS_thrift_port}, true /* setupSSL*/);
     SignalHandler signalHandler(eventBase);
     server->serve();
   });
 }
 
-std::vector<PortID> SaiSwitchEnsemble::masterLogicalPortIds(
-    const std::set<cfg::PortType>& filter) const {
-  return filterByPortTypes(filter, getPlatform()->masterLogicalPortIds());
+std::vector<PortID> SaiSwitchEnsemble::masterLogicalPortIds() const {
+  return getPlatform()->masterLogicalPortIds();
 }
 
 std::vector<PortID> SaiSwitchEnsemble::getAllPortsInGroup(PortID portID) const {
@@ -128,7 +120,8 @@ uint64_t SaiSwitchEnsemble::getSdkSwitchId() const {
 
 void SaiSwitchEnsemble::runDiagCommand(
     const std::string& input,
-    std::string& output) {
+    std::string& output,
+    std::optional<SwitchID> /*switchId*/) {
   ClientInformation clientInfo;
   clientInfo.username() = "hw_test";
   clientInfo.hostname() = "hw_test";
@@ -152,14 +145,21 @@ void SaiSwitchEnsemble::init(
   }
   initFlagDefaults(*agentConfig->thrift.defaultCommandLineArgs());
   auto platform =
-      initSaiPlatform(std::move(agentConfig), getHwSwitchFeatures());
+      initSaiPlatform(std::move(agentConfig), getHwSwitchFeatures(), 0);
+  if (platform->getAsic()->getAsicVendor() ==
+          HwAsic::AsicVendor::ASIC_VENDOR_TAJO ||
+      platform->getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_JERICHO3) {
+    FLAGS_classid_for_unresolved_routes = true;
+  }
+  if (platform->getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_JERICHO3) {
+    FLAGS_set_classid_for_my_subnet_and_ip_routes = true;
+  }
   if (auto tcvr = info.overrideTransceiverInfo) {
     platform->setOverrideTransceiverInfo(*tcvr);
   }
-  std::unique_ptr<HwLinkStateToggler> linkToggler;
+  std::unique_ptr<LinkStateToggler> linkToggler;
   if (haveFeature(HwSwitchEnsemble::LINKSCAN)) {
-    linkToggler = std::make_unique<SaiLinkStateToggler>(
-        this, platform->getAsic()->desiredLoopbackMode());
+    linkToggler = std::make_unique<LinkStateToggler>(this);
   }
   std::unique_ptr<std::thread> thriftThread;
   if (FLAGS_setup_thrift) {
@@ -167,14 +167,24 @@ void SaiSwitchEnsemble::init(
         createThriftThread(static_cast<SaiSwitch*>(platform->getHwSwitch()));
   }
   setupEnsemble(
-      std::move(platform),
+      std::make_unique<HwAgent>(std::move(platform)),
       std::move(linkToggler),
       std::move(thriftThread),
       info);
+  // TODO - set streamtype correctly based on sdk version from config
+  HwAsic* hwAsicTableEntry = getHwAsicTable()->getHwAsicIf(
+      getPlatform()->getAsic()->getSwitchId()
+          ? SwitchID(*getPlatform()->getAsic()->getSwitchId())
+          : SwitchID(0));
+  hwAsicTableEntry->setDefaultStreamType(
+      getPlatform()->getAsic()->getDefaultStreamType());
   getPlatform()->initLEDs();
+#if !defined(CHENAB_SAI_SDK)
   auto hw = static_cast<SaiSwitch*>(getHwSwitch());
+  // TODO(pshaikh): hacking to skip this for Chenab for now
   diagShell_ = std::make_unique<DiagShell>(hw);
   diagCmdServer_ = std::make_unique<DiagCmdServer>(hw, diagShell_.get());
+#endif
 }
 
 void SaiSwitchEnsemble::gracefulExit() {

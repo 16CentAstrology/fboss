@@ -19,6 +19,10 @@ class TajoAsic : public HwAsic {
   uint64_t getMMUSizeBytes() const override {
     return 108 * 1024 * 1024;
   }
+  uint64_t getSramSizeBytes() const override {
+    // No HBM!
+    return getMMUSizeBytes();
+  }
   uint32_t getMaxMirrors() const override {
     // TODO - verify this
     return 4;
@@ -36,6 +40,16 @@ class TajoAsic : public HwAsic {
       cfg::MMUScalingFactor /* scalingFactor */) const override {
     throw FbossError("Dynamic buffer threshold unsupported!");
   }
+  int getMidPriCpuQueueId() const override {
+    return kDefaultMidPriCpuQueueId_;
+  }
+  int getHiPriCpuQueueId() const override {
+    return kDefaultMidPriCpuQueueId_;
+  }
+
+ private:
+  static constexpr int kDefaultMidPriCpuQueueId_ = 2;
+  static constexpr int kDefaultHiPriCpuQueueId_ = 7;
 };
 
 } // namespace facebook::fboss

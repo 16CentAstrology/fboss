@@ -11,79 +11,58 @@
 #pragma once
 
 #include <string>
-#include <unordered_map>
+#include <type_traits>
 #include <vector>
+
+#include <folly/Synchronized.h>
+
 #include "fboss/platform/sensor_service/FsdbSyncer.h"
+#include "fboss/platform/sensor_service/PmUnitInfoFetcher.h"
 #include "fboss/platform/sensor_service/if/gen-cpp2/sensor_config_types.h"
 #include "fboss/platform/sensor_service/if/gen-cpp2/sensor_service_types.h"
-#include "folly/Synchronized.h"
 
 DECLARE_int32(fsdb_statsStream_interval_seconds);
-DECLARE_string(mock_lmsensor_json_data);
 
 namespace facebook::fboss::platform::sensor_service {
-
 using namespace facebook::fboss::platform::sensor_config;
-
-enum class SensorSource {
-  LMSENSOR,
-  SYSFS,
-  MOCK,
-  UNKNOWN,
-};
-
-struct SensorLiveData {
-  std::string fru;
-  std::string path;
-  float value;
-  int64_t timeStamp;
-  std::string compute;
-  Thresholds thresholds;
-};
 
 class SensorServiceImpl {
  public:
-  SensorServiceImpl() {
-    init();
-  }
-  ~SensorServiceImpl();
-  explicit SensorServiceImpl(const std::string& confFileName)
-      : confFileName_{confFileName} {
-    init();
-  }
+  auto static constexpr kReadFailure = "sensor_read.{}.failure";
+  auto static constexpr kReadValue = "sensor_read.{}.value";
+  auto static constexpr kReadTotal = "sensor_read.total";
+  auto static constexpr kTotalReadFailure = "sensor_read.total.failures";
+  auto static constexpr kHasReadFailure = "sensor_read.has.failures";
+  auto static constexpr kCriticalThresholdViolation =
+      "sensor_read.sensor_{}.type_{}.critical_threshold_violation";
 
-  std::optional<SensorData> getSensorData(const std::string& sensorName);
+  explicit SensorServiceImpl(const SensorConfig& sensorConfig);
+  ~SensorServiceImpl();
+
   std::vector<SensorData> getSensorsData(
       const std::vector<std::string>& sensorNames);
   std::map<std::string, SensorData> getAllSensorData();
   void fetchSensorData();
+  std::vector<PmSensor> resolveSensors(const PmUnitSensors& pmUnitSensors);
 
   FsdbSyncer* fsdbSyncer() {
     return fsdbSyncer_.get();
   }
 
  private:
-  // Sensor config file full path
-  std::string confFileName_{};
+  SensorData fetchSensorDataImpl(
+      const std::string& name,
+      const std::string& sysfsPath,
+      SensorType sensorType,
+      const std::optional<Thresholds>& thresholds,
+      const std::optional<std::string>& compute);
 
-  SensorSource sensorSource_{SensorSource::LMSENSOR};
-
-  SensorConfig sensorTable_;
-
-  // Sensor Name map, sensor path -> sensor name
-  std::unordered_map<std::string, std::string> sensorNameMap_;
-
-  // Live sensor data table, sensor name -> sensor live data
-  folly::Synchronized<std::unordered_map<SensorName, struct SensorLiveData>>
-      liveDataTable_;
-
-  void init();
-  void parseSensorJsonData(const std::string&);
-  void getSensorDataFromPath();
-
+  folly::Synchronized<std::map<std::string, SensorData>> polledData_{};
   std::unique_ptr<FsdbSyncer> fsdbSyncer_;
   std::optional<std::chrono::time_point<std::chrono::steady_clock>>
       publishedStatsToFsdbAt_;
+  SensorConfig sensorConfig_{};
+  PmUnitInfoFetcher pmUnitInfoFetcher_{};
 };
 
 } // namespace facebook::fboss::platform::sensor_service

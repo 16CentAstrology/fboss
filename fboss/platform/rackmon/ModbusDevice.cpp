@@ -1,7 +1,5 @@
 // Copyright 2021-present Facebook. All Rights Reserved.
 #include "ModbusDevice.h"
-#include <iomanip>
-#include <sstream>
 #include "Log.h"
 
 using nlohmann::json;
@@ -15,12 +13,11 @@ ModbusDevice::ModbusDevice(
     int numCommandRetries)
     : interface_(interface),
       numCommandRetries_(numCommandRetries),
-      baudConfig_(registerMap.baudConfig) {
+      registerMap_(registerMap) {
   info_.deviceAddress = deviceAddress;
-  info_.preferredBaudrate = registerMap.preferredBaudrate;
-  info_.defaultBaudrate = registerMap.defaultBaudrate;
-  info_.baudrate = info_.defaultBaudrate;
+  info_.baudrate = registerMap.baudrate;
   info_.deviceType = registerMap.name;
+  info_.parity = registerMap.parity;
 
   for (auto& it : registerMap.registerDescriptors) {
     info_.registerList.emplace_back(it.second);
@@ -65,6 +62,11 @@ void ModbusDevice::handleCommandFailure(std::exception& baseException) {
   }
 }
 
+std::tuple<uint32_t, Parity> ModbusDevice::getDeviceConfig() {
+  std::shared_lock lk(infoMutex_);
+  return {info_.baudrate, info_.parity};
+}
+
 void ModbusDevice::command(Msg& req, Msg& resp, ModbusTime timeout) {
   size_t reqLen = req.len;
   size_t respLen = resp.len;
@@ -73,13 +75,16 @@ void ModbusDevice::command(Msg& req, Msg& resp, ModbusTime timeout) {
   // the last retry) in case the user wants to handle them
   // in a special way.
   int numRetries = exclusiveMode_ ? 1 : numCommandRetries_;
+  auto [baudrate, parity] = getDeviceConfig();
   for (int retries = 0; retries < numRetries; retries++) {
     try {
-      interface_.command(req, resp, info_.baudrate, timeout);
+      interface_.command(req, resp, baudrate, timeout, parity);
+      std::unique_lock lk(infoMutex_);
       info_.numConsecutiveFailures = 0;
-      info_.lastActive = std::time(nullptr);
+      info_.lastActive = getCurrentTime();
       break;
     } catch (std::exception& ex) {
+      std::unique_lock lk(infoMutex_);
       handleCommandFailure(ex);
       if (retries == (numRetries - 1)) {
         throw;
@@ -129,27 +134,74 @@ void ModbusDevice::readFileRecord(
   command(req, resp, timeout);
 }
 
-void ModbusDevice::setBaudrate(uint32_t baud) {
-  // Return early if earlier setBaud failed, or
-  // we dont have configuration or if we already
-  // are at the requested baudrate.
-  if (!setBaudEnabled_ || !baudConfig_.isSet || baud == info_.baudrate) {
-    return;
-  }
+void ModbusDevice::forceReloadRegister(
+    RegisterStore& registerStore,
+    time_t reloadTime) {
+  uint16_t registerOffset = registerStore.regAddr();
   try {
-    writeSingleRegister(baudConfig_.reg, baudConfig_.baudValueMap.at(baud));
-    info_.baudrate = baud;
-  } catch (std::exception&) {
-    setBaudEnabled_ = false;
-    logError << "Failed to set baudrate to " << baud << std::endl;
+    std::vector<uint16_t> value(registerStore.length(), 0);
+    readHoldingRegisters(registerOffset, value);
+    registerStore.setRegister(value.begin(), value.end(), reloadTime);
+  } catch (ModbusError& e) {
+    if (e.errorCode == ModbusErrorCode::ILLEGAL_DATA_ADDRESS) {
+      logInfo << "DEV:0x" << std::hex << int(info_.deviceAddress)
+              << " ReadReg 0x" << std::hex << registerOffset << ' '
+              << registerStore.name()
+              << " unsupported. Disabled from monitoring" << std::endl;
+      registerStore.disable();
+    } else {
+      logInfo << "DEV:0x" << std::hex << int(info_.deviceAddress)
+              << " ReadReg 0x" << std::hex << registerOffset << ' '
+              << registerStore.name() << " caught: " << e.what() << std::endl;
+    }
+  } catch (std::exception& e) {
+    logInfo << "DEV:0x" << std::hex << int(info_.deviceAddress) << " ReadReg 0x"
+            << std::hex << registerOffset << ' ' << registerStore.name()
+            << " caught: " << e.what() << std::endl;
   }
 }
 
-void ModbusDevice::reloadRegisters() {
-  setPreferredBaudrate();
+void ModbusDevice::forceReloadPlan() {
+  reloadPlan_.clear();
+  time_t reloadTime = getCurrentTime();
+  for (auto& reg : info_.registerList) {
+    forceReloadRegister(reg, reloadTime);
+    RegisterStoreSpan::buildRegisterSpanList(
+        reloadPlan_, reg, registerMap_.maxRegisterSpanLength);
+  }
+}
+
+bool ModbusDevice::reloadRegisterSpan(
+    RegisterStoreSpan& span,
+    bool singleShot) {
+  time_t reloadTime = getCurrentTime();
+  if (!singleShot && !span.reloadPending(reloadTime)) {
+    return false;
+  }
+  uint16_t registerOffset = span.getSpanAddress();
+  try {
+    auto& data = span.beginReloadSpan();
+    readHoldingRegisters(registerOffset, data);
+    span.endReloadSpan(reloadTime);
+    return true;
+  } catch (ModbusError& e) {
+    logInfo << "DEV:0x" << std::hex << int(info_.deviceAddress) << " ReadReg 0x"
+            << std::hex << registerOffset << " Len: " << span.length()
+            << " caught: " << e.what() << std::endl;
+    if (e.errorCode == ModbusErrorCode::ILLEGAL_DATA_ADDRESS) {
+      // TODO we might need to reform a plan.
+    }
+  } catch (std::exception& e) {
+    logInfo << "DEV:0x" << std::hex << int(info_.deviceAddress) << " ReadReg 0x"
+            << std::hex << registerOffset << " Len: " << span.length()
+            << " caught: " << e.what() << std::endl;
+  }
+  return false;
+}
+
+void ModbusDevice::reloadAllRegisters() {
   // If the number of consecutive failures has exceeded
   // a threshold, mark the device as dormant.
-  uint32_t timestamp = std::time(nullptr);
   for (auto& specialHandler : specialHandlers_) {
     // Break early, if we are entering exclusive mode
     if (exclusiveMode_) {
@@ -157,57 +209,26 @@ void ModbusDevice::reloadRegisters() {
     }
     specialHandler.handle(*this);
   }
-  std::unique_lock lk(registerListMutex_);
-  for (auto& registerStore : info_.registerList) {
-    uint16_t registerOffset = registerStore.regAddr();
-    auto& nextRegister = registerStore.front();
+  bool singleShot = singleShotReload_;
+  singleShotReload_ = false;
+  if (singleShot) {
+    forceReloadPlan();
+    return;
+  }
+  for (auto& plan : reloadPlan_) {
     // Break early, if we are entering exclusive mode
     if (exclusiveMode_) {
       break;
     }
-    if (!registerStore.isEnabled()) {
-      continue;
+    if (reloadRegisterSpan(plan, singleShot)) {
+      // Release thread to allow for higher priority tasks to execute.
+      std::this_thread::yield();
     }
-    try {
-      readHoldingRegisters(registerOffset, nextRegister.value);
-      nextRegister.timestamp = timestamp;
-      // If we dont care about changes or if we do
-      // and we notice that the value is different
-      // from the previous, increment store to
-      // point to the next.
-      if (!nextRegister.desc.storeChangesOnly ||
-          nextRegister != registerStore.back()) {
-        ++registerStore;
-      }
-    } catch (ModbusError& e) {
-      logInfo << "DEV:0x" << std::hex << int(info_.deviceAddress)
-              << " ReadReg 0x" << std::hex << registerOffset << ' '
-              << registerStore.name() << " caught: " << e.what() << std::endl;
-      if (e.errorCode == ModbusErrorCode::ILLEGAL_DATA_ADDRESS) {
-        logInfo << "DEV:0x" << std::hex << int(info_.deviceAddress)
-                << " ReadReg 0x" << std::hex << registerOffset << ' '
-                << registerStore.name()
-                << " unsupported. Disabled from monitoring" << std::endl;
-        registerStore.disable();
-      } else {
-        logInfo << "DEV:0x" << std::hex << int(info_.deviceAddress)
-                << " ReadReg 0x" << std::hex << registerOffset << ' '
-                << registerStore.name() << " caught: " << e.what() << std::endl;
-      }
-      continue;
-    } catch (std::exception& e) {
-      logInfo << "DEV:0x" << std::hex << int(info_.deviceAddress)
-              << " ReadReg 0x" << std::hex << registerOffset << ' '
-              << registerStore.name() << " caught: " << e.what() << std::endl;
-      continue;
-    }
-    // Release thread to allow for higher priority tasks to execute.
-    std::this_thread::yield();
   }
 }
 
 void ModbusDevice::setActive() {
-  std::unique_lock lk(registerListMutex_);
+  std::unique_lock lk(infoMutex_);
   // Enable any disabled registers. Assumption is
   // that the device might be unplugged and replugged
   // with a newer version. Thus, prepare for the
@@ -218,25 +239,29 @@ void ModbusDevice::setActive() {
   // Clear the num failures so we consider it active.
   info_.numConsecutiveFailures = 0;
   info_.mode = ModbusDeviceMode::ACTIVE;
+  // Force read all registers on next reload
+  singleShotReload_ = true;
 }
 
 ModbusDeviceRawData ModbusDevice::getRawData() {
-  std::unique_lock lk(registerListMutex_);
+  std::shared_lock lk(infoMutex_);
   // Makes a deep copy.
   return info_;
 }
 
 ModbusDeviceInfo ModbusDevice::getInfo() {
-  std::unique_lock lk(registerListMutex_);
+  std::shared_lock lk(infoMutex_);
   return info_;
 }
 
 ModbusDeviceValueData ModbusDevice::getValueData(
     const ModbusRegisterFilter& filter,
     bool latestValueOnly) const {
-  std::unique_lock lk(registerListMutex_);
   ModbusDeviceValueData data;
-  data.ModbusDeviceInfo::operator=(info_);
+  {
+    std::shared_lock lk(infoMutex_);
+    data.ModbusDeviceInfo::operator=(info_);
+  }
   auto shouldPickRegister = [&filter](const RegisterStore& reg) {
     return !filter || filter.contains(reg.regAddr()) ||
         filter.contains(reg.name());
@@ -254,11 +279,36 @@ ModbusDeviceValueData ModbusDevice::getValueData(
   return data;
 }
 
+void ModbusDevice::forceReloadRegisters(const ModbusRegisterFilter& filter) {
+  auto shouldPickRegister = [&filter](const RegisterStore& reg) {
+    return !filter || filter.contains(reg.regAddr()) ||
+        filter.contains(reg.name());
+  };
+  std::vector<RegisterStoreSpan> regSpans{};
+  for (auto& reg : info_.registerList) {
+    if (shouldPickRegister(reg)) {
+      bool added = RegisterStoreSpan::buildRegisterSpanList(
+          regSpans, reg, registerMap_.maxRegisterSpanLength);
+      if (!added) {
+        logError << "reload:: Not including register: " << reg.name()
+                 << std::endl;
+      }
+    }
+  }
+  for (auto& span : regSpans) {
+    if (!reloadRegisterSpan(span, true)) {
+      logError << "reload:: Reload failed at address: "
+               << +span.getSpanAddress() << std::endl;
+    }
+  }
+}
+
 static std::string commandOutput(const std::string& shell) {
   std::array<char, 128> buffer;
   std::string result;
-  std::unique_ptr<FILE, decltype(&pclose)> pipe(
-      popen(shell.c_str(), "r"), pclose);
+  auto pipe_close = [](auto fd) { (void)pclose(fd); };
+  std::unique_ptr<FILE, decltype(pipe_close)> pipe(
+      popen(shell.c_str(), "r"), pipe_close);
   if (!pipe) {
     throw std::runtime_error("popen() failed!");
   }
@@ -329,11 +379,21 @@ void ModbusSpecialHandler::handle(ModbusDevice& dev) {
 
 NLOHMANN_JSON_SERIALIZE_ENUM(
     ModbusDeviceMode,
-    {{ModbusDeviceMode::ACTIVE, "active"},
-     {ModbusDeviceMode::DORMANT, "dormant"}})
+    {{ModbusDeviceMode::ACTIVE, "ACTIVE"},
+     {ModbusDeviceMode::DORMANT, "DORMANT"}})
+
+void to_json(json& j, const ModbusDeviceInfo& m) {
+  j["devAddress"] = m.deviceAddress;
+  j["deviceType"] = m.deviceType;
+  j["crcErrors"] = m.crcErrors;
+  j["timeouts"] = m.timeouts;
+  j["miscErrors"] = m.miscErrors;
+  j["baudrate"] = m.baudrate;
+  j["mode"] = m.mode;
+}
 
 // Legacy JSON format.
-void to_json(json& j, const ModbusDeviceInfo& m) {
+void to_json(json& j, const ModbusDeviceRawData& m) {
   j["addr"] = m.deviceAddress;
   j["crc_fails"] = m.crcErrors;
   j["timeouts"] = m.timeouts;
@@ -341,27 +401,15 @@ void to_json(json& j, const ModbusDeviceInfo& m) {
   j["mode"] = m.mode;
   j["baudrate"] = m.baudrate;
   j["deviceType"] = m.deviceType;
-}
-
-// Legacy JSON format.
-void to_json(json& j, const ModbusDeviceRawData& m) {
-  const ModbusDeviceInfo& s = m;
-  to_json(j, s);
   j["now"] = std::time(nullptr);
   j["ranges"] = m.registerList;
 }
 
 // v2.0 JSON Format.
 void to_json(json& j, const ModbusDeviceValueData& m) {
-  j["deviceAddress"] = m.deviceAddress;
-  j["deviceType"] = m.deviceType;
-  j["crcErrors"] = m.crcErrors;
-  j["timeouts"] = m.timeouts;
-  j["miscErrors"] = m.miscErrors;
-  j["baudrate"] = m.baudrate;
-  j["mode"] = m.mode;
-  j["now"] = std::time(0);
-  j["registers"] = m.registerList;
+  const ModbusDeviceInfo& devInfo = m;
+  j["devInfo"] = devInfo;
+  j["regList"] = m.registerList;
 }
 
 } // namespace rackmon

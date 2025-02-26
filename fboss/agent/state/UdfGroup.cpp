@@ -22,11 +22,11 @@ std::string UdfGroup::getName() const {
   return get<switch_config_tags::name>()->cref();
 }
 
-std::shared_ptr<UdfGroup> UdfGroup::fromFollyDynamic(
-    const folly::dynamic& entry) {
-  auto node = std::make_shared<UdfGroup>();
-  static_cast<std::shared_ptr<BaseT>>(node)->fromFollyDynamic(entry);
-  return node;
+std::optional<cfg::UdfGroupType> UdfGroup::getUdfGroupType() const {
+  if (auto udfGroupType = cref<switch_config_tags::type>()) {
+    return udfGroupType->cref();
+  }
+  return std::nullopt;
 }
 
 // THRIFT_COPY: avoid returning std::vector
@@ -46,5 +46,26 @@ int UdfGroup::getFieldSizeInBytes() const {
   return get<switch_config_tags::fieldSizeInBytes>()->cref();
 }
 
-template class ThriftStructNode<UdfGroup, cfg::UdfGroup>;
+void UdfGroup::setUdfGroupType(std::optional<cfg::UdfGroupType> type) {
+  if (type) {
+    set<switch_config_tags::type>(*type);
+  } else {
+    ref<switch_config_tags::type>().reset();
+  }
+}
+void UdfGroup::setUdfBaseHeader(cfg::UdfBaseHeaderType header) {
+  set<switch_config_tags::header>(header);
+}
+void UdfGroup::setStartOffsetInBytes(int offset) {
+  set<switch_config_tags::startOffsetInBytes>(offset);
+}
+void UdfGroup::setFieldSizeInBytes(int size) {
+  set<switch_config_tags::fieldSizeInBytes>(size);
+}
+void UdfGroup::setUdfPacketMatcherIds(
+    const std::vector<std::string>& matcherIds) {
+  set<switch_config_tags::udfPacketMatcherIds>(matcherIds);
+}
+
+template struct ThriftStructNode<UdfGroup, cfg::UdfGroup>;
 } // namespace facebook::fboss

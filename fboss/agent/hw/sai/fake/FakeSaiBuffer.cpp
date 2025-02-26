@@ -10,7 +10,6 @@
 #include "fboss/agent/hw/sai/fake/FakeSaiBuffer.h"
 #include "fboss/agent/hw/sai/fake/FakeSai.h"
 
-#include <folly/logging/xlog.h>
 #include <optional>
 
 using facebook::fboss::FakeQueue;
@@ -139,7 +138,7 @@ sai_status_t create_buffer_profile_fn(
   std::optional<sai_uint64_t> reservedBytes;
   std::optional<sai_buffer_profile_threshold_mode_t> threshMode;
   std::optional<sai_int8_t> dynamicThreshold;
-  std::optional<sai_int8_t> staticThreshold;
+  std::optional<sai_uint64_t> staticThreshold;
   std::optional<sai_uint64_t> xoffTh;
   std::optional<sai_uint64_t> xonTh;
   std::optional<sai_uint64_t> xonOffsetTh;
@@ -157,6 +156,9 @@ sai_status_t create_buffer_profile_fn(
         break;
       case SAI_BUFFER_PROFILE_ATTR_SHARED_DYNAMIC_TH:
         dynamicThreshold = attr_list[i].value.s8;
+        break;
+      case SAI_BUFFER_PROFILE_ATTR_SHARED_STATIC_TH:
+        staticThreshold = attr_list[i].value.u64;
         break;
       case SAI_BUFFER_PROFILE_ATTR_XOFF_TH:
         xoffTh = attr_list[i].value.u64;
@@ -179,6 +181,7 @@ sai_status_t create_buffer_profile_fn(
       reservedBytes,
       threshMode,
       dynamicThreshold,
+      staticThreshold,
       xoffTh,
       xonTh,
       xonOffsetTh);
@@ -200,6 +203,9 @@ sai_status_t set_buffer_profile_attribute_fn(
       break;
     case SAI_BUFFER_PROFILE_ATTR_SHARED_DYNAMIC_TH:
       profile.dynamicThreshold = attr->value.s8;
+      break;
+    case SAI_BUFFER_PROFILE_ATTR_SHARED_STATIC_TH:
+      profile.staticThreshold = attr->value.u64;
       break;
     case SAI_BUFFER_PROFILE_ATTR_XOFF_TH:
       profile.xoffTh = attr->value.u64;
@@ -243,6 +249,10 @@ sai_status_t get_buffer_profile_attribute_fn(
       case SAI_BUFFER_PROFILE_ATTR_SHARED_DYNAMIC_TH:
         attr[i].value.s8 =
             profile.dynamicThreshold ? profile.dynamicThreshold.value() : 0;
+        break;
+      case SAI_BUFFER_PROFILE_ATTR_SHARED_STATIC_TH:
+        attr[i].value.u64 =
+            profile.staticThreshold ? profile.staticThreshold.value() : 0;
         break;
       case SAI_BUFFER_PROFILE_ATTR_XOFF_TH:
         attr[i].value.u64 = profile.xoffTh ? profile.xoffTh.value() : 0;

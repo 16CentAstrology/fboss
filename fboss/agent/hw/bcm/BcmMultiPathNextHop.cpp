@@ -13,7 +13,7 @@ namespace facebook::fboss {
 BcmMultiPathNextHop::BcmMultiPathNextHop(
     const BcmSwitchIf* hw,
     BcmMultiPathNextHopKey key)
-    : hw_(hw), vrf_(key.first) {
+    : hw_(hw), vrf_(key.first), key_(key) {
   auto& fwd = key.second;
   CHECK_GT(fwd.size(), 0);
   BcmEcmpEgress::EgressId2Weight egressId2Weight;
@@ -64,6 +64,10 @@ BcmMultiPathNextHop::~BcmMultiPathNextHop() {
   // Deref ECMP egress first since the ECMP egress entry holds references
   // to egress entries.
   XLOG(DBG3) << "Removing egress object for " << fwd_;
+  if (FLAGS_flowletStatsEnable && ecmpEgress_) {
+    hw_->writableMultiPathNextHopStatsManager()->removeBcmMultiPathNextHopKey(
+        key_);
+  }
 }
 
 long BcmMultiPathNextHopTable::getEcmpEgressCount() const {
@@ -73,6 +77,38 @@ long BcmMultiPathNextHopTable::getEcmpEgressCount() const {
       [](const auto& entry) -> bool {
         return entry.second.lock()->getEgress();
       });
+}
+
+void BcmMultiPathNextHopTable::updateEcmpsForFlowletSwitching() {
+  for (const auto& nextHopsAndEcmpHostInfo : getNextHops()) {
+    auto& weakPtr = nextHopsAndEcmpHostInfo.second;
+    auto ecmpHost = weakPtr.lock();
+    auto ecmpEgress = ecmpHost->getEgress();
+    if (!ecmpEgress) {
+      continue;
+    }
+    ecmpEgress->programForFlowletSwitching();
+  }
+}
+
+bool BcmMultiPathNextHopTable::updateEcmpsForFlowletTableLocked() {
+  bool updateCompleted = true;
+  std::unordered_set<bcm_if_t> egressIds;
+  for (const auto& nextHopsAndEcmpHostInfo : getNextHops()) {
+    auto& weakPtr = nextHopsAndEcmpHostInfo.second;
+    auto ecmpHost = weakPtr.lock();
+    auto ecmpEgress = ecmpHost->getEgress();
+    if (!ecmpEgress) {
+      continue;
+    }
+    if (!egressIds.count(ecmpEgress->getID())) {
+      // update is complete when all the ECMP flowlet objects made are dynamic
+      // if not so already done
+      updateCompleted = ecmpEgress->updateEcmpDynamicMode();
+      egressIds.insert(ecmpEgress->getID());
+    }
+  }
+  return updateCompleted;
 }
 
 void BcmMultiPathNextHopTable::egressResolutionChangedHwLocked(
@@ -95,6 +131,8 @@ void BcmMultiPathNextHopTable::egressResolutionChangedHwLocked(
           ecmpEgress->pathReachableHwLocked(egrId);
           break;
         case BcmEcmpEgress::Action::SHRINK:
+          XLOG(DBG3) << "Removing the egressId= " << egrId
+                     << " from ECMP groups";
           ecmpEgress->pathUnreachableHwLocked(egrId);
           break;
         case BcmEcmpEgress::Action::SKIP:
@@ -130,6 +168,7 @@ void BcmMultiPathNextHopTable::egressResolutionChangedHwLocked(
       switch (action) {
         case BcmEcmpEgress::Action::EXPAND:
           BcmEcmpEgress::addEgressIdHwLocked(
+              hw,
               hw->getUnit(),
               ecmpAndEgressIds.first,
               ecmpAndEgressIds.second,
@@ -157,6 +196,56 @@ void BcmMultiPathNextHopTable::egressResolutionChangedHwLocked(
       }
     }
   }
+}
+
+std::vector<EcmpDetails> BcmMultiPathNextHopStatsManager::getAllEcmpDetails()
+    const {
+  std::vector<EcmpDetails> ecmpDetails;
+  // TODO Remove this flag after one or two releases once stat code is solid.
+  if (!FLAGS_flowletStatsEnable) {
+    return ecmpDetails;
+  }
+  auto bcmMultiPathNextHopKeys = getBcmMultiPathNextHopKeysExpensive();
+  for (const auto& key : bcmMultiPathNextHopKeys) {
+    // get the multipath nextHop
+    auto& weakPtr = key.second;
+    auto multipathNextHop = weakPtr.lock();
+    if (!multipathNextHop) {
+      continue;
+    }
+    // get the ecmp egress
+    auto ecmpEgress = multipathNextHop->getEgress();
+    CHECK(ecmpEgress) << "egress object does not exist for multipath next hop";
+    auto ecmp = ecmpEgress->getEcmpDetails();
+    ecmpDetails.emplace_back(ecmp);
+  }
+  return ecmpDetails;
+}
+
+HwFlowletStats BcmMultiPathNextHopStatsManager::getHwFlowletStats() const {
+  HwFlowletStats flowletStats;
+  uint64_t l3EcmpDlbFailPackets = 0;
+  // TODO Remove the flowletStatsEnable flag once stat code
+  // is solid. If we need to disable flowlet stats,
+  // we can use this flag without hotfix.
+  if (FLAGS_flowletSwitchingEnable && FLAGS_flowletStatsEnable) {
+    auto bcmMultiPathNextHopKeys = getBcmMultiPathNextHopKeysExpensive();
+    for (const auto& key : bcmMultiPathNextHopKeys) {
+      // get the multipath nextHop
+      auto& weakPtr = key.second;
+      auto multipathNextHop = weakPtr.lock();
+      if (!multipathNextHop) {
+        continue;
+      }
+      // get the ecmp egress
+      auto ecmpEgress = multipathNextHop->getEgress();
+      CHECK(ecmpEgress)
+          << "egress object does not exist for multipath next hop";
+      l3EcmpDlbFailPackets += ecmpEgress->getL3EcmpDlbFailPackets();
+    }
+  }
+  flowletStats.l3EcmpDlbFailPackets() = l3EcmpDlbFailPackets;
+  return flowletStats;
 }
 
 } // namespace facebook::fboss

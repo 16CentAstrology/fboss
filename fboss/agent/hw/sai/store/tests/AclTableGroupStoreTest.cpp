@@ -68,6 +68,13 @@ class AclTableGroupStoreTest : public SaiStoreTest {
             true, // neighbor meta
             true, // ether type
             true, // outer vlan id
+            true, // bth opcode
+            true, // ipv6 next header
+            0, // udf group 0
+            1, // udf group 1
+            2, // udf group 2
+            3, // udf group 3
+            4, // udf group 4
         },
         0);
   }

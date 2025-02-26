@@ -12,6 +12,7 @@
 
 #include "fboss/agent/hw/HwFb303Stats.h"
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_types.h"
+#include "fboss/agent/types.h"
 
 #include "folly/container/F14Map.h"
 
@@ -25,8 +26,13 @@ class HwBasePortFb303Stats {
   using QueueId2Name = folly::F14FastMap<int, std::string>;
   explicit HwBasePortFb303Stats(
       const std::string& portName,
-      QueueId2Name queueId2Name = {})
-      : portName_(portName), queueId2Name_(queueId2Name) {}
+      QueueId2Name queueId2Name = {},
+      std::vector<PfcPriority> enabledPfcPriorities = {},
+      std::optional<std::string> multiSwitchStatsPrefix = std::nullopt)
+      : portName_(portName),
+        portCounters_(HwFb303Stats(multiSwitchStatsPrefix)),
+        queueId2Name_(queueId2Name),
+        enabledPfcPriorities_(enabledPfcPriorities) {}
 
   virtual ~HwBasePortFb303Stats() = default;
 
@@ -41,6 +47,8 @@ class HwBasePortFb303Stats {
   }
   void queueChanged(int queueId, const std::string& queueName);
   void queueRemoved(int queueId);
+  void pfcPriorityChanged(std::vector<PfcPriority> enabledPriorities);
+  void updateLeakyBucketFlapCnt(int cnt);
 
   /*
    * Port stat name
@@ -58,13 +66,39 @@ class HwBasePortFb303Stats {
       int queueId,
       folly::StringPiece queueName);
 
-  int64_t getCounterLastIncrement(folly::StringPiece statKey) const;
+  /*
+   * Port PFC stat name
+   */
+  static std::string statName(
+      folly::StringPiece statName,
+      folly::StringPiece portName,
+      PfcPriority priority);
 
-  virtual const std::vector<folly::StringPiece>& kPortStatKeys() const = 0;
-  virtual const std::vector<folly::StringPiece>& kQueueStatKeys() const = 0;
-  virtual const std::vector<folly::StringPiece>& kInMacsecPortStatKeys()
+  /*
+   * Priority group stat name
+   */
+  static std::string
+  pgStatName(folly::StringPiece statName, folly::StringPiece portName, int pg);
+
+  int64_t getCounterLastIncrement(
+      folly::StringPiece statKey,
+      std::optional<int64_t> defaultVal = std::nullopt) const;
+
+  virtual const std::vector<folly::StringPiece>& kPortMonotonicCounterStatKeys()
       const = 0;
-  virtual const std::vector<folly::StringPiece>& kOutMacsecPortStatKeys()
+  virtual const std::vector<folly::StringPiece>& kPortFb303CounterStatKeys()
+      const = 0;
+  virtual const std::vector<folly::StringPiece>&
+  kQueueMonotonicCounterStatKeys() const = 0;
+  virtual const std::vector<folly::StringPiece>& kQueueFb303CounterStatKeys()
+      const = 0;
+  virtual const std::vector<folly::StringPiece>&
+  kInMacsecPortMonotonicCounterStatKeys() const = 0;
+  virtual const std::vector<folly::StringPiece>&
+  kOutMacsecPortMonotonicCounterStatKeys() const = 0;
+  virtual const std::vector<folly::StringPiece>& kPfcMonotonicCounterStatKeys()
+      const = 0;
+  virtual const std::vector<folly::StringPiece>& kPriorityGroupCounterStatKeys()
       const = 0;
 
  protected:
@@ -85,15 +119,37 @@ class HwBasePortFb303Stats {
       folly::StringPiece statKey,
       int queueId,
       int64_t val);
+  /*
+   * update port PFC stat
+   */
+  void updateStat(
+      const std::chrono::seconds& now,
+      folly::StringPiece statKey,
+      PfcPriority priority,
+      int64_t val);
+  /*
+   * update port priority group stat
+   */
+  void updatePgStat(
+      const std::chrono::seconds& now,
+      folly::StringPiece statKey,
+      int pg,
+      int64_t val);
 
   void updateQueueWatermarkStats(
       const std::map<int16_t, int64_t>& queueWatermarkBytes) const;
+
+  void updateEgressGvoqWatermarkStats(
+      const std::map<int16_t, int64_t>& gvoqWatermarks) const;
 
   bool macsecStatsInited() const {
     return macsecStatsInited_;
   }
   const QueueId2Name& queueId2Name() const {
     return queueId2Name_;
+  }
+  const std::vector<PfcPriority> getEnabledPfcPriorities() const {
+    return enabledPfcPriorities_;
   }
 
  private:
@@ -116,6 +172,7 @@ class HwBasePortFb303Stats {
   HwFb303Stats portCounters_;
   QueueId2Name queueId2Name_;
   bool macsecStatsInited_{false};
+  std::vector<PfcPriority> enabledPfcPriorities_{};
 };
 
 } // namespace facebook::fboss

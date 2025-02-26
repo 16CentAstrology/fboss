@@ -7,7 +7,6 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
-#include <variant>
 #include <vector>
 
 using namespace ::testing;
@@ -139,6 +138,15 @@ TEST(CmdArgsTest, HwObjectList) {
   ASSERT_THROW(utils::HwObjectList({""}), std::out_of_range);
   ASSERT_THROW(
       utils::HwObjectList({"QUEUE", "VLAN", "AAA"}), std::out_of_range);
+}
+
+TEST(CmdArgsTest, CIDRNetwork) {
+  auto args = utils::CIDRNetwork({"2401:db00:e01e:2105::24/110", "::/0"});
+  EXPECT_THAT(
+      args.data(),
+      ElementsAre(
+          folly::CIDRNetwork("2401:db00:e01e:2105::", 110),
+          folly::CIDRNetwork("::", 0)));
 }
 
 } // namespace facebook::fboss

@@ -33,16 +33,28 @@ namespace fboss {
 class MockSffModule : public SffModule {
  public:
   explicit MockSffModule(
-      TransceiverManager* transceiverManager,
-      std::unique_ptr<TransceiverImpl> qsfpImpl)
-      : SffModule(transceiverManager, std::move(qsfpImpl)) {
+      std::set<std::string> portNames,
+      TransceiverImpl* qsfpImpl,
+      std::shared_ptr<const TransceiverConfig> cfgOverridePtr,
+      std::string tcvrName)
+      : SffModule(
+            std::move(portNames),
+            qsfpImpl,
+            cfgOverridePtr,
+            std::move(tcvrName)) {
     ON_CALL(*this, updateQsfpData(testing::_))
         .WillByDefault(testing::Assign(&dirty_, false));
+    ON_CALL(*this, ensureTransceiverReadyLocked())
+        .WillByDefault(testing::Return(true));
+    ON_CALL(*this, numHostLanes()).WillByDefault(testing::Return(4));
+    ON_CALL(*this, getTransceiverInfo())
+        .WillByDefault(testing::Return(TransceiverInfo{}));
   }
   MOCK_METHOD1(setPowerOverrideIfSupportedLocked, void(PowerControlState));
   MOCK_METHOD1(updateQsfpData, void(bool));
+  MOCK_CONST_METHOD0(numHostLanes, unsigned int());
   MOCK_CONST_METHOD2(getSettingsValue, uint8_t(SffField, uint8_t));
-  MOCK_METHOD0(getTransceiverInfo, TransceiverInfo());
+  MOCK_CONST_METHOD0(getTransceiverInfo, TransceiverInfo());
 
   MOCK_METHOD3(
       setCdrIfSupported,
@@ -53,8 +65,17 @@ class MockSffModule : public SffModule {
 
   MOCK_CONST_METHOD0(getQsfpTransmitterTechnology, TransmitterTechnology());
 
+  MOCK_CONST_METHOD1(configuredHostLanes, std::vector<uint8_t>(uint8_t));
+  MOCK_CONST_METHOD1(configuredMediaLanes, std::vector<uint8_t>(uint8_t));
+
   MOCK_METHOD0(ensureTxEnabled, void());
   MOCK_METHOD0(resetLowPowerMode, void());
+  MOCK_METHOD0(ensureTransceiverReadyLocked, bool());
+  MOCK_CONST_METHOD0(customizationSupported, bool());
+  MOCK_METHOD0(getModuleStatus, ModuleStatus());
+  MOCK_METHOD0(getVendorInfo, Vendor());
+  MOCK_METHOD0(verifyEepromChecksums, bool());
+  MOCK_CONST_METHOD0(getModuleMediaInterface, MediaInterfaceCode());
 
   // Provide way to call parent
   void actualSetCdrIfSupported(
@@ -83,10 +104,10 @@ class MockSffModule : public SffModule {
     flatMem_ = false;
   }
 
-  void customizeTransceiver(cfg::PortSpeed speed) override {
+  void customizeTransceiver(TransceiverPortState& portState) override {
     dirty_ = false;
     present_ = true;
-    SffModule::customizeTransceiver(speed);
+    SffModule::customizeTransceiver(portState);
   }
 
   TransceiverSettings getTransceiverSettingsInfo() override {
@@ -104,7 +125,7 @@ class MockSffModule : public SffModule {
     // shouldRemediate will check the vendor PN to skip doing it on Miniphoton
     // modules. Here we take a PN other than Miniphoton.
     vendor.partNumber() = vendorPN;
-    info.vendor() = vendor;
+    info.tcvrState()->vendor() = vendor;
     fakeInfo_ = info;
   }
 
@@ -126,8 +147,63 @@ class MockSffModule : public SffModule {
     return SffModule::readTransceiver(param);
   }
 
-  bool writeTransceiver(TransceiverIOParameters param, uint8_t data) override {
+  bool writeTransceiver(TransceiverIOParameters param, const uint8_t* data)
+      override {
     return SffModule::writeTransceiver(param, data);
+  }
+
+  void setFwVersion(std::string appFwVersion, std::string dspFwVersion) {
+    ModuleStatus moduleStatus;
+    FirmwareStatus fw;
+    fw.version() = appFwVersion;
+    fw.dspFwVer() = dspFwVersion;
+    moduleStatus.fwStatus() = fw;
+    ON_CALL(*this, getModuleStatus())
+        .WillByDefault(testing::Return(moduleStatus));
+  }
+
+  void setAppFwVersion(std::string fwVersion) {
+    ModuleStatus moduleStatus;
+    FirmwareStatus fw;
+    fw.version() = fwVersion;
+    moduleStatus.fwStatus() = fw;
+    ON_CALL(*this, getModuleStatus())
+        .WillByDefault(testing::Return(moduleStatus));
+  }
+
+  void setDspFwVersion(std::string fwVersion) {
+    ModuleStatus moduleStatus;
+    FirmwareStatus fw;
+    fw.dspFwVer() = fwVersion;
+    moduleStatus.fwStatus() = fw;
+    ON_CALL(*this, getModuleStatus())
+        .WillByDefault(testing::Return(moduleStatus));
+  }
+
+  void overrideVendorPN(std::string partNumber) {
+    Vendor vendor;
+    vendor.partNumber() = partNumber;
+    ON_CALL(*this, getVendorInfo()).WillByDefault(testing::Return(vendor));
+  }
+
+  void overrideVendorInfo(
+      std::string name,
+      std::string partNumber,
+      std::string serialNumber) {
+    Vendor vendor;
+    vendor.name() = name;
+    vendor.partNumber() = partNumber;
+    vendor.serialNumber() = serialNumber;
+    ON_CALL(*this, getVendorInfo()).WillByDefault(testing::Return(vendor));
+  }
+
+  void overrideValidChecksums(bool isValid) {
+    ON_CALL(*this, verifyEepromChecksums())
+        .WillByDefault(testing::Return(isValid));
+  }
+  void overrideMediaInterfaceCode(MediaInterfaceCode mediaInterfaceCode) {
+    ON_CALL(*this, getModuleMediaInterface())
+        .WillByDefault(testing::Return(mediaInterfaceCode));
   }
 
   TransceiverInfo fakeInfo_;

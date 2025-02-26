@@ -25,9 +25,13 @@ Wedge400LedUtils::getLedState(uint8_t numLanes, bool up, bool adminUp) {
 }
 
 FbDomFpga::LedColor Wedge400LedUtils::getLedExternalState(
-    PortLedExternalState lfs) {
+    PortLedExternalState lfs,
+    FbDomFpga::LedColor currentColor) {
   switch (lfs) {
+    case PortLedExternalState::NONE:
+      return currentColor;
     case PortLedExternalState::CABLING_ERROR:
+    case PortLedExternalState::CABLING_ERROR_LOOP_DETECTED:
       return FbDomFpga::LedColor::YELLOW;
       break;
     case PortLedExternalState::EXTERNAL_FORCE_ON:
@@ -36,9 +40,7 @@ FbDomFpga::LedColor Wedge400LedUtils::getLedExternalState(
     case PortLedExternalState::EXTERNAL_FORCE_OFF:
       return FbDomFpga::LedColor::OFF;
       break;
-    default:
-      throw FbossError("Invalid port led external state");
-      break;
   }
+  throw FbossError("Invalid port led external state");
 }
 } // namespace facebook::fboss

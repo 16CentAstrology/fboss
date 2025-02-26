@@ -25,17 +25,17 @@ class SimPlatform : public Platform {
   ~SimPlatform() override;
 
   HwSwitch* getHwSwitch() const override;
-  void onHwInitialized(SwSwitch* sw) override;
-  void onInitialConfigApplied(SwSwitch* sw) override;
-  void stop() override;
+  void onHwInitialized(HwSwitchCallback* sw) override;
+  void stateChanged(const StateDelta& /*delta*/) override {}
 
-  std::unique_ptr<ThriftHandler> createHandler(SwSwitch* sw) override;
+  std::shared_ptr<apache::thrift::AsyncProcessorFactory> createHandler()
+      override {
+    return nullptr;
+  }
 
-  std::string getVolatileStateDir() const override;
-  std::string getPersistentStateDir() const override;
   TransceiverIdxThrift getPortMapping(
       PortID /* unused */,
-      cfg::PortSpeed /* speed */) const override {
+      cfg::PortProfileID /* profileID */) const override {
     return TransceiverIdxThrift();
   }
   PlatformPort* getPlatformPort(PortID id) const override;
@@ -45,18 +45,19 @@ class SimPlatform : public Platform {
   }
 
   void initPorts() override;
-  QsfpCache* getQsfpCache() const override {
-    return nullptr;
-  }
   HwSwitchWarmBootHelper* getWarmBootHelper() override {
     return nullptr;
   }
 
+  const AgentDirectoryUtil* getDirectoryUtil() const override {
+    return agentDirUtil_.get();
+  }
+
  private:
   void setupAsic(
-      cfg::SwitchType /*switchType*/,
       std::optional<int64_t> /*switchId*/,
-      std::optional<cfg::Range64> /*systemPortRange*/) override {
+      const cfg::SwitchInfo& /*switchInfo*/,
+      std::optional<HwAsic::FabricNodeRole> /*role*/) override {
     // noop - no asic implemented
   }
   // Forbidden copy constructor and assignment operator
@@ -68,6 +69,7 @@ class SimPlatform : public Platform {
   std::unique_ptr<SimSwitch> hw_;
   uint32_t numPorts_;
   std::unordered_map<PortID, std::unique_ptr<SimPlatformPort>> portMapping_;
+  std::unique_ptr<AgentDirectoryUtil> agentDirUtil_;
 };
 
 } // namespace facebook::fboss

@@ -11,9 +11,7 @@
 #include "fboss/agent/EnumUtils.h"
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/hw/mock/MockPlatform.h"
-#include "fboss/agent/state/BufferPoolConfig.h"
 #include "fboss/agent/state/Port.h"
-#include "fboss/agent/state/PortQueue.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/TestUtils.h"
 
@@ -307,10 +305,10 @@ TEST(PortPgConfig, applyConfig) {
           bufferPoolCfg->cref<switch_state_tags::id>()->cref(),
           kBufferPoolName.str());
       EXPECT_EQ(
-          bufferPoolCfg->cref<switch_state_tags::sharedBytes>()->cref(),
+          bufferPoolCfg->cref<common_if_tags::sharedBytes>()->cref(),
           kBufferSharedBytes);
       EXPECT_EQ(
-          bufferPoolCfg->cref<switch_state_tags::headroomBytes>()->cref(),
+          bufferPoolCfg->cref<common_if_tags::headroomBytes>()->cref(),
           kBufferHdrmBytes);
     }
 
@@ -333,10 +331,10 @@ TEST(PortPgConfig, applyConfig) {
           bufferPoolCfg->cref<switch_state_tags::id>()->cref(),
           kBufferPoolName.str());
       EXPECT_EQ(
-          bufferPoolCfg->cref<switch_state_tags::sharedBytes>()->cref(),
+          bufferPoolCfg->cref<common_if_tags::sharedBytes>()->cref(),
           kBufferSharedBytes + kDelta);
       EXPECT_EQ(
-          bufferPoolCfg->cref<switch_state_tags::headroomBytes>()->cref(),
+          bufferPoolCfg->cref<common_if_tags::headroomBytes>()->cref(),
           kBufferHdrmBytes + kDelta);
     }
 

@@ -19,15 +19,45 @@ class HwPortProfileTest : public HwTest {
   }
 
   cfg::SwitchConfig initialConfig(const std::vector<PortID>& ports) const {
-    auto lbMode = getPlatform()->getAsic()->desiredLoopbackMode();
+    auto lbMode = getPlatform()->getAsic()->desiredLoopbackModes();
     return utility::oneL3IntfTwoPortConfig(
-        getHwSwitch(), ports[0], ports[1], lbMode);
+        getHwSwitch()->getPlatform()->getPlatformMapping(),
+        getHwSwitch()->getPlatform()->getAsic(),
+        ports[0],
+        ports[1],
+        getHwSwitch()->getPlatform()->supportsAddRemovePort(),
+        lbMode);
+  }
+
+  void verifyPlatformMapping(PortID port) {
+    auto pPort = getPlatform()->getPlatformPort(port);
+    EXPECT_EQ(
+        pPort->getPlatformPortEntry(),
+        getPlatform()->getPlatformMapping()->getPlatformPort(port));
+
+    auto swPort = getProgrammedState()->getPort(port);
+    auto matcher = PlatformPortProfileConfigMatcher(
+        swPort->getProfileID(), swPort->getID());
+
+    if (auto portProfileCfg =
+            getPlatform()->getPlatformMapping()->getPortProfileConfig(
+                matcher)) {
+      EXPECT_EQ(
+          pPort->getPortProfileConfigFromCache(swPort->getProfileID()),
+          *portProfileCfg);
+    }
+    EXPECT_EQ(
+        pPort->getPortPinConfigs(swPort->getProfileID()),
+        getPlatform()->getPlatformMapping()->getPortXphyPinConfig(matcher));
+    EXPECT_EQ(
+        pPort->getPortDataplaneChips(swPort->getProfileID()),
+        getPlatform()->getPlatformMapping()->getPortDataplaneChips(matcher));
   }
 
   void verifyPort(PortID portID) {
     auto platformPort = getPlatform()->getPlatformPort(portID);
     EXPECT_EQ(portID, platformPort->getPortID());
-    auto port = getProgrammedState()->getPorts()->getPort(portID);
+    auto port = getProgrammedState()->getPorts()->getNodeIf(portID);
     // verify interface mode
     utility::verifyInterfaceMode(
         port->getID(),
@@ -53,6 +83,8 @@ class HwPortProfileTest : public HwTest {
         getPlatform(),
         port->getProfileConfig());
     // (TODO): verify lane count (for sai)
+
+    verifyPlatformMapping(port->getID());
   }
 
   // Verifies that we can read various PHY diagnostics but not the correctness
@@ -63,10 +95,12 @@ class HwPortProfileTest : public HwTest {
         getPlatform()->getAsic()->getAsicType() ==
             cfg::AsicType::ASIC_TYPE_FAKE ||
         getPlatform()->getAsic()->getAsicType() ==
+            cfg::AsicType::ASIC_TYPE_CHENAB ||
+        getPlatform()->getAsic()->getAsicType() ==
             cfg::AsicType::ASIC_TYPE_MOCK) {
       return;
     }
-    auto port = getProgrammedState()->getPorts()->getPort(portID);
+    auto port = getProgrammedState()->getPorts()->getNodeIf(portID);
     auto expectedNumPmdLanes = port->getPinConfigs().size();
 
     // Start with the expectation that PMD diagnostics are available if
@@ -87,10 +121,7 @@ class HwPortProfileTest : public HwTest {
         apache::thrift::SimpleJSONSerializer::serialize<std::string>(phyInfo);
     XLOG(DBG3) << "Snapshot for port " << portID << " = " << serializedSnapshot;
 
-    // Expect state field to be present
-    ASSERT_TRUE(phyInfo.state().has_value());
-    auto state = phyInfo.state().ensure();
-
+    auto& state = *phyInfo.state();
     // Verify PhyState fields
     EXPECT_EQ(state.phyChip()->type(), phy::DataPlanePhyChipType::IPHY);
     EXPECT_TRUE(state.linkState().has_value());
@@ -128,9 +159,7 @@ class HwPortProfileTest : public HwTest {
     }
 
     // Verify PhyStats
-    ASSERT_TRUE(phyInfo.stats().has_value());
-    auto stats = phyInfo.stats().ensure();
-    auto& lineStats = *stats.line();
+    auto& lineStats = *phyInfo.stats()->line();
 
     // Verify PmdStats
     if (expectPmdCdrLock || expectPmdSignalDetect) {
@@ -189,17 +218,24 @@ class HwPortProfileTest : public HwTest {
 #endif
       return;
     }
-    auto setup = [=]() {
+    utility::enableSixtapProgramming();
+    auto setup = [=, this]() {
       auto config = initialConfig(availablePorts);
       for (auto port : {availablePorts[0], availablePorts[1]}) {
         auto hwSwitch = getHwSwitch();
         utility::configurePortProfile(
-            *hwSwitch, config, Profile, getAllPortsInGroup(port), port);
+            hwSwitch->getPlatform()->getPlatformMapping(),
+            hwSwitch->getPlatform()->supportsAddRemovePort(),
+            config,
+            Profile,
+            getAllPortsInGroup(port),
+            port);
       }
       applyNewConfig(config);
     };
     auto verify = [this, &availablePorts, &allPhyInfo]() {
-      allPhyInfo = getHwSwitch()->updateAllPhyInfo();
+      getHwSwitch()->updateAllPhyInfo();
+      allPhyInfo = getHwSwitch()->getAllPhyInfo();
       for (auto portID : {availablePorts[0], availablePorts[1]}) {
         verifyPort(portID);
         ASSERT_TRUE(allPhyInfo.find(portID) != allPhyInfo.end());
@@ -296,5 +332,11 @@ TEST_PROFILE(PROFILE_100G_4_NRZ_CL91_COPPER_RACK_YV3_T1)
 TEST_PROFILE(PROFILE_25G_1_NRZ_NOFEC_COPPER_RACK_YV3_T1)
 
 TEST_PROFILE(PROFILE_400G_8_PAM4_RS544X2N_COPPER)
+
+TEST_PROFILE(PROFILE_400G_4_PAM4_RS544X2N_OPTICAL)
+
+TEST_PROFILE(PROFILE_800G_8_PAM4_RS544X2N_OPTICAL)
+
+TEST_PROFILE(PROFILE_100G_2_PAM4_RS544X2N_COPPER)
 
 } // namespace facebook::fboss

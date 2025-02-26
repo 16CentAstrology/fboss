@@ -81,20 +81,26 @@ SaiElbert8DDPhyPlatform::SaiElbert8DDPhyPlatform(
     folly::MacAddress localMac,
     uint8_t pimId,
     int phyId)
-    : SaiHwPlatform(
+    : SaiPlatform(
           std::move(productInfo),
           std::make_unique<Elbert8DDPimPlatformMapping>()
               ->getPimPlatformMappingUniquePtr(pimId),
           localMac),
       pimId_(pimId),
-      phyId_(phyId) {}
+      phyId_(phyId),
+      agentDirUtil_(new AgentDirectoryUtil(
+          FLAGS_volatile_state_dir_phy + "/" + folly::to<std::string>(phyId_),
+          FLAGS_persistent_state_dir_phy + "/" +
+              folly::to<std::string>(phyId_))) {}
 
 void SaiElbert8DDPhyPlatform::setupAsic(
-    cfg::SwitchType switchType,
     std::optional<int64_t> switchId,
-    std::optional<cfg::Range64> systemPortRange) {
-  asic_ = std::make_unique<CredoPhyAsic>(switchType, switchId, systemPortRange);
+    const cfg::SwitchInfo& switchInfo,
+    std::optional<HwAsic::FabricNodeRole> fabricNodeRole) {
+  CHECK(!fabricNodeRole.has_value());
+  asic_ = std::make_unique<CredoPhyAsic>(switchId, switchInfo);
 }
+
 SaiElbert8DDPhyPlatform::~SaiElbert8DDPhyPlatform() {}
 
 std::string SaiElbert8DDPhyPlatform::getHwConfig() {

@@ -7,6 +7,8 @@
 #  LICENSE file in the root directory of this source tree. An additional grant
 #  of patent rights can be found in the PATENTS file in the same directory.
 #
+
+# pyre-unsafe
 import ipaddress
 import sys
 
@@ -54,7 +56,7 @@ sys.path.insert(2, "../../../agent/if/gen-py")
 DEFAULT_CLIENTID = 1
 
 
-class CliOptions(object):
+class CliOptions:
     """Object for holding CLI state information"""
 
     def __init__(self, hostname, port, timeout):
@@ -63,7 +65,7 @@ class CliOptions(object):
         self.timeout = timeout
 
 
-class ArpCli(object):
+class ArpCli:
     """ARP Cli sub-commands"""
 
     def __init__(self):
@@ -102,12 +104,13 @@ class ArpCli(object):
         )
 
 
-class AggregatePortCli(object):
+class AggregatePortCli:
     """Aggregate Port sub-commands"""
 
     @click.command()
     @click.argument("port", required=False, default="")
     @click.pass_obj
+    @fboss2_deprecate("show aggregate-port", level=DeprecationLevel.WARN)
     def aggregate_port(cli_opts, port):
         """Show aggregate port information; Outputs a list of
         aggregate port and the subports that are part of the
@@ -115,7 +118,7 @@ class AggregatePortCli(object):
         aggregate_port.AggregatePortCmd(cli_opts).run(port)
 
 
-class NicCli(object):
+class NicCli:
     """NIC Cli sub-commands"""
 
     def __init__(self):
@@ -135,7 +138,7 @@ class NicCli(object):
         nic.NicCmd(cli_opts).run(detail, verbose)
 
 
-class IpCli(object):
+class IpCli:
     """IP sub-commands"""
 
     @click.command()
@@ -152,7 +155,7 @@ class IpCli(object):
         ip.IpCmd(cli_opts).run(interface)
 
 
-class InterfaceCli(object):
+class InterfaceCli:
     """Interface sub-commands"""
 
     def __init__(self):
@@ -167,6 +170,7 @@ class InterfaceCli(object):
     @click.command()
     @click.argument("interfaces", type=int, nargs=-1)
     @click.pass_obj
+    @fboss2_deprecate("show interface", DeprecationLevel.WARN)
     def _show(cli_opts, interfaces):
         """Show interface information for Interface(s); Outputs a list of
         interfaces on host if no interfaces are specified"""
@@ -179,7 +183,7 @@ class InterfaceCli(object):
         interface.InterfaceSummaryCmd(cli_opts).run()
 
 
-class L2Cli(object):
+class L2Cli:
     """Show L2 sub-commands"""
 
     def __init__(self):
@@ -192,12 +196,13 @@ class L2Cli(object):
 
     @click.command()
     @click.pass_obj
+    @fboss2_deprecate("show mac details", DeprecationLevel.WARN)
     def _table(cli_opts):
         """Show the L2 table"""
         l2.L2TableCmd(cli_opts).run()
 
 
-class LldpCli(object):
+class LldpCli:
     """Lldp sub-commands"""
 
     @click.command()
@@ -221,7 +226,7 @@ class LldpCli(object):
         lldp.LldpCmd(cli_opts).run(port, verbose)
 
 
-class NdpCli(object):
+class NdpCli:
     """Show NDP sub-commands"""
 
     def __init__(self):
@@ -280,7 +285,7 @@ class PortType(click.ParamType):
             self.fail("%s is not a valid Port" % value, param, ctx)
 
 
-class Stats(object):
+class Stats:
     """Port stats sub-commands"""
 
     def __init__(self):
@@ -298,6 +303,7 @@ class Stats(object):
         "--detail", is_flag=True, help="Display detailed port stats with lldp"
     )
     @click.pass_obj
+    @fboss2_deprecate("show interface counters", DeprecationLevel.WARN)
     def _show(cli_opts, detail, ports):
         """Show port statistics"""
         port.PortStatsCmd(cli_opts).run(detail, ports)
@@ -305,12 +311,13 @@ class Stats(object):
     @click.command()
     @click.argument("ports", nargs=-1, type=PortType())
     @click.pass_obj
+    @fboss2_deprecate("clear interface counters", DeprecationLevel.WARN)
     def _clear(cli_opts, ports):
         """Clear stats"""
         port.PortStatsClearCmd(cli_opts).run(ports)
 
 
-class PortState(object):
+class PortState:
     """Port state sub-commands"""
 
     def __init__(self):
@@ -329,6 +336,7 @@ class PortState(object):
     @click.argument("ports", nargs=-1, type=PortType())
     @click.option("--all", is_flag=True, help="Display Disabled ports")
     @click.pass_obj
+    @fboss2_deprecate("show port", DeprecationLevel.WARN)
     def _show(cli_opts, ports, all):  # noqa: B902
         """Show port state for given [port(s)]"""
         port.PortStatusCmd(cli_opts).run(
@@ -338,6 +346,7 @@ class PortState(object):
     @click.command()
     @click.argument("ports", nargs=-1, type=PortType())
     @click.pass_obj
+    @fboss2_deprecate("set port state", DeprecationLevel.WARN)
     def _enable(cli_opts, ports):  # noqa: B902
         """Enable port state for given [port(s)]"""
         port.PortSetStatusCmd(cli_opts).run(ports, True)
@@ -345,6 +354,7 @@ class PortState(object):
     @click.command()
     @click.argument("ports", nargs=-1, type=PortType())
     @click.pass_obj
+    @fboss2_deprecate("set port state", DeprecationLevel.WARN)
     def _disable(cli_opts, ports):  # noqa: B902
         """Disable port state for given [port(s)]"""
         port.PortSetStatusCmd(cli_opts).run(ports, False)
@@ -353,6 +363,7 @@ class PortState(object):
     @click.argument("ports", nargs=-1, type=PortType())
     @click.option("--all", is_flag=True, help="Flap all Present but Down ports")
     @click.pass_obj
+    @fboss2_deprecate("bounce interface", DeprecationLevel.WARN)
     def _flap(cli_opts, ports, all):  # noqa: B902
         """Flap port state for given [port(s)]"""
         port.PortFlapCmd(cli_opts).run(ports, all)
@@ -377,12 +388,10 @@ class PortState(object):
 class PrbsContext(CliOptions):  # noqa: B903
     def __init__(self, cli_opts, component):
         self.component = component
-        super(PrbsContext, self).__init__(
-            cli_opts.hostname, cli_opts.port, cli_opts.timeout
-        )
+        super().__init__(cli_opts.hostname, cli_opts.port, cli_opts.timeout)
 
 
-class PortPrbsCli(object):
+class PortPrbsCli:
     """Port prbs sub-commands"""
 
     def __init__(self):
@@ -447,6 +456,7 @@ class PortPrbsCli(object):
         help="The polynomial to be used for PRBS (default: 31)",
     )
     @click.pass_obj
+    @fboss2_deprecate("set interface prbs state", DeprecationLevel.WARN)
     def _enable(obj, ports, p):  # noqa: B902
         """Enable prbs for given [port(s)]"""
         port.PortPrbsCmd(obj, obj.component, ports).set_prbs(True, p)
@@ -454,6 +464,7 @@ class PortPrbsCli(object):
     @click.command()
     @click.argument("ports", nargs=-1, type=PortType())
     @click.pass_obj
+    @fboss2_deprecate("set interface prbs state", DeprecationLevel.WARN)
     def _disable(obj, ports):  # noqa: B902
         """Disable prbs for given [port(s)]"""
         port.PortPrbsCmd(obj, obj.component, ports).set_prbs(False)
@@ -461,6 +472,7 @@ class PortPrbsCli(object):
     @click.command()
     @click.argument("ports", nargs=-1, type=PortType())
     @click.pass_obj
+    @fboss2_deprecate("show interface prbs stats", DeprecationLevel.WARN)
     def _stats(obj, ports):  # noqa: B902
         """Get stats of prbs for given [port(s)]"""
 
@@ -469,12 +481,13 @@ class PortPrbsCli(object):
     @click.command()
     @click.argument("ports", nargs=-1, type=PortType())
     @click.pass_obj
+    @fboss2_deprecate("clear interface prbs stats", DeprecationLevel.WARN)
     def _clear(obj, ports):  # noqa: B902
         """Clear stats of prbs for given [port(s)]"""
         port.PortPrbsCmd(obj, obj.component, ports).clear_prbs_stats()
 
 
-class PortTransceiver(object):
+class PortTransceiver:
     """Port transceiver sub-commands"""
 
     def __init__(self):
@@ -488,6 +501,7 @@ class PortTransceiver(object):
     @click.command()
     @click.argument("ports", nargs=-1, type=PortType())
     @click.pass_obj
+    @fboss2_deprecate("show transceiver", DeprecationLevel.WARN)
     def _transceiver(cli_opts, ports):  # noqa: B902
         """Show port transceiver for given [port(s)]"""
         port.PortStatusCmd(cli_opts).run(
@@ -495,7 +509,7 @@ class PortTransceiver(object):
         )
 
 
-class PortCli(object):
+class PortCli:
     """Port sub-commands"""
 
     def __init__(self):
@@ -515,6 +529,7 @@ class PortCli(object):
     @click.command()
     @click.argument("ports", nargs=-1, type=PortType())
     @click.pass_obj
+    @fboss2_deprecate("show port", DeprecationLevel.WARN)
     def _details(cli_opts, ports):
         """Show port details for given [port(s)]"""
         port.PortDetailsCmd(cli_opts).run(ports)
@@ -522,12 +537,13 @@ class PortCli(object):
     @click.command()
     @click.argument("ports", nargs=-1, type=PortType())
     @click.pass_obj
+    @fboss2_deprecate("show port", DeprecationLevel.WARN)
     def _description(cli_opts, ports):
         """Show port description for given [port(s)]"""
         port.PortDescriptionCmd(cli_opts).run(ports)
 
 
-class ProductInfoCli(object):
+class ProductInfoCli:
     """Product Info sub-commands"""
 
     @click.command()
@@ -535,12 +551,13 @@ class ProductInfoCli(object):
         "-d", "--detail", is_flag=True, help="Display detailed product information"
     )
     @click.pass_obj
+    @fboss2_deprecate("show product (details)", DeprecationLevel.WARN)
     def product(cli_opts, detail):
         """Show product information"""
         info.ProductInfoCmd(cli_opts).run(detail)
 
 
-class RouteCli(object):
+class RouteCli:
     """Route sub-commands"""
 
     def __init__(self):
@@ -582,6 +599,7 @@ class RouteCli(object):
     @click.option("-6", "--ipv6", is_flag=True, default=False, help="Show IPv6 routes")
     @click.argument("prefix", nargs=-1, type=str)
     @click.pass_obj
+    @fboss2_deprecate("show route", DeprecationLevel.WARN)
     def _table(cli_opts, client_id, ipv4, ipv6, prefix):  # noqa: B902
         """Show the route table"""
         route.RouteTableCmd(cli_opts).run(client_id, ipv4, ipv6, prefix)
@@ -591,6 +609,7 @@ class RouteCli(object):
     @click.option("-6", "--ipv6", is_flag=True, default=False, help="Show IPv6 routes")
     @click.argument("prefix", nargs=-1, type=str)
     @click.pass_obj
+    @fboss2_deprecate("show route details", DeprecationLevel.WARN)
     def _details(cli_opts, ipv4, ipv6, prefix):  # noqa: B902
         """Show details of the route table"""
         route.RouteTableDetailsCmd(cli_opts).run(ipv4, ipv6, prefix)
@@ -657,12 +676,13 @@ class RouteCli(object):
 
     @click.command()
     @click.pass_obj
+    @fboss2_deprecate("show route summary", DeprecationLevel.WARN)
     def _summary(cli_opt):
         """Print a summary of routing tables"""
         route.RouteTableSummaryCmd(cli_opt).run()
 
 
-class VerbosityCli(object):
+class VerbosityCli:
     """Change the verbosity of the fboss agent"""
 
     @click.command(name="verbosity")
@@ -672,7 +692,7 @@ class VerbosityCli(object):
         cmds.VerbosityCmd(cli_opt).run(verbosity)
 
 
-class AgentConfig(object):
+class AgentConfig:
     """Agent config sub-commands"""
 
     def __init__(self):
@@ -689,18 +709,20 @@ class AgentConfig(object):
         "--json", is_flag=True, default=False, help="Show configuration in JSON format"
     )
     @click.pass_obj
+    @fboss2_deprecate("show config running agent", DeprecationLevel.WARN)
     def _show(cli_opts, json):  # noqa: B902
         """Show running config"""
         agent.AgentConfigCmd(cli_opts).run(KEYWORD_CONFIG_SHOW, json)
 
     @click.command()
     @click.pass_obj
+    @fboss2_deprecate("reload config agent", DeprecationLevel.WARN)
     def _reload(cli_opts):  # noqa: B902
         """Reload agent configuration file"""
         agent.AgentConfigCmd(cli_opts).run(KEYWORD_CONFIG_RELOAD)
 
 
-class AgentCli(object):
+class AgentCli:
     """Agent sub-commands"""
 
     def __init__(self):
@@ -712,7 +734,7 @@ class AgentCli(object):
         pass
 
 
-class AclCli(object):
+class AclCli:
     """Show Acl sub-commands"""
 
     def __init__(self):
@@ -725,12 +747,13 @@ class AclCli(object):
 
     @click.command()
     @click.pass_obj
+    @fboss2_deprecate("show acl", DeprecationLevel.WARN)
     def _table(cli_opts):
         """Show the Acl table"""
         acl.AclTableCmd(cli_opts).run()
 
 
-class ListHwObjectsCli(object):
+class ListHwObjectsCli:
     """Show list Hw obects sub-commands"""
 
     def __init__(self):
@@ -774,6 +797,7 @@ class ListHwObjectsCli(object):
         help="Get the objects from switching ASIC only, default is to get from Phy and switching ASIC",
     )
     @click.pass_obj
+    @fboss2_deprecate("show hw-object", DeprecationLevel.WARN)
     def _list(cli_opts, hw_object, cached, phy_only, switch_asic_only):
         """List Hw objects"""
         hw_obj_types = [
@@ -826,14 +850,13 @@ def add_modules(main_func):
 
 
 if __name__ == "__main__":
-
     # -- Add sub-commands to "Main" -- #
     add_modules(main)
 
     try:
         main()
     except FbossBaseError as e:
-        raise SystemExit("Fboss Error: {}".format(e))
+        raise SystemExit(f"Fboss Error: {e}")
     except TApplicationException:
         raise SystemExit("Command not available on host")
     except TTransportException:

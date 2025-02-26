@@ -163,12 +163,12 @@ void ReceiveMachine::stop() {
 void ReceiveMachine::rx(LACPDU lacpdu) {
   CHECK(controller_.evb()->inRunningEventBaseThread());
 
-  XLOG(DBG4) << "ReceiveMachine[" << controller_.portID() << "]: "
-             << "RX(" << lacpdu.describe() << ")";
+  XLOG(DBG4) << "ReceiveMachine[" << controller_.portID() << "]: " << "RX("
+             << lacpdu.describe() << ")";
 
   if (state_ == ReceiveState::DISABLED) {
-    XLOG(DBG4) << "ReceiveMachine[" << controller_.portID() << "]: "
-               << "Ignoring frame reception in DISABLED state";
+    XLOG(DBG4) << "ReceiveMachine[" << controller_.portID()
+               << "]: " << "Ignoring frame reception in DISABLED state";
     return;
   }
 
@@ -254,8 +254,8 @@ void ReceiveMachine::updateSelected(LACPDU& lacpdu) {
           (partnerInfo_.state & LacpState::AGGREGATABLE)) {
     return;
   }
-  XLOG(DBG4) << "ReceiveMachine[" << controller_.portID() << "]: "
-             << "Partner claimed " << lacpdu.actorInfo.describe()
+  XLOG(DBG4) << "ReceiveMachine[" << controller_.portID()
+             << "]: " << "Partner claimed " << lacpdu.actorInfo.describe()
              << " but I have " << partnerInfo_.describe();
   controller_.unselected();
 }
@@ -280,8 +280,8 @@ void ReceiveMachine::current(LACPDU lacpdu) {
 
   bool ntt = updateNTT(lacpdu);
 
-  bool activityChanged = (lacpdu.actorInfo.state & LacpState::ACTIVE) !=
-      (partnerInfo_.state & LacpState::ACTIVE);
+  bool activityChanged = (lacpdu.actorInfo.state & LacpState::LACP_ACTIVE) !=
+      (partnerInfo_.state & LacpState::LACP_ACTIVE);
 
   recordPDU(lacpdu);
 
@@ -327,8 +327,7 @@ void ReceiveMachine::recordPDU(LACPDU& lacpdu) {
     // if partner transitions out of sync, LACP will disable fwding on the port
     if (partnerInfo_.state & LacpState::IN_SYNC) {
       XLOG(WARNING) << PortAlert() << "ReceiveMachine[" << controller_.portID()
-                    << "]: "
-                    << "Partner not in sync. Got LACP PDU ("
+                    << "]: " << "Partner not in sync. Got LACP PDU ("
                     << lacpdu.describe() << ") Previous State ("
                     << partnerInfo_.describe() << ")";
       servicer_->recordLacpMismatchPduTeardown();
@@ -483,8 +482,8 @@ PeriodicTransmissionMachine::determineTransmissionRate() {
   auto actorInfo = controller_.actorInfo();
   auto partnerInfo = controller_.partnerInfo();
 
-  if ((actorInfo.state & LacpState::ACTIVE) == 0 &&
-      (partnerInfo.state & LacpState::ACTIVE) == 0) {
+  if ((actorInfo.state & LacpState::LACP_ACTIVE) == 0 &&
+      (partnerInfo.state & LacpState::LACP_ACTIVE) == 0) {
     return PeriodicState::NONE;
   }
 
@@ -528,8 +527,8 @@ void TransmitMachine::ntt(LACPDU lacpdu) {
 
   if (transmissionsLeft_ == 0) {
     // TODO(samank): figure out stale ntt details
-    XLOG(DBG4) << "TransmitMachine[" << controller_.portID() << "]: "
-               << "skipping ntt request";
+    XLOG(DBG4) << "TransmitMachine[" << controller_.portID()
+               << "]: " << "skipping ntt request";
     return;
   }
 
@@ -538,8 +537,8 @@ void TransmitMachine::ntt(LACPDU lacpdu) {
     return;
   }
 
-  XLOG(DBG4) << "TransmitMachine[" << controller_.portID() << "]: "
-             << "TX(" << lacpdu.describe() << ")";
+  XLOG(DBG4) << "TransmitMachine[" << controller_.portID() << "]: " << "TX("
+             << lacpdu.describe() << ")";
 
   --transmissionsLeft_;
   XLOG(DBG4) << transmissionsLeft_ << " transmissions left";
@@ -569,6 +568,7 @@ void MuxMachine::selected(AggregatePortID selection) {
       XLOG(DBG4) << "MuxMachine[" << controller_.portID() << "]: SELECTED in "
                  << state_;
       attached();
+      break;
     case MuxState::ATTACHED:
     case MuxState::COLLECTING_DISTRIBUTING:
       XLOG(WARNING) << "MuxMachine[" << controller_.portID()
@@ -857,10 +857,10 @@ void Selector::select() {
         portToSelection().end(),
         [targetLagID](PortIDToSelection::value_type el) {
           Selection s = el.second;
-          return s.lagID == targetLagID && s.state == SelectionState::STANDBY;
+          return s.lagID == targetLagID;
         });
 
-    if (targetLagMemberCount == minLinkCount_) {
+    if (targetLagMemberCount >= minLinkCount_) {
       auto portsToSignal = getPortsWithSelection(
           Selection(targetLagID, SelectionState::STANDBY));
       controller_.selected(
@@ -944,7 +944,11 @@ void Selector::unselected() {
   auto ports =
       getPortsWithSelection(Selection(myLagID, SelectionState::SELECTED));
 
-  controller_.standby(folly::range(ports.begin(), ports.end()));
+  if (ports.size() < minLinkCount_) {
+    controller_.standby(folly::range(ports.begin(), ports.end()));
+  } else {
+    controller_.standby();
+  }
 }
 
 void Selector::selected() {
