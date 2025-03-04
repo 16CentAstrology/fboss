@@ -81,6 +81,16 @@ const AclApi& SaiApiTable::aclApi() const {
   return getApi<AclApi>();
 }
 
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+const ArsApi& SaiApiTable::arsApi() const {
+  return getApi<ArsApi>();
+}
+
+const ArsProfileApi& SaiApiTable::arsProfileApi() const {
+  return getApi<ArsProfileApi>();
+}
+#endif
+
 const BridgeApi& SaiApiTable::bridgeApi() const {
   return getApi<BridgeApi>();
 }
@@ -167,6 +177,10 @@ const SystemPortApi& SaiApiTable::systemPortApi() const {
   return getApi<SystemPortApi>();
 }
 
+const UdfApi& SaiApiTable::udfApi() const {
+  return getApi<UdfApi>();
+}
+
 const VirtualRouterApi& SaiApiTable::virtualRouterApi() const {
   return getApi<VirtualRouterApi>();
 }
@@ -183,6 +197,12 @@ const TamApi& SaiApiTable::tamApi() const {
   return getApi<TamApi>();
 }
 
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+const TamEventAgingGroupApi& SaiApiTable::tamEventAgingGroupApi() const {
+  return getApi<TamEventAgingGroupApi>();
+}
+#endif
+
 const TunnelApi& SaiApiTable::tunnelApi() const {
   return getApi<TunnelApi>();
 }
@@ -194,6 +214,12 @@ const LagApi& SaiApiTable::lagApi() const {
 const MacsecApi& SaiApiTable::macsecApi() const {
   return getApi<MacsecApi>();
 }
+
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+const VendorSwitchApi& SaiApiTable::vendorSwitchApi() const {
+  return getApi<VendorSwitchApi>();
+}
+#endif
 
 void SaiApiTable::enableLogging(const std::string& logLevelStr) const {
   auto logLevel = saiLogLevelFromString(logLevelStr);

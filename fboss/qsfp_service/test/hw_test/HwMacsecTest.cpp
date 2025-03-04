@@ -13,7 +13,7 @@
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiSwitch.h"
 #include "fboss/agent/platforms/common/PlatformMapping.h"
-#include "fboss/agent/platforms/sai/SaiHwPlatform.h"
+#include "fboss/agent/platforms/sai/SaiPlatform.h"
 #include "fboss/agent/test/ResourceLibUtil.h"
 #include "fboss/lib/phy/PhyManager.h"
 #include "fboss/lib/phy/SaiPhyManager.h"
@@ -90,7 +90,7 @@ class HwMacsecTest : public HwExternalPhyPortTest {
     auto scIdentifier = MacsecSecureChannelId(mac.u64NBO() | *sci.port());
     auto aclName = folly::to<std::string>(
         "macsec-",
-        direction == SAI_MACSEC_DIRECTION_INGRESS ? "ingress" : "egress",
+        direction == SAI_MACSEC_DIRECTION_INGRESS ? "ing" : "egr",
         "-port",
         portId);
     auto assocNum = *sak.assocNum() % 4;
@@ -300,7 +300,7 @@ class HwMacsecTest : public HwExternalPhyPortTest {
     // Get Macsec ACL table
     auto aclName = folly::to<std::string>(
         "macsec-",
-        direction == SAI_MACSEC_DIRECTION_INGRESS ? "ingress" : "egress",
+        direction == SAI_MACSEC_DIRECTION_INGRESS ? "ing" : "egr",
         "-port",
         portId);
     auto aclTableHandle = aclManager.getAclTableHandle(aclName);
@@ -325,6 +325,14 @@ class HwMacsecTest : public HwExternalPhyPortTest {
     } else {
       EXPECT_EQ(pktAction.getData(), SAI_PACKET_ACTION_FORWARD);
     }
+  }
+
+  std::vector<qsfp_production_features::QsfpProductionFeature>
+  getProductionFeatures() const override {
+    auto featureVector = HwExternalPhyPortTest::getProductionFeatures();
+    featureVector.push_back(
+        qsfp_production_features::QsfpProductionFeature::MACSEC);
+    return featureVector;
   }
 
   SaiPhyManager* phyManager;

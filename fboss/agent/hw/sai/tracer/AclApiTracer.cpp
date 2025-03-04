@@ -13,7 +13,6 @@
 #include <utility>
 
 #include "fboss/agent/hw/sai/api/AclApi.h"
-#include "fboss/agent/hw/sai/tracer/AclApiTracer.h"
 #include "fboss/agent/hw/sai/tracer/Utils.h"
 
 using folly::to;
@@ -51,16 +50,32 @@ std::map<int32_t, std::pair<std::string, std::size_t>> _AclTableMap{
     SAI_ATTR_MAP(AclTable, AvailableCounter),
     SAI_ATTR_MAP(AclTable, FieldEthertype),
     SAI_ATTR_MAP(AclTable, FieldOuterVlanId),
+#if !defined(TAJO_SDK) || defined(TAJO_SDK_GTE_24_4_90)
+    SAI_ATTR_MAP(AclTable, FieldBthOpcode),
+#endif
+#if !defined(TAJO_SDK) && !defined(BRCM_SAI_SDK_XGS)
+    SAI_ATTR_MAP(AclTable, FieldIpv6NextHeader),
+#endif
+#if (                                                                  \
+    (SAI_API_VERSION >= SAI_VERSION(1, 14, 0) ||                       \
+     (defined(BRCM_SAI_SDK_GTE_11_0) && defined(BRCM_SAI_SDK_XGS))) && \
+    !defined(TAJO_SDK))
+    SAI_ATTR_MAP(AclTable, UserDefinedFieldGroupMin0),
+    SAI_ATTR_MAP(AclTable, UserDefinedFieldGroupMin1),
+    SAI_ATTR_MAP(AclTable, UserDefinedFieldGroupMin2),
+    SAI_ATTR_MAP(AclTable, UserDefinedFieldGroupMin3),
+    SAI_ATTR_MAP(AclTable, UserDefinedFieldGroupMin4),
+#endif
 };
 
-std::map<int32_t, std::pair<std::string, std::size_t>> _AclCounterMap {
-  SAI_ATTR_MAP(AclCounter, TableId),
-      SAI_ATTR_MAP(AclCounter, EnablePacketCount),
-      SAI_ATTR_MAP(AclCounter, EnableByteCount),
-      SAI_ATTR_MAP(AclCounter, CounterPackets),
-      SAI_ATTR_MAP(AclCounter, CounterBytes),
+std::map<int32_t, std::pair<std::string, std::size_t>> _AclCounterMap{
+    SAI_ATTR_MAP(AclCounter, TableId),
+    SAI_ATTR_MAP(AclCounter, EnablePacketCount),
+    SAI_ATTR_MAP(AclCounter, EnableByteCount),
+    SAI_ATTR_MAP(AclCounter, CounterPackets),
+    SAI_ATTR_MAP(AclCounter, CounterBytes),
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
-      SAI_ATTR_MAP(AclCounter, Label),
+    SAI_ATTR_MAP(AclCounter, Label),
 #endif
 };
 
@@ -105,6 +120,22 @@ std::map<int32_t, std::pair<std::string, std::size_t>> _AclEntryMap{
     SAI_ATTR_MAP(AclEntry, FieldNeighborDstUserMeta),
     SAI_ATTR_MAP(AclEntry, FieldEthertype),
     SAI_ATTR_MAP(AclEntry, FieldOuterVlanId),
+#if !defined(TAJO_SDK) || defined(TAJO_SDK_GTE_24_4_90)
+    SAI_ATTR_MAP(AclEntry, FieldBthOpcode),
+#endif
+#if !defined(TAJO_SDK) && !defined(BRCM_SAI_SDK_XGS)
+    SAI_ATTR_MAP(AclEntry, FieldIpv6NextHeader),
+#endif
+#if (                                                                  \
+    (SAI_API_VERSION >= SAI_VERSION(1, 14, 0) ||                       \
+     (defined(BRCM_SAI_SDK_GTE_11_0) && defined(BRCM_SAI_SDK_XGS))) && \
+    !defined(TAJO_SDK))
+    SAI_ATTR_MAP(AclEntry, UserDefinedFieldGroupMin0),
+    SAI_ATTR_MAP(AclEntry, UserDefinedFieldGroupMin1),
+    SAI_ATTR_MAP(AclEntry, UserDefinedFieldGroupMin2),
+    SAI_ATTR_MAP(AclEntry, UserDefinedFieldGroupMin3),
+    SAI_ATTR_MAP(AclEntry, UserDefinedFieldGroupMin4),
+#endif
     SAI_ATTR_MAP(AclEntry, ActionPacketAction),
     SAI_ATTR_MAP(AclEntry, ActionCounter),
     SAI_ATTR_MAP(AclEntry, ActionSetTC),
@@ -112,6 +143,12 @@ std::map<int32_t, std::pair<std::string, std::size_t>> _AclEntryMap{
     SAI_ATTR_MAP(AclEntry, ActionMirrorIngress),
     SAI_ATTR_MAP(AclEntry, ActionMirrorEgress),
     SAI_ATTR_MAP(AclEntry, ActionMacsecFlow),
+#if !defined(TAJO_SDK)
+    SAI_ATTR_MAP(AclEntry, ActionSetUserTrap),
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+    SAI_ATTR_MAP(AclEntry, ActionDisableArsForwarding),
+#endif
 };
 
 } // namespace

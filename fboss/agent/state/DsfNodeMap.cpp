@@ -7,14 +7,10 @@
 
 namespace facebook::fboss {
 
-std::shared_ptr<DsfNode> DsfNodeMap::getDsfNodeIf(SwitchID switchId) const {
-  return getNodeIf(static_cast<int64_t>(switchId));
+MultiSwitchDsfNodeMap* MultiSwitchDsfNodeMap::modify(
+    std::shared_ptr<SwitchState>* state) {
+  return SwitchState::modify<switch_state_tags::dsfNodesMap>(state);
 }
 
-void DsfNodeMap::addDsfNode(const std::shared_ptr<DsfNode>& dsfNode) {
-  return addNode(dsfNode);
-}
-
-template class ThriftMapNode<DsfNodeMap, DsfNodeMapTraits>;
-
+template struct ThriftMapNode<DsfNodeMap, DsfNodeMapTraits>;
 } // namespace facebook::fboss

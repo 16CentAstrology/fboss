@@ -16,145 +16,21 @@
 #include <folly/logging/LoggerDB.h>
 #include <folly/logging/xlog.h>
 
+#include <re2/re2.h>
 #include <chrono>
 #include <fstream>
 #include <string>
 
 using namespace std::chrono;
 
+using facebook::fboss::cfg::SwitchInfo;
+using facebook::fboss::cfg::SwitchType;
+
 using folly::ByteRange;
 using folly::IPAddress;
 using folly::IPAddressV6;
 
 namespace facebook::fboss::utils {
-
-const folly::IPAddress getIPFromHost(const std::string& hostname) {
-  if (IPAddress::validate(hostname)) {
-    return IPAddress(hostname);
-  }
-  struct addrinfo hints;
-  memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_UNSPEC;
-  hints.ai_socktype = SOCK_STREAM;
-  struct addrinfo* result = nullptr;
-  auto rv = getaddrinfo(hostname.c_str(), nullptr, &hints, &result);
-
-  SCOPE_EXIT {
-    freeaddrinfo(result);
-  };
-  if (rv < 0) {
-    XLOG(ERR) << "Could not get an IP for: " << hostname;
-    return IPAddress();
-  }
-  struct addrinfo* res;
-  for (res = result; res != nullptr; res = res->ai_next) {
-    if (res->ai_addr->sa_family == AF_INET) { // IPV4
-      struct sockaddr_in* sp = (struct sockaddr_in*)res->ai_addr;
-      return IPAddress::fromLong(sp->sin_addr.s_addr);
-    } else if (res->ai_addr->sa_family == AF_INET6) { // IPV6
-      struct sockaddr_in6* sp = (struct sockaddr_in6*)res->ai_addr;
-      return IPAddress::fromBinary(ByteRange(
-          static_cast<unsigned char*>(&(sp->sin6_addr.s6_addr[0])),
-          IPAddressV6::byteCount()));
-    }
-  }
-  XLOG(ERR) << "Could not get an IP for: " << hostname;
-  return IPAddress();
-}
-
-std::vector<std::string> getHostsFromFile(const std::string& filename) {
-  std::vector<std::string> hosts;
-  std::ifstream in(filename);
-  std::string str;
-
-  while (std::getline(in, str)) {
-    hosts.push_back(str);
-  }
-
-  return hosts;
-}
-
-void setLogLevel(std::string logLevelStr) {
-  if (logLevelStr == "DBG0") {
-    return;
-  }
-
-  auto logLevel = folly::stringToLogLevel(logLevelStr);
-
-  auto logConfig = folly::LoggerDB::get().getConfig();
-  auto& categoryMap = logConfig.getCategoryConfigs();
-
-  for (auto& p : categoryMap) {
-    auto category = folly::LoggerDB::get().getCategory(p.first);
-    if (category != nullptr) {
-      folly::LoggerDB::get().setLevel(category, logLevel);
-    }
-  }
-
-  XLOG(DBG1) << "Setting loglevel to " << logLevelStr;
-}
-
-const std::string getPrettyElapsedTime(const int64_t& start_time) {
-  /* borrowed from "pretty_timedelta function" in fb_toolkit
-     takes an epoch time and returns a pretty string of elapsed time
-  */
-  auto startTime = seconds(start_time);
-  auto time_now = system_clock::now();
-  auto elapsed_time = time_now - startTime;
-
-  time_t elapsed_convert = system_clock::to_time_t(elapsed_time);
-
-  int days = 0, hours = 0, minutes = 0;
-
-  days = elapsed_convert / 86400;
-
-  int64_t leftover = elapsed_convert % 86400;
-
-  hours = leftover / 3600;
-  leftover %= 3600;
-
-  minutes = leftover / 60;
-  leftover %= 60;
-
-  std::string pretty_output = "";
-  if (days != 0) {
-    pretty_output += std::to_string(days) + "d ";
-  }
-  pretty_output += std::to_string(hours) + "h ";
-  pretty_output += std::to_string(minutes) + "m ";
-  pretty_output += std::to_string(leftover) + "s";
-
-  return pretty_output;
-}
-
-const std::string getDurationStr(folly::stop_watch<>& watch) {
-  auto duration = watch.elapsed();
-  auto durationInMills =
-      std::chrono::duration_cast<std::chrono::milliseconds>(duration);
-  float seconds = (float)durationInMills.count() / (float)1000;
-  return fmt::format("{:.3f} sec", seconds);
-}
-
-// Converts a readable representation of a link-bandwidth value
-//
-// bandwidthBytesPerSecond: must be positive number in bytes per second
-const std::string formatBandwidth(const float bandwidthBytesPerSecond) {
-  if (bandwidthBytesPerSecond < 1.0f) {
-    return "Not set";
-  }
-  const std::string suffixes[] = {"", "K", "M"};
-  // Represent the bandwidth in bits per second
-  // Use long and floor to ensure that we have integer to start with
-  long bandwidthBitsPerSecond = floor(bandwidthBytesPerSecond) * 8;
-  for (const auto& suffix : suffixes) {
-    if (bandwidthBitsPerSecond < 1000) {
-      return folly::to<std::string>(bandwidthBitsPerSecond) + suffix + "bps";
-    }
-    // we don't round up
-    bandwidthBitsPerSecond /= 1000;
-  }
-  return folly::to<std::string>(bandwidthBitsPerSecond) + "Gbps";
-}
 
 /* Takes a list of "friendly" interface names and returns a list of portID
    integers.  This is an operation that is frequently needed so making this
@@ -186,19 +62,6 @@ std::vector<int32_t> getPortIDList(
     }
   }
   return portIDList;
-}
-
-std::string getUserInfo() {
-  std::vector<std::string> userInfo;
-  auto fbidStr = getenv("FB_UID");
-  if (fbidStr && strcmp(fbidStr, "") != 0) {
-    userInfo.emplace_back(fbidStr);
-  }
-  auto envuser = getenv("USER");
-  if (envuser && strcmp(envuser, "") != 0) {
-    userInfo.emplace_back(envuser);
-  }
-  return folly::join<std::string, std::vector<std::string>>(" | ", userInfo);
 }
 
 std::string getAddrStr(network::thrift::BinaryAddress addr) {
@@ -242,10 +105,32 @@ std::string getAdminDistanceStr(AdminDistance adminDistance) {
       std::to_string(static_cast<int>(adminDistance)));
 }
 
+const std::string removeFbDomains(const std::string& host) {
+  std::string hostCopy = host;
+  const RE2 fbDomains(".facebook.com$|.tfbnw.net$");
+  RE2::Replace(&hostCopy, fbDomains, "");
+  return hostCopy;
+}
+
+std::string getSpeedGbps(int64_t speedMbps) {
+  return std::to_string(speedMbps / 1000) + "G";
+}
+
+std::string getl2EntryTypeStr(L2EntryType l2EntryType) {
+  switch (l2EntryType) {
+    case L2EntryType::L2_ENTRY_TYPE_PENDING:
+      return "Pending";
+    case L2EntryType::L2_ENTRY_TYPE_VALIDATED:
+      return "Validated";
+    default:
+      return "Unknown";
+  }
+}
+
 bool comparePortName(
     const std::basic_string<char>& nameA,
     const std::basic_string<char>& nameB) {
-  static const RE2 exp("([a-z][a-z][a-z])(\\d+)/(\\d+)/(\\d)");
+  static const RE2 exp("([a-z][a-z][a-z])(\\d+)/(\\d+)/(\\d+)");
   std::string moduleNameA, moduleNumStrA, portNumStrA, subportNumStrA;
   std::string moduleNameB, moduleNumStrB, portNumStrB, subportNumStrB;
   if (!RE2::FullMatch(
@@ -293,7 +178,7 @@ bool comparePortName(
 bool compareSystemPortName(
     const std::basic_string<char>& nameA,
     const std::basic_string<char>& nameB) {
-  static const RE2 exp("([^:]+):([a-z][a-z][a-z])(\\d+)/(\\d+)/(\\d)");
+  static const RE2 exp("([^:]+):([a-z][a-z][a-z])(\\d+)/(\\d+)/(\\d+)");
   std::string switchNameA, moduleNameA, moduleNumStrA, portNumStrA,
       subportNumStrA;
   std::string switchNameB, moduleNameB, moduleNumStrB, portNumStrB,
@@ -309,7 +194,7 @@ bool compareSystemPortName(
     throw std::invalid_argument(folly::to<std::string>(
         "Invalid port name: ",
         nameA,
-        "\nPort name must match 'moduleNum/port/subport' pattern"));
+        "\nSystemPort name must match 'moduleNum/port/subport' pattern"));
   }
 
   if (!RE2::FullMatch(
@@ -323,7 +208,7 @@ bool compareSystemPortName(
     throw std::invalid_argument(folly::to<std::string>(
         "Invalid port name: ",
         nameB,
-        "\nPort name must match 'moduleNum/port/subport' pattern"));
+        "\nSystemPort name must match 'moduleNum/port/subport' pattern"));
   }
 
   int ret;
@@ -345,4 +230,192 @@ bool compareSystemPortName(
 
   return stoi(subportNumStrA) < stoi(subportNumStrB);
 }
+
+std::optional<std::string> getMyHostname(const std::string& hostname) {
+  if (hostname != "localhost") {
+    return utils::removeFbDomains(hostname);
+  }
+
+  char actualHostname[HOST_NAME_MAX];
+  if (gethostname(actualHostname, HOST_NAME_MAX) != 0) {
+    return std::nullopt;
+  }
+
+  return utils::removeFbDomains(std::string(actualHostname));
+}
+
+std::string escapeDoubleQuotes(const std::string& cmd) {
+  std::string cmdCopy = cmd;
+  const re2::RE2 doubleQuotes(R"(")");
+  re2::RE2::GlobalReplace(&cmdCopy, doubleQuotes, R"(\\")");
+  return cmdCopy;
+}
+
+std::string getCmdToRun(const std::string& hostname, const std::string& cmd) {
+  // For running on localhost
+  //    return cmd as is.
+  // For remote command request
+  //    need to login with right credentials,
+  //    enclose the command in double quotes
+  return hostname == "localhost" ? cmd
+                                 : folly::to<std::string>(
+                                       "sush2 -q --reason fboss2_cli netops@",
+                                       hostname,
+                                       " ",
+                                       "\"",
+                                       escapeDoubleQuotes(cmd),
+                                       "\"");
+}
+
+std::string runCmd(const std::string& cmd) {
+  std::array<char, 4096> buffer;
+  std::string result;
+  std::unique_ptr<FILE, decltype(&pclose)> pipe(
+      popen(cmd.c_str(), "r"), pclose);
+  if (!pipe) {
+    throw std::runtime_error("popen() failed!");
+  }
+  while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+    result += buffer.data();
+  }
+
+  return result;
+}
+
+bool isFbossFeatureEnabled(
+    const std::string& hostname,
+    const std::string& feature) {
+  auto featureCheckCmd = utils::getCmdToRun(
+      hostname,
+      folly::to<std::string>(
+          "file -b /etc/coop/.METADATA/features/", feature, "/current/on"));
+  auto result = utils::runCmd(featureCheckCmd);
+  // An empty file should be present if the feature is enabled
+  return result.find("empty") != std::string::npos ? true : false;
+}
+
+std::string getSubscriptionPathStr(const fsdb::OperSubscriberInfo& subscriber) {
+  if (subscriber.get_path()) {
+    return folly::join("/", subscriber.get_path()->get_raw());
+  }
+  std::vector<std::string> extPaths;
+  if (auto subExtPaths = subscriber.get_extendedPaths()) {
+    for (const auto& extPath : *subExtPaths) {
+      std::vector<std::string> pathElements;
+      for (const auto& pathElm : *extPath.path()) {
+        if (pathElm.any_ref().has_value()) {
+          pathElements.push_back("*");
+        } else if (pathElm.regex_ref().has_value()) {
+          pathElements.push_back(*pathElm.regex_ref());
+        } else {
+          pathElements.push_back(*pathElm.raw_ref());
+        }
+      }
+      extPaths.push_back(folly::join("/", pathElements));
+    }
+  }
+  auto paths = subscriber.get_paths();
+  if (paths) {
+    for (const auto& path : *paths) {
+      extPaths.push_back(folly::join("/", path.second.get_path()));
+    }
+  }
+  return folly::join(";", extPaths);
+}
+
+std::map<int16_t, std::vector<std::string>> getSwitchIndicesForInterfaces(
+    const HostInfo& hostInfo,
+    const std::vector<std::string>& interfaces) {
+  std::map<int16_t, std::vector<std::string>> switchIndicesForInterfaces;
+  try {
+    auto agentClient =
+        utils::createClient<apache::thrift::Client<FbossCtrl>>(hostInfo);
+    agentClient->sync_getSwitchIndicesForInterfaces(
+        switchIndicesForInterfaces, interfaces);
+  } catch (const std::exception& e) {
+    std::cerr << e.what();
+  }
+  return switchIndicesForInterfaces;
+}
+
+Table::StyledCell styledBer(double ber) {
+  std::ostringstream outStringStream;
+  outStringStream << std::setprecision(3) << ber;
+  if (ber > 1e-5) {
+    return Table::StyledCell(outStringStream.str(), Table::Style::ERROR);
+  }
+  if (ber > 1e-7) {
+    return Table::StyledCell(outStringStream.str(), Table::Style::WARN);
+  }
+  return Table::StyledCell(outStringStream.str(), Table::Style::GOOD);
+}
+
+Table::StyledCell styledFecTail(int tail) {
+  if (tail > 12) {
+    return Table::StyledCell(folly::to<std::string>(tail), Table::Style::ERROR);
+  }
+  if (tail > 8) {
+    return Table::StyledCell(folly::to<std::string>(tail), Table::Style::WARN);
+  }
+  return Table::StyledCell(folly::to<std::string>(tail), Table::Style::GOOD);
+}
+
+cfg::SwitchType getSwitchType(
+    std::map<int64_t, cfg::SwitchInfo> switchIdToSwitchInfo) {
+  CHECK_GE(switchIdToSwitchInfo.size(), 1);
+
+  // Assert that all switches have the same switch type
+  auto switchType = switchIdToSwitchInfo.begin()->second.get_switchType();
+  CHECK(std::all_of(
+      switchIdToSwitchInfo.begin(),
+      switchIdToSwitchInfo.end(),
+      [switchType](const auto& pair) {
+        return pair.second.get_switchType() == switchType;
+      }));
+
+  return switchType;
+}
+
+std::map<std::string, FabricEndpoint> getFabricEndpoints(
+    const HostInfo& hostInfo) {
+  std::map<std::string, FabricEndpoint> entries;
+  if (utils::isFbossFeatureEnabled(hostInfo.getName(), "multi_switch")) {
+    auto hwAgentQueryFn =
+        [&entries](
+            apache::thrift::Client<facebook::fboss::FbossHwCtrl>& client) {
+          std::map<std::string, FabricEndpoint> hwagentEntries;
+          client.sync_getHwFabricConnectivity(hwagentEntries);
+          entries.merge(hwagentEntries);
+        };
+    utils::runOnAllHwAgents(hostInfo, hwAgentQueryFn);
+  } else {
+    utils::createClient<apache::thrift::Client<FbossCtrl>>(hostInfo)
+        ->sync_getFabricConnectivity(entries);
+  }
+  return entries;
+}
+
+std::map<std::string, int64_t> getAgentFb303RegexCounters(
+    const HostInfo& hostInfo,
+    const std::string& regex) {
+  std::map<std::string, int64_t> counters;
+#ifndef IS_OSS
+  // TODO: sync_getRegexCounters is not available in OSS
+  if (utils::isFbossFeatureEnabled(hostInfo.getName(), "multi_switch")) {
+    auto hwAgentQueryFn =
+        [&counters,
+         &regex](apache::thrift::Client<facebook::fboss::FbossCtrl>& client) {
+          std::map<std::string, int64_t> hwagentCounters;
+          client.sync_getRegexCounters(hwagentCounters, regex);
+          counters.merge(hwagentCounters);
+        };
+    utils::runOnAllHwAgents(hostInfo, hwAgentQueryFn);
+  } else {
+    utils::createClient<apache::thrift::Client<FbossCtrl>>(hostInfo)
+        ->sync_getRegexCounters(counters, regex);
+  }
+#endif
+  return counters;
+}
+
 } // namespace facebook::fboss::utils

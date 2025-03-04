@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# pyre-unsafe
+
 # Run as python3 find_files_not_in_fboss.py
 #
 #
@@ -21,7 +23,7 @@ def get_expected_oss_files():
     expected_oss_files = []
 
     prefix_len = len(FBCODE_DIR) + 1  # strip off FBCODE_DIR/
-    for (dirpath, _, filenames) in os.walk(FBOSS_DIR):
+    for dirpath, _, filenames in os.walk(FBOSS_DIR):
         if "facebook" not in dirpath:
             source_files = [
                 os.path.join(dirpath[prefix_len:], f)
@@ -61,8 +63,12 @@ def get_built_oss_files():
     return sorted(set(built_oss_files))
 
 
-if __name__ == "__main__":
+def main() -> None:
     not_built_in_oss = set(get_expected_oss_files()) - set(get_built_oss_files())
     print(f"Number of OSS files not built in OSS: {len(not_built_in_oss)}")
     print("List of missing files:")
     print(*not_built_in_oss, sep="\n")
+
+
+if __name__ == "__main__":
+    main()

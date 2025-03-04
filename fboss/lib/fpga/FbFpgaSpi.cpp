@@ -5,7 +5,6 @@
 #include "fboss/agent/Utils.h"
 #include "fboss/lib/fpga/FbFpgaRegisters.h"
 
-#include <folly/CppAttributes.h>
 #include <folly/Format.h>
 #include <folly/Synchronized.h>
 #include <folly/futures/Future.h>
@@ -36,7 +35,7 @@ FbFpgaSpi::FbFpgaSpi(
     uint32_t pimId)
     : I2cController(
           folly::to<std::string>("spiController.pim.", pimId, ".spi.", spiId)),
-      io_(std::make_unique<FbDomFpga>(move(io))),
+      io_(std::make_unique<FbDomFpga>(std::move(io))),
       spiId_(spiId) {
   fpga_ = io_.get();
   XLOG(INFO, "Initialized SPI controller for spiId=", spiId_);
@@ -286,7 +285,7 @@ FbFpgaSpiController::FbFpgaSpiController(
     FbDomFpga* fpga,
     uint32_t spiId,
     uint32_t pim)
-    : syncedFbSpi_(folly::in_place, fpga, spiId, pim),
+    : syncedFbSpi_(std::in_place, fpga, spiId, pim),
       eventBase_(std::make_unique<folly::EventBase>()),
       thread_(new std::thread([&, pim, spiId]() {
         initThread(fmt::format("SPI_pim{:d}_spi{:d}", pim, spiId));
@@ -300,7 +299,7 @@ FbFpgaSpiController::FbFpgaSpiController(
     std::unique_ptr<FpgaMemoryRegion> io,
     uint32_t spiId,
     uint32_t pim)
-    : syncedFbSpi_(folly::in_place, move(io), spiId, pim),
+    : syncedFbSpi_(std::in_place, std::move(io), spiId, pim),
       eventBase_(std::make_unique<folly::EventBase>()),
       thread_(new std::thread([&, pim, spiId]() {
         initThread(fmt::format("SPI_pim{:d}_spi{:d}", pim, spiId));

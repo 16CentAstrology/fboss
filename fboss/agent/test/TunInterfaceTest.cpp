@@ -15,7 +15,6 @@
 #include "fboss/agent/SwSwitch.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/hw/mock/MockPlatform.h"
-#include "fboss/agent/test/HwTestHandle.h"
 #include "fboss/agent/test/MockTunManager.h"
 #include "fboss/agent/test/TestUtils.h"
 
@@ -24,8 +23,9 @@ using namespace facebook::fboss;
 using ::testing::_;
 
 TEST(TunInterfacesTest, Initialization) {
+  auto platform = createMockPlatform();
   auto sw = setupMockSwitchWithoutHW(
-      createMockPlatform(), nullptr, SwitchFlags::ENABLE_TUN);
+      platform.get(), nullptr, SwitchFlags::ENABLE_TUN);
   auto tunMgr = dynamic_cast<MockTunManager*>(sw->getTunManager());
   EXPECT_NE(nullptr, tunMgr);
   EXPECT_CALL(*tunMgr, sync(_)).Times(1);

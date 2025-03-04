@@ -5,6 +5,7 @@
 #include <iostream>
 #include <optional>
 #include <set>
+#include <shared_mutex>
 #include "Modbus.h"
 #include "ModbusCmds.h"
 #include "Register.h"
@@ -46,7 +47,7 @@ class ModbusSpecialHandler : public SpecialHandlerInfo {
 
  public:
   ModbusSpecialHandler(uint8_t deviceAddress) : deviceAddress_(deviceAddress) {}
-  virtual ~ModbusSpecialHandler() {}
+  virtual ~ModbusSpecialHandler() = default;
   void handle(ModbusDevice& dev);
 };
 
@@ -55,8 +56,6 @@ struct ModbusDeviceInfo {
   uint8_t deviceAddress = 0;
   std::string deviceType{"Unknown"};
   uint32_t baudrate = 0;
-  uint32_t preferredBaudrate = 0;
-  uint32_t defaultBaudrate = 0;
   ModbusDeviceMode mode = ModbusDeviceMode::ACTIVE;
   uint32_t crcErrors = 0;
   uint32_t timeouts = 0;
@@ -64,6 +63,7 @@ struct ModbusDeviceInfo {
   uint32_t deviceErrors = 0;
   time_t lastActive = 0;
   uint32_t numConsecutiveFailures = 0;
+  Parity parity = Parity::EVEN;
 };
 void to_json(nlohmann::json& j, const ModbusDeviceInfo& m);
 
@@ -84,20 +84,25 @@ class ModbusDevice {
   Modbus& interface_;
   int numCommandRetries_;
   ModbusDeviceRawData info_;
-  mutable std::mutex registerListMutex_{};
+  std::vector<RegisterStoreSpan> reloadPlan_{};
+  mutable std::shared_mutex infoMutex_{};
   std::vector<ModbusSpecialHandler> specialHandlers_{};
-  const BaudrateConfig& baudConfig_;
   bool setBaudEnabled_ = true;
+  const RegisterMap& registerMap_;
+  std::atomic<bool> singleShotReload_{true};
   std::atomic<bool> exclusiveMode_{false};
 
   void handleCommandFailure(std::exception& baseException);
 
-  void setBaudrate(uint32_t baud);
-  void setDefaultBaudrate() {
-    setBaudrate(info_.defaultBaudrate);
-  }
-  void setPreferredBaudrate() {
-    setBaudrate(info_.preferredBaudrate);
+  std::tuple<uint32_t, Parity> getDeviceConfig();
+
+  void forceReloadRegister(RegisterStore& registerStore, time_t reloadTime);
+  void forceReloadPlan();
+  bool reloadRegisterSpan(RegisterStoreSpan& span, bool singleShot);
+
+ protected:
+  virtual time_t getCurrentTime() {
+    return std::time(nullptr);
   }
 
  public:
@@ -106,9 +111,7 @@ class ModbusDevice {
       uint8_t deviceAddress,
       const RegisterMap& registerMap,
       int numCommandRetries = 5);
-  virtual ~ModbusDevice() {
-    setDefaultBaudrate();
-  }
+  virtual ~ModbusDevice() {}
 
   virtual void
   command(Msg& req, Msg& resp, ModbusTime timeout = ModbusTime::zero());
@@ -140,7 +143,9 @@ class ModbusDevice {
       std::vector<FileRecord>& records,
       ModbusTime timeout = ModbusTime::zero());
 
-  void reloadRegisters();
+  // Reloads all registers whose is pending a reload
+  // based on their configured reload interval.
+  void reloadAllRegisters();
 
   bool isActive() const {
     return info_.mode == ModbusDeviceMode::ACTIVE;
@@ -154,6 +159,9 @@ class ModbusDevice {
 
   void setExclusiveMode(bool enable) {
     exclusiveMode_ = enable;
+    // When disabling exclusive mode, enable
+    // single shot reload.
+    singleShotReload_ = !enable;
   }
 
   // Return structured information of the device.
@@ -166,6 +174,14 @@ class ModbusDevice {
   ModbusDeviceValueData getValueData(
       const ModbusRegisterFilter& filter = {},
       bool latestValueOnly = false) const;
+
+  // Reloads requested registers in-place (blocking) ignoring
+  // their configured reload interval.
+  void forceReloadRegisters(const ModbusRegisterFilter& filter);
+
+  const RegisterMap& getRegisterMap() const {
+    return registerMap_;
+  }
 };
 
 } // namespace rackmon

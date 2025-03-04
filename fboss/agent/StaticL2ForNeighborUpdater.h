@@ -21,11 +21,10 @@ class StateDelta;
 class MacEntry;
 class ArpEntry;
 class NdpEntry;
-class HwSwitch;
 
 class StaticL2ForNeighborUpdater {
  public:
-  explicit StaticL2ForNeighborUpdater(const HwSwitch* hw) : hw_(hw) {}
+  explicit StaticL2ForNeighborUpdater() {}
   virtual ~StaticL2ForNeighborUpdater() = default;
 
   void stateUpdated(const StateDelta& stateDelta);
@@ -79,8 +78,9 @@ class StaticL2ForNeighborUpdater {
       VlanID vlan,
       const std::shared_ptr<MacEntry>& macEntry) = 0;
 
+  virtual bool needL2EntryForNeighbor() const = 0;
+
   template <typename NeighborEntryT>
   void assertNeighborEntry(const NeighborEntryT& neighbor);
-  const HwSwitch* hw_;
 };
 } // namespace facebook::fboss

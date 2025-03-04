@@ -16,7 +16,7 @@ extern "C" {
 
 #include <folly/IPAddress.h>
 #include <folly/MacAddress.h>
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/hw/bcm/BcmWarmBootCache.h"
 #include "fboss/agent/state/RouteTypes.h"
@@ -117,6 +117,8 @@ class BcmEgress : public BcmEgressBase {
     return intfId_;
   }
 
+  static bool isFlowletEnabled(int unit, bcm_if_t id);
+
  protected:
   virtual void prepareEgressObject(
       bcm_if_t intfId,
@@ -134,6 +136,7 @@ class BcmEgress : public BcmEgressBase {
  private:
   virtual BcmWarmBootCache::EgressId2EgressCitr
   findEgress(bcm_vrf_t vrf, bcm_if_t intfId, const folly::IPAddress& ip) const;
+  void updateFlowletConfig(bcm_l3_egress_t& eObj, bcm_port_t port) const;
 
   bool alreadyExists(const bcm_l3_egress_t& newEgress) const;
   void program(
@@ -177,10 +180,20 @@ class BcmEcmpEgress : public BcmEgressBase {
   folly::MacAddress getMac() const override {
     throw FbossError("mac requested on multipath egress");
   }
+  void programForFlowletSwitching();
+  bool updateEcmpDynamicMode();
+  uint64_t getL3EcmpDlbFailPackets();
+  EcmpDetails getEcmpDetails();
+  int getEcmpObject(
+      bcm_l3_egress_ecmp_t* obj,
+      int* pathsInHwCount,
+      bcm_l3_ecmp_member_t* membersInHw,
+      bcm_if_t* pathsInHw);
   /*
    * Update ecmp egress entries in HW
    */
   static bool addEgressIdHwLocked(
+      const BcmSwitchIf* hw,
       int unit,
       EgressId ecmpId,
       const EgressId2Weight& egressIdInSw,
@@ -221,9 +234,15 @@ class BcmEcmpEgress : public BcmEgressBase {
   void createWideEcmpEntry(int numPaths);
   static std::string egressId2WeightToString(
       const EgressId2Weight& egressId2Weight);
+  static void setEgressEcmpMemberStatus(
+      const BcmSwitchIf* hw,
+      const EgressId2Weight& egressId2Weight);
 
  private:
   void program();
+  bool isFlowletConfigUpdateNeeded();
+  bool updateFlowletConfig(bcm_l3_egress_ecmp_t& obj, int numPaths);
+  bool isFlowletEnabledOnAllEgress(const EgressId2Weight& egressId2Weight);
   static bool isWideEcmpEnabled(bool wideEcmpSupported);
   const EgressId2Weight egressId2Weight_;
   bool ucmpEnabled_{false};

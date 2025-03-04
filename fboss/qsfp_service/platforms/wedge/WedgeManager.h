@@ -4,7 +4,6 @@
 
 #include <boost/container/flat_map.hpp>
 
-#include "fboss/agent/AgentConfig.h"
 #include "fboss/agent/platforms/common/PlatformMapping.h"
 #include "fboss/lib/config/PlatformConfigUtils.h"
 #include "fboss/lib/i2c/gen-cpp2/i2c_controller_stats_types.h"
@@ -12,13 +11,18 @@
 #include "fboss/lib/usb/WedgeI2CBus.h"
 #include "fboss/qsfp_service/TransceiverManager.h"
 #include "fboss/qsfp_service/fsdb/QsfpFsdbSyncManager.h"
+#include "fboss/qsfp_service/platforms/wedge/QsfpRestClient.h"
 #include "fboss/qsfp_service/platforms/wedge/WedgeI2CBusLock.h"
+#include "fboss/qsfp_service/platforms/wedge/WedgeQsfp.h"
 
 DECLARE_bool(override_program_iphy_ports_for_test);
 
 namespace facebook::fboss {
 
 class PhyManager;
+
+// Temperatures to report to FSDB.
+constexpr size_t kMaxTcvrTemperaturesToReport = 256;
 
 class WedgeManager : public TransceiverManager {
  public:
@@ -28,12 +32,16 @@ class WedgeManager : public TransceiverManager {
   explicit WedgeManager(
       std::unique_ptr<TransceiverPlatformApi> api,
       std::unique_ptr<PlatformMapping> platformMapping,
-      PlatformMode mode);
+      PlatformType type);
   ~WedgeManager() override;
 
   void getTransceiversInfo(
       TransceiverMap& info,
       std::unique_ptr<std::vector<int32_t>> ids) override;
+  void getAllTransceiversValidationInfo(
+      std::map<int32_t, std::string>& info,
+      std::unique_ptr<std::vector<int32_t>> ids,
+      bool getConfigString) override;
   void getTransceiversRawDOMData(
       std::map<int32_t, RawDOMData>& info,
       std::unique_ptr<std::vector<int32_t>> ids) override;
@@ -46,19 +54,25 @@ class WedgeManager : public TransceiverManager {
   void writeTransceiverRegister(
       std::map<int32_t, WriteResponse>& response,
       std::unique_ptr<WriteRequest> request) override;
-  void customizeTransceiver(int32_t idx, cfg::PortSpeed speed) override;
   void syncPorts(TransceiverMap& info, std::unique_ptr<PortMap> ports) override;
 
-  PlatformMode getPlatformMode() const override {
-    return platformMode_;
+  PlatformType getPlatformType() const override {
+    return platformType_;
   }
 
-  int getNumQsfpModules() override {
+  int getNumQsfpModules() const override {
     return 16;
   }
   std::vector<TransceiverID> refreshTransceivers() override;
-  void publishTransceiversToFsdb(
-      const std::vector<TransceiverID>& ids) override;
+  void publishTransceiversToFsdb() override;
+
+  void publishPimStatesToFsdb() override;
+
+  // Retrieves PIM states (which includes PIM errors) by querying respective
+  // system containers
+  virtual std::map<int, PimState> getPimStates() const {
+    return {};
+  }
 
   int scanTransceiverPresence(
       std::unique_ptr<std::vector<int32_t>> ids) override;
@@ -97,15 +111,6 @@ class WedgeManager : public TransceiverManager {
       std::map<int32_t, ModuleStatus>& moduleStatusMap,
       std::unique_ptr<std::vector<int32_t>> ids) override;
 
-  // This function will bring all the transceivers out of reset, making use
-  // of the specific implementation from each platform. Platforms that bring
-  // transceiver out of reset by default will stay no op.
-  virtual void clearAllTransceiverReset();
-
-  // This function will trigger a hard reset on the specific transceiver, making
-  // use of the specific implementation from each platform.
-  virtual void triggerQsfpHardReset(int idx);
-
   /*
    * This function will call PhyManager to create all the ExternalPhy objects
    */
@@ -130,10 +135,6 @@ class WedgeManager : public TransceiverManager {
 
   void updateAllXphyPortsStats() override;
 
-  const AgentConfig* getAgentConfig() const {
-    return agentConfig_.get();
-  }
-
   virtual std::vector<PortID> getMacsecCapablePorts() const override;
 
   virtual std::string listHwObjects(
@@ -148,6 +149,18 @@ class WedgeManager : public TransceiverManager {
       std::optional<OverrideTcvrToPortAndProfile> overrideTcvrToPortAndProfile =
           std::nullopt) override;
 
+  // Transceiver I2C Logging APIs
+  size_t getI2cLogBufferCapacity(int32_t portId);
+  std::pair<size_t, size_t> dumpTransceiverI2cLog(
+      const std::string& portName) override;
+  std::pair<size_t, size_t> dumpTransceiverI2cLog(int32_t portId) {
+    return qsfpImpls_[portId]->dumpTransceiverI2cLog();
+  }
+  std::string getI2cLogName(int32_t portId) const {
+    return FLAGS_qsfp_service_volatile_dir + "/i2cLog" +
+        std::to_string(portId) + ".log";
+  }
+
   virtual void publishPhyStateToFsdb(
       std::string&& portName,
       std::optional<phy::PhyState>&& newState) const override;
@@ -155,32 +168,67 @@ class WedgeManager : public TransceiverManager {
       std::string&& portName,
       phy::PhyStats&& stat) const override;
 
+  virtual void publishPortStatToFsdb(std::string&& portName, HwPortStats&& stat)
+      const override;
+
+  void loadConfig() override;
+
+  void createQsfpToBmcSyncInterface();
+
+  std::string getSwitchDataCenter() const {
+    return dataCenter_;
+  }
+
+  std::string getSwitchRole() const {
+    return hostnameScheme_;
+  }
+
+  QsfpToBmcSyncData getQsfpToBmcSyncData() const;
+
+  std::string getQsfpToBmcSyncDataSerialized() const;
+
+  std::map<int, PimState> getLastPimState() const {
+    return pimStates_;
+  }
+
  protected:
   void initTransceiverMap() override;
 
-  virtual std::unique_ptr<TransceiverI2CApi> getI2CBus();
-  void updateTransceiverMap();
+  virtual std::unique_ptr<TransceiverI2CApi> getI2CBus() override;
+
+  // Return the list of newly added transceivers
+  // (detected plugged in) after a refresh cycle.
+  std::vector<TransceiverID> updateTransceiverMap();
 
   // thread safe handle to access bus
   std::unique_ptr<TransceiverI2CApi> wedgeI2cBus_;
 
-  std::unique_ptr<AgentConfig> agentConfig_;
+  PlatformType platformType_;
 
-  PlatformMode platformMode_;
+  void updateTcvrStateInFsdb(
+      TransceiverID tcvrID,
+      facebook::fboss::TcvrState&& newState) override;
+
+  void updatePimStateInFsdb(int pimID, facebook::fboss::PimState&& newState);
+
+  void initQsfpImplMap();
 
  private:
+  void updateTransceiverLogInfo(const std::vector<TransceiverID>& tcvrs);
+
   // Forbidden copy constructor and assignment operator
   WedgeManager(WedgeManager const&) = delete;
   WedgeManager& operator=(WedgeManager const&) = delete;
 
-  void loadConfig() override;
-
   using LockedTransceiversPtr = folly::Synchronized<
       std::map<TransceiverID, std::unique_ptr<Transceiver>>>::WLockedPtr;
-  void triggerQsfpHardResetLocked(
-      int idx,
-      LockedTransceiversPtr& lockedTransceivers);
 
   std::unique_ptr<QsfpFsdbSyncManager> fsdbSyncManager_;
+  std::unique_ptr<QsfpRestClient> qsfpRestClient_;
+  std::string dataCenter_{""};
+  std::string hostnameScheme_{""};
+  time_t nextOpticsToBmcSyncTime_{0};
+  std::map<int, PimState> pimStates_;
+  std::vector<std::unique_ptr<WedgeQsfp>> qsfpImpls_;
 };
 } // namespace facebook::fboss

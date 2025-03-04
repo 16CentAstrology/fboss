@@ -73,7 +73,7 @@ void ParticipantInfo::populate(LacpEndpoint& endpoint) const {
   *endpoint.portPriority() = static_cast<int32_t>(portPriority);
   *endpoint.port() = static_cast<int32_t>(port);
 
-  *endpoint.state()->active() = state & LacpState::ACTIVE;
+  *endpoint.state()->active() = state & LacpState::LACP_ACTIVE;
   *endpoint.state()->shortTimeout() = state & LacpState::SHORT_TIMEOUT;
   *endpoint.state()->aggregatable() = state & LacpState::AGGREGATABLE;
   *endpoint.state()->inSync() = state & LacpState::IN_SYNC;
@@ -87,7 +87,7 @@ folly::dynamic ParticipantInfo::toFollyDynamic() const {
   folly::dynamic info = folly::dynamic::object;
   info[kId] = static_cast<uint16_t>(key);
   info[kPortID] = static_cast<uint16_t>(port);
-  info[kSystemID] = folly::dynamic(systemID.begin(), systemID.end());
+  info[kSystemID] = folly::dynamic::array_range(systemID);
   info[kSystemPriority] = static_cast<uint16_t>(systemPriority);
   info[kPriority] = static_cast<uint16_t>(portPriority);
   info[kState] = static_cast<uint16_t>(state);

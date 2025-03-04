@@ -30,7 +30,7 @@ class HwPtpTcTest : public HwLinkStateDependentTest {
     return utility::onePortPerInterfaceConfig(
         getHwSwitch(),
         masterLogicalPortIds(),
-        getAsic()->desiredLoopbackMode());
+        getAsic()->desiredLoopbackModes());
   }
 
   void setupHelper() {
@@ -51,10 +51,13 @@ TEST_F(HwPtpTcTest, VerifyPtpTcEnable) {
   const auto& asic = getHwSwitchEnsemble()->getPlatform()->getAsic();
   if (!(asic->isSupported(HwAsic::Feature::PTP_TC) ||
         asic->isSupported(HwAsic::Feature::PTP_TC_PCS))) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     setupHelper();
     setPtpTc(true);
   };
@@ -63,18 +66,20 @@ TEST_F(HwPtpTcTest, VerifyPtpTcEnable) {
     EXPECT_TRUE(utility::getPtpTcEnabled(getHwSwitch()));
   };
 
-  verifyAcrossWarmBoots(
-      setup, verify, []() {}, verifyPostWarmboot);
+  verifyAcrossWarmBoots(setup, verify, []() {}, verifyPostWarmboot);
 }
 
 TEST_F(HwPtpTcTest, VerifyPtpTcToggle) {
   const auto& asic = getHwSwitchEnsemble()->getPlatform()->getAsic();
   if (!(asic->isSupported(HwAsic::Feature::PTP_TC) ||
         asic->isSupported(HwAsic::Feature::PTP_TC_PCS))) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
-  auto setup = [=]() { setupHelper(); };
+  auto setup = [=, this]() { setupHelper(); };
   auto enabled = false;
   auto verify = [&]() {
     EXPECT_EQ(enabled, utility::getPtpTcEnabled(getHwSwitch()));

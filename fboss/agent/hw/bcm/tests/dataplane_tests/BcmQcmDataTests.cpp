@@ -19,10 +19,10 @@
 #include "fboss/agent/hw/test/ConfigFactory.h"
 #include "fboss/agent/hw/test/HwTestAclUtils.h"
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
-#include "fboss/agent/hw/test/dataplane_tests/HwTestOlympicUtils.h"
 #include "fboss/agent/packet/PktFactory.h"
 #include "fboss/agent/packet/PktUtil.h"
 #include "fboss/agent/test/EcmpSetupHelper.h"
+#include "fboss/agent/test/utils/OlympicTestUtils.h"
 
 namespace {
 constexpr int kLoopCount = 10;
@@ -62,12 +62,17 @@ class BcmQcmDataTest : public BcmLinkStateDependentTests {
     // program ifp entries with the statistics enabled
     // for testing
     FLAGS_enable_qcm_ifp_statistics = true;
-    const auto& queueIds = utility::kOlympicWRRQueueIds();
     // allow enough init gpoort count to squeeze in 2 ports for monitoring
     // but not more, this is to test various corner scenarios when
     // we run out of QCM port monitoring capacity
-    FLAGS_init_gport_available_count = queueIds.size() * 2;
+    // gport available count has to be set before init but asic has not
+    // initialized yet. 4 indicates the number of WRR Queue IDs.
+    // Assert once the asic is initialized to ensure the number
+    // of gport matches WRR queue count * 2.
+    FLAGS_init_gport_available_count = 4 * 2;
     BcmLinkStateDependentTests::SetUp();
+    const auto& queueIds = utility::kOlympicWRRQueueIds();
+    CHECK_EQ(FLAGS_init_gport_available_count, queueIds.size() * 2);
     ecmpHelper6_ = std::make_unique<utility::EcmpSetupTargetedPorts6>(
         getProgrammedState(), RouterID(0));
   }
@@ -78,7 +83,10 @@ class BcmQcmDataTest : public BcmLinkStateDependentTests {
         masterLogicalPortIds()[1],
     };
     auto config = utility::onePortPerInterfaceConfig(
-        getHwSwitch(), std::move(ports), cfg::PortLoopbackMode::MAC, true);
+        getHwSwitch(),
+        std::move(ports),
+        getAsic()->desiredLoopbackModes(),
+        true);
     return config;
   }
 
@@ -273,6 +281,9 @@ TEST_F(BcmQcmDataTest, VerifyMonitorQcmCfgPortOnly) {
   if (!BcmQcmManager::isQcmSupported(getHwSwitch())) {
     // This test only applies to ceratin ASIC e.g. TH
     // and to specific sdk versions
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto setup = [&]() {
@@ -304,6 +315,9 @@ TEST_F(BcmQcmDataTest, VerifyPortMonitoringPriorityPortsConfigured) {
   if (!BcmQcmManager::isQcmSupported(getHwSwitch())) {
     // This test only applies to ceratin ASIC e.g. TH
     // and to specific sdk versions
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
@@ -357,6 +371,9 @@ TEST_F(BcmQcmDataTest, VerifyPortMonitoringNoneConfigured) {
   if (!BcmQcmManager::isQcmSupported(getHwSwitch())) {
     // This test only applies to ceratin ASIC e.g. TH
     // and to specific sdk versions
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
@@ -411,6 +428,9 @@ TEST_F(BcmQcmDataTest, VerifyQcmFirmwareInit) {
   if (!BcmQcmManager::isQcmSupported(getHwSwitch())) {
     // This test only applies to ceratin ASIC e.g. TH
     // and to specific sdk versions
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
@@ -422,8 +442,7 @@ TEST_F(BcmQcmDataTest, VerifyQcmFirmwareInit) {
   auto verify = [this]() {
     BcmLogBuffer logBuffer;
     getHwSwitch()->printDiagCmd("mcsstatus Quick=true");
-    std::string mcsStatusStr =
-        logBuffer.getBuffer()->moveToFbString().toStdString();
+    std::string mcsStatusStr = logBuffer.getBuffer()->to<std::string>();
     XLOG(DBG2) << "MCStatus:" << mcsStatusStr;
     EXPECT_TRUE(mcsStatusStr.find("uC 0 status: OK") != std::string::npos);
   };
@@ -436,6 +455,9 @@ TEST_F(BcmQcmDataTest, VerifyQcmFirmwareInit) {
 // and rest all pkts should be marked as red and not sent to the R5 cpu
 TEST_F(BcmQcmDataTest, FlowLearningPolicer) {
   if (!BcmQcmManager::isQcmSupported(getHwSwitch())) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto setup = [&]() { setupHelper(true); };
@@ -470,6 +492,9 @@ TEST_F(BcmQcmDataTest, FlowLearningPolicer) {
 // Since its 1 flow, we should only learn 1 flow
 TEST_F(BcmQcmDataTest, FlowLearning) {
   if (!BcmQcmManager::isQcmSupported(getHwSwitch())) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto setup = [&]() { setupHelper(); };
@@ -491,6 +516,9 @@ TEST_F(BcmQcmDataTest, FlowLearning) {
 // for multiple flows
 TEST_F(BcmQcmDataTest, MultiFlows) {
   if (!BcmQcmManager::isQcmSupported(getHwSwitch())) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto setup = [&]() { setupHelper(); };
@@ -513,6 +541,9 @@ TEST_F(BcmQcmDataTest, MultiFlows) {
 // also ifp entry should hit multiple times
 TEST_F(BcmQcmDataTest, RestrictFlowLearning) {
   if (!BcmQcmManager::isQcmSupported(getHwSwitch())) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto setup = [&]() { setupHelper(); };
@@ -539,6 +570,9 @@ TEST_F(BcmQcmDataTest, RestrictFlowLearning) {
 // Enable QCM again and ensure flow learning happens as desired
 TEST_F(BcmQcmDataTest, VerifyQcmStartStop) {
   if (!BcmQcmManager::isQcmSupported(getHwSwitch())) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto setup = [=]() { setupHelper(true /* enable policer */); };
@@ -580,6 +614,9 @@ TEST_F(BcmQcmDataTest, VerifyQcmStartStop) {
 // Enable QCM again.
 TEST_F(BcmQcmDataTest, VerifyQcmStartStopPddcMode) {
   if (!BcmQcmManager::isQcmSupported(getHwSwitch())) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto setup = [=]() { setupHelperInPddcMode(); };
@@ -616,6 +653,9 @@ TEST_F(BcmQcmDataTest, VerifyQcmStartStopPddcMode) {
 // In pddc mode, learned flow count = 0
 TEST_F(BcmQcmDataTest, VerifyQcmPddcModeScanIntervalZero) {
   if (!BcmQcmManager::isQcmSupported(getHwSwitch())) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto setup = [=]() { setupHelperInPddcMode(true /* bestEffortScan */); };
@@ -635,6 +675,9 @@ class BcmQcmDataCollectorParamTest : public BcmQcmDataTest,
 
 TEST_P(BcmQcmDataCollectorParamTest, VerifyFlowCollector) {
   if (!BcmQcmManager::isQcmSupported(getHwSwitch())) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   bool isIpv6 = GetParam();

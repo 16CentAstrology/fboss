@@ -221,6 +221,34 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
       bcm_udf_t* /*udf_info*/) override {
     return 0;
   }
+  int bcm_field_qset_id_multi_set(
+      int unit,
+      bcm_field_qualify_t qualifier,
+      int num_objects,
+      int* object_list,
+      bcm_field_qset_t* qset) override;
+  int bcm_field_qualify_UdfClass(
+      int unit,
+      bcm_field_entry_t entry,
+      uint32 data,
+      uint32 mask) override;
+  int bcm_field_qualify_udf(
+      int unit,
+      bcm_field_entry_t eid,
+      bcm_udf_id_t udf_id,
+      int length,
+      uint8* data,
+      uint8* mask) override;
+  int bcm_field_qualify_udf_get(
+      int unit,
+      bcm_field_entry_t eid,
+      bcm_udf_id_t udf_id,
+      int max_length,
+      uint8* data,
+      uint8* mask,
+      int* actual_length) override;
+  void bcm_field_group_config_t_init(
+      bcm_field_group_config_t* group_config) override;
   int bcm_port_autoneg_set(int unit, bcm_port_t port, int autoneg) override;
   int bcm_port_phy_modify(
       int unit,
@@ -288,7 +316,15 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
       uint32 flags,
       int ethertype_count,
       int* ethertype_array) override;
+  int bcm_l3_egress_ecmp_ethertype_get(
+      int unit,
+      uint32* flags,
+      int ethertype_max,
+      int* ethertype_array,
+      int* ethertype_count) override;
   int bcm_l3_egress_ecmp_member_status_set(int unit, bcm_if_t intf, int status)
+      override;
+  int bcm_l3_egress_ecmp_member_status_get(int unit, bcm_if_t intf, int* status)
       override;
   int bcm_switch_control_port_set(
       int unit,
@@ -645,11 +681,8 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
   int bcm_l2_station_delete(int unit, int station_id) override;
   int bcm_tx(int unit, bcm_pkt_t* tx_pkt, void* cookie) override;
   int bcm_pktio_tx(int unit, bcm_pktio_pkt_t* tx_pkt) override;
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_22))
   int bcm_pktio_txpmd_stat_attach(int unit, uint32 counter_id) override;
-
   int bcm_pktio_txpmd_stat_detach(int unit) override;
-#endif
   int bcm_port_stat_enable_set(int unit, bcm_gport_t port, int enable) override;
   int bcm_port_stat_attach(int unit, bcm_port_t port, uint32 counterID_)
       override;
@@ -658,12 +691,10 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
       bcm_gport_t gPort,
       uint32 counterID) override;
   int bcm_stat_clear(int unit, bcm_port_t port) override;
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_21))
   int bcm_port_fdr_config_set(
       int unit,
       bcm_port_t port,
       bcm_port_fdr_config_t* fdr_config) override;
-#endif
   int bcm_port_speed_set(int unit, bcm_port_t port, int speed) override;
   int bcm_l3_egress_destroy(int unit, bcm_if_t intf) override;
   int bcm_l3_egress_multipath_add(int unit, bcm_if_t mpintf, bcm_if_t intf)
@@ -754,6 +785,12 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
       bcm_flexctr_action_t* action,
       uint32* stat_counter_id) override;
   int bcm_flexctr_action_destroy(int unit, uint32 stat_counter_id) override;
+  int bcm_flexctr_action_traverse(
+      int /*unit*/,
+      bcm_flexctr_action_traverse_cb /*trav_fn*/,
+      void* /*user_data*/) override {
+    return 0;
+  }
 
   int bcm_l3_route_stat_attach(
       int unit,
@@ -902,14 +939,12 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
       int* /*entries*/) override {
     return 0;
   }
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_19))
   int bcm_l3_alpm_resource_get(
       int /*unit*/,
       bcm_l3_route_group_t /*grp*/,
       bcm_l3_alpm_resource_t* /*resource*/) override {
     return 0;
   }
-#endif
   int bcm_field_entry_multi_get(
       int /*unit*/,
       bcm_field_group_t /*group*/,
@@ -950,11 +985,35 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
     return 0;
   }
 
+  void bcm_l3_ecmp_dlb_port_quality_attr_t_init(
+      bcm_l3_ecmp_dlb_port_quality_attr_t* /*quality_attr*/) override {}
+
+  int bcm_l3_ecmp_dlb_port_quality_attr_set(
+      int /*unit*/,
+      bcm_port_t /*port*/,
+      bcm_l3_ecmp_dlb_port_quality_attr_t* /*quality_attr*/) override;
+
+  int bcm_l3_ecmp_dlb_port_quality_attr_get(
+      int /*unit*/,
+      bcm_port_t /*port*/,
+      bcm_l3_ecmp_dlb_port_quality_attr_t* /*quality_attr*/) override;
+
   int bcm_l3_enable_set(int unit, int enable) override;
 
   int bcm_rx_queue_max_get(int /*unit*/, bcm_cos_queue_t* /*cosq*/) override {
     return 0;
   }
+
+  int bcm_field_qset_id_multi_get(
+      int /*unit*/,
+      bcm_field_qset_t /*qset*/,
+      bcm_field_qualify_t /*qualifier*/,
+      int /*max_objects*/,
+      int* /*object_list*/,
+      int* /*count_objects*/) override {
+    return 0;
+  }
+
   int bcm_field_group_get(
       int /*unit*/,
       bcm_field_group_t /*group*/,
@@ -1857,21 +1916,19 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
     return 0;
   }
 
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_21))
   int bcm_port_fdr_config_get(
-      int unit,
-      bcm_port_t port,
-      bcm_port_fdr_config_t* fdr_config) override {
+      int /* unit */,
+      bcm_port_t /* port */,
+      bcm_port_fdr_config_t* /* fdr_config */) override {
     return 0;
   }
 
   int bcm_port_fdr_stats_get(
-      int unit,
-      bcm_port_t port,
-      bcm_port_fdr_stats_t* fdr_stats) override {
+      int /* unit */,
+      bcm_port_t /* port */,
+      bcm_port_fdr_stats_t* /* fdr_stats */) override {
     return 0;
   }
-#endif
 
   int bcm_port_ifg_get(
       int /* unit */,
@@ -1888,6 +1945,12 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
       int speed,
       bcm_port_duplex_t duplex,
       int bit_times) override;
+
+  int bcm_port_control_phy_timesync_set(
+      int unit,
+      bcm_port_t port,
+      bcm_port_control_phy_timesync_t type,
+      uint64 value) override;
 
  private:
   enum class Dir { SRC, DST };
@@ -1945,6 +2008,11 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
   std::string getNextTimeSpecVar();
   std::string getNextStateCounterVar();
   std::string getNextEthertypeVar();
+
+  /*
+   * Get the current timestamp
+   */
+  std::string getCurrentTimestamp() const;
 
   /*
    * Wrap a generated cint function call with return error code
@@ -2032,6 +2100,9 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
       const bcm_l3_ecmp_member_t* members,
       int member_count);
 
+  std::vector<std::string> cintForDlbPortQualityAttr(
+      bcm_l3_ecmp_dlb_port_quality_attr_t quality_attr);
+
   std::vector<std::string> cintForPathsArray(
       const bcm_if_t* paths,
       int path_count);
@@ -2087,10 +2158,8 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
 
   std::vector<std::string> cintForHint(bcm_field_hint_t hint);
 
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_21))
   std::vector<std::string> cintForPortFdrConfig(
       bcm_port_fdr_config_t fdr_config);
-#endif
 
   /*
    * Synchronize access to data structures for access from multiple

@@ -11,9 +11,9 @@
 #pragma once
 
 // TODO: replace with our own ThriftTraverseResult
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
+#include <thrift/lib/cpp2/folly_dynamic/folly_dynamic.h>
 #include <thrift/lib/cpp2/protocol/Serializer.h>
-#include <thrift/lib/cpp2/reflection/folly_dynamic.h>
 #include <functional>
 #include "fboss/agent/state/NodeBase-defs.h"
 #include "fboss/fsdb/if/gen-cpp2/fsdb_oper_types.h"
@@ -23,7 +23,7 @@
 namespace facebook::fboss::thrift_cow {
 
 template <typename TypeClass, typename TType, bool Immutable>
-class ThriftPrimitiveNode {
+class ThriftPrimitiveNode : public thrift_cow::Serializable {
  public:
   using Self = ThriftPrimitiveNode<TypeClass, TType, Immutable>;
   using CowType = FieldsType;
@@ -37,12 +37,16 @@ class ThriftPrimitiveNode {
   explicit ThriftPrimitiveNode(ThriftType obj) : obj_(std::move(obj)) {}
 
   template <typename T = Self>
-  auto set(const ThriftType& obj) -> std::enable_if_t<!T::immutable, void> {
+  void set(const ThriftType& obj)
+    requires(!T::immutable)
+  {
     obj_ = obj;
   }
 
   template <typename T = Self>
-  auto set(const ThriftType&) const -> std::enable_if_t<T::immutable, void> {
+  void set(const ThriftType&) const
+    requires(T::immutable)
+  {
     throwImmutableException();
   }
 
@@ -66,85 +70,97 @@ class ThriftPrimitiveNode {
     return obj_ < other.obj_;
   }
 
+  ThriftType operator*() const {
+    return obj_;
+  }
+
   ThriftType toThrift() const {
     return obj_;
   }
 
   template <typename T = Self>
-  auto fromThrift(const ThriftType& obj)
-      -> std::enable_if_t<!T::immutable, void> {
+  void fromThrift(const ThriftType& obj)
+    requires(!T::immutable)
+  {
     set(obj);
   }
 
   template <typename T = Self>
-  auto fromThrift(const ThriftType&) const
-      -> std::enable_if_t<T::immutable, void> {
+  void fromThrift(const ThriftType&) const
+    requires(T::immutable)
+  {
     throwImmutableException();
   }
 
 #ifdef ENABLE_DYNAMIC_APIS
 
-  folly::dynamic toFollyDynamic() const {
+  virtual folly::dynamic toFollyDynamic() const override {
     folly::dynamic out;
-    apache::thrift::to_dynamic<TypeClass>(
-        out, toThrift(), apache::thrift::dynamic_format::JSON_1);
+    if constexpr (std::is_same_v<ThriftType, folly::basic_fbstring<char>>) {
+      out = folly::dynamic(obj_.c_str());
+    } else {
+      facebook::thrift::to_dynamic(
+          out, toThrift(), facebook::thrift::dynamic_format::JSON_1);
+    }
     return out;
   }
 
   template <typename T = Self>
-  auto fromFollyDynamic(const folly::dynamic& value)
-      -> std::enable_if_t<!T::immutable, void> {
+  void fromFollyDynamic(const folly::dynamic& value)
+    requires(!T::immutable)
+  {
     ThriftType thrift;
-    apache::thrift::from_dynamic<TypeClass>(
-        thrift, value, apache::thrift::dynamic_format::JSON_1);
+    facebook::thrift::from_dynamic(
+        thrift, value, facebook::thrift::dynamic_format::JSON_1);
     fromThrift(thrift);
   }
 
   template <typename T = Self>
-  auto fromFollyDynamic(const folly::dynamic&) const
-      -> std::enable_if_t<T::immutable, void> {
+  void fromFollyDynamic(const folly::dynamic&) const
+    requires(T::immutable)
+  {
     throwImmutableException();
+  }
+#else
+  virtual folly::dynamic toFollyDynamic() const override {
+    return {};
   }
 #endif
 
-  folly::fbstring encode(fsdb::OperProtocol proto) const {
-    return serialize<TypeClass>(proto, toThrift());
+  folly::IOBuf encodeBuf(fsdb::OperProtocol proto) const override {
+    return serializeBuf<TypeClass>(proto, toThrift());
   }
 
-  template <typename T = Self>
-  auto fromEncoded(fsdb::OperProtocol proto, const folly::fbstring& encoded)
-      -> std::enable_if_t<!T::immutable, void> {
-    fromThrift(deserialize<TC, TType>(proto, encoded));
+  void fromEncodedBuf(fsdb::OperProtocol proto, folly::IOBuf&& encoded)
+      override {
+    if constexpr (immutable) {
+      throwImmutableException();
+    } else {
+      fromThrift(deserializeBuf<TypeClass, TType>(proto, std::move(encoded)));
+    }
   }
 
-  template <typename T = Self>
-  auto fromEncoded(
-      fsdb::OperProtocol /*proto*/,
-      const folly::fbstring& /*encoded*/) const
-      -> std::enable_if_t<T::immutable, void> {
+  void fromEncodedBuf(fsdb::OperProtocol proto, folly::IOBuf&& encoded) const {
     throwImmutableException();
   }
 
-  template <typename T = Self>
-  auto remove(const std::string& token)
-      -> std::enable_if_t<!T::immutable, bool> {
+  bool remove(const std::string& token) {
     throw std::runtime_error(folly::to<std::string>(
         "Cannot remove a child from a primitive node: ", token));
   }
 
-  template <typename T = Self>
-  auto remove(const std::string& token) const
-      -> std::enable_if_t<T::immutable, bool> {
+  bool remove(const std::string& token) const {
     throw std::runtime_error(folly::to<std::string>(
         "Cannot remove a child from a primitive node: ", token));
   }
 
-  template <typename T = Self>
-  auto modify(const std::string&) -> std::enable_if_t<!T::immutable, void> {}
+  void modify(const std::string&, bool = true) {
+    if constexpr (immutable) {
+      throwImmutableException();
+    }
+  }
 
-  template <typename T = Self>
-  auto modify(const std::string&) const
-      -> std::enable_if_t<T::immutable, void> {
+  void modify(const std::string&, bool = true) const {
     throwImmutableException();
   }
 
@@ -162,31 +178,6 @@ class ThriftPrimitiveNode {
 
   std::size_t hash() const {
     return std::hash<ThriftType>()(obj_);
-  }
-
-  /*
-   * Visitors by string path
-   */
-
-  template <typename Func>
-  inline ThriftTraverseResult
-  visitPath(PathIter begin, PathIter end, Func&& f) {
-    return PathVisitor<TypeClass>::visit(
-        *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
-  }
-
-  template <typename Func>
-  inline ThriftTraverseResult visitPath(PathIter begin, PathIter end, Func&& f)
-      const {
-    return PathVisitor<TypeClass>::visit(
-        *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
-  }
-
-  template <typename Func>
-  inline ThriftTraverseResult cvisitPath(PathIter begin, PathIter end, Func&& f)
-      const {
-    return PathVisitor<TypeClass>::visit(
-        *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
   }
 
  private:

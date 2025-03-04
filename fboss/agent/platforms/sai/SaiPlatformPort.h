@@ -13,6 +13,8 @@
 #include "fboss/agent/gen-cpp2/platform_config_types.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/state/Port.h"
+#include "fboss/agent/state/SwitchState.h"
+#include "fboss/agent/state/Transceiver.h"
 #include "fboss/agent/types.h"
 
 #include <optional>
@@ -43,17 +45,16 @@ class SaiPlatformPort : public PlatformPort {
   void prepareForGracefulExit() override;
   bool shouldDisableFEC() const override;
   void externalState(PortLedExternalState) override {}
-  virtual std::vector<uint32_t> getHwPortLanes(cfg::PortSpeed speed) const;
   virtual std::vector<uint32_t> getHwPortLanes(
       cfg::PortProfileID profileID) const;
-  virtual std::vector<PortID> getSubsumedPorts(cfg::PortSpeed speed) const;
-  virtual TransmitterTechnology getTransmitterTech();
+  virtual std::vector<PortID> getSubsumedPorts(
+      cfg::PortProfileID profileID) const;
   virtual uint32_t getPhysicalLaneId(uint32_t chipId, uint32_t logicalLane)
       const = 0;
   bool checkSupportsTransceiver() const;
-  TransceiverIdxThrift getTransceiverMapping(cfg::PortSpeed speed);
+  TransceiverIdxThrift getTransceiverMapping(cfg::PortProfileID profileID);
 
-  folly::Future<TransceiverInfo> getFutureTransceiverInfo() const override;
+  std::shared_ptr<TransceiverSpec> getTransceiverSpec() const override;
 
   void setCurrentProfile(cfg::PortProfileID profile) {
     profile_ = profile;
@@ -70,8 +71,6 @@ class SaiPlatformPort : public PlatformPort {
   virtual uint32_t getCurrentLedState() const = 0;
 
  private:
-  folly::Future<TransmitterTechnology> getTransmitterTechInternal(
-      folly::EventBase* evb);
   cfg::PortProfileID profile_{};
 };
 

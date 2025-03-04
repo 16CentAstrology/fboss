@@ -16,9 +16,42 @@
 
 #include <folly/Format.h>
 
+extern "C" {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+#include <saiextensions.h>
+#ifndef IS_OSS_BRCM_SAI
+#include <experimental/saiexperimentaltameventaginggroup.h>
+#else
+#include <saiexperimentaltameventaginggroup.h>
+#endif
+#endif
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+#ifndef IS_OSS_BRCM_SAI
+#include <experimental/saiexperimentalvendorswitch.h>
+#else
+#include <saiexperimentalvendorswitch.h>
+#endif
+#endif
+}
+
 namespace facebook::fboss {
 
 folly::StringPiece saiApiTypeToString(sai_api_t apiType) {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  if (UNLIKELY(apiType >= SAI_API_MAX)) {
+    switch (static_cast<sai_api_extensions_t>(apiType)) {
+      case SAI_API_TAM_EVENT_AGING_GROUP:
+        return "tam-event-aging-group";
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+      case SAI_API_VENDOR_SWITCH:
+        return "vendor-switch";
+#endif
+      default:
+        break;
+    }
+  }
+#endif
+
   switch (apiType) {
     case SAI_API_UNSPECIFIED:
       return "unspecified";
@@ -90,13 +123,7 @@ folly::StringPiece saiApiTypeToString(sai_api_t apiType) {
       return "bridge";
     case SAI_API_TAM:
       return "tam";
-#if !(                                                                         \
-    defined(SAI_VERSION_7_2_0_0_ODP) || defined(SAI_VERSION_8_2_0_0_ODP) ||    \
-    defined(SAI_VERSION_8_2_0_0_DNX_ODP) || defined(SAI_VERSION_9_0_EA_ODP) || \
-    defined(SAI_VERSION_8_2_0_0_SIM_ODP) ||                                    \
-    defined(SAI_VERSION_9_0_EA_SIM_ODP) ||                                     \
-    defined(SAI_VERSION_9_0_EA_DNX_ODP)) &&                                    \
-    SAI_API_VERSION < SAI_VERSION(1, 10, 0)
+#if SAI_API_VERSION < SAI_VERSION(1, 10, 0)
     case SAI_API_SEGMENTROUTE:
       return "segmentroute";
 #endif
@@ -118,6 +145,12 @@ folly::StringPiece saiApiTypeToString(sai_api_t apiType) {
       return "macsec";
     case SAI_API_SYSTEM_PORT:
       return "system_port";
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+    case SAI_API_ARS:
+      return "ars";
+    case SAI_API_ARS_PROFILE:
+      return "ars_profile";
+#endif
     default:
       if (apiType >= SAI_API_MAX) {
         throw FbossError("api type invalid: ", apiType);
@@ -127,6 +160,21 @@ folly::StringPiece saiApiTypeToString(sai_api_t apiType) {
 }
 
 folly::StringPiece saiObjectTypeToString(sai_object_type_t objectType) {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  if (UNLIKELY(objectType >= SAI_OBJECT_TYPE_MAX)) {
+    switch (static_cast<sai_object_type_extensions_t>(objectType)) {
+      case SAI_OBJECT_TYPE_TAM_EVENT_AGING_GROUP:
+        return "tam-event-aging-group";
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+      case SAI_OBJECT_TYPE_VENDOR_SWITCH:
+        return "vendor-switch";
+#endif
+      default:
+        throw FbossError("object type extension invalid: ", objectType);
+    }
+  }
+#endif
+
   switch (objectType) {
     case SAI_OBJECT_TYPE_NULL:
       return "null";
@@ -208,6 +256,10 @@ folly::StringPiece saiObjectTypeToString(sai_object_type_t objectType) {
       return "debug-counter";
     case SAI_OBJECT_TYPE_WRED:
       return "wred";
+    case SAI_OBJECT_TYPE_TAM_COLLECTOR:
+      return "tam-collector";
+    case SAI_OBJECT_TYPE_TAM_TRANSPORT:
+      return "tam-transport";
     case SAI_OBJECT_TYPE_TAM_REPORT:
       return "tam-report";
     case SAI_OBJECT_TYPE_TAM_EVENT_ACTION:
@@ -234,6 +286,20 @@ folly::StringPiece saiObjectTypeToString(sai_object_type_t objectType) {
       return "macsec-flow";
     case SAI_OBJECT_TYPE_SYSTEM_PORT:
       return "system-port";
+    case SAI_OBJECT_TYPE_UDF:
+      return "udf";
+    case SAI_OBJECT_TYPE_UDF_GROUP:
+      return "udf-group";
+    case SAI_OBJECT_TYPE_UDF_MATCH:
+      return "udf-match";
+    case SAI_OBJECT_TYPE_HOSTIF_USER_DEFINED_TRAP:
+      return "hostif-user-defined-trap";
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+    case SAI_OBJECT_TYPE_ARS:
+      return "ars";
+    case SAI_OBJECT_TYPE_ARS_PROFILE:
+      return "ars_profile";
+#endif
     default:
       throw FbossError("object type invalid: ", objectType);
   }
@@ -374,6 +440,10 @@ folly::StringPiece packetRxReasonToString(cfg::PacketRxReason rxReason) {
       return "dhcpv6";
     case cfg::PacketRxReason::SAMPLEPACKET:
       return "samplepacket";
+    case cfg::PacketRxReason::EAPOL:
+      return "eapol";
+    case cfg::PacketRxReason::PORT_MTU_ERROR:
+      return "port-mtu-error";
     default:
       return "unknown-trap";
   }

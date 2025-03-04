@@ -11,8 +11,8 @@
 #pragma once
 
 #include <fatal/container/tuple.h>
-#include <folly/dynamic.h>
-#include <thrift/lib/cpp2/reflection/folly_dynamic.h>
+#include <folly/json/dynamic.h>
+#include <thrift/lib/cpp2/folly_dynamic/folly_dynamic.h>
 #include <thrift/lib/cpp2/reflection/reflection.h>
 #include "fboss/agent/state/NodeBase-defs.h"
 #include "fboss/thrift_cow/nodes/Serializer.h"
@@ -35,18 +35,20 @@ struct ExtractValueTypeClass<apache::thrift::type_class::list<ValueTypeClass>> {
 } // namespace list_helpers
 
 template <typename TypeClass, typename TType>
-struct ThriftListFields {
+struct ThriftListFields : public FieldBaseType {
   using Self = ThriftListFields<TypeClass, TType>;
   using CowType = FieldsType;
   using ThriftType = TType;
   using ChildTypeClass =
       typename list_helpers::ExtractValueTypeClass<TypeClass>::type;
   using ChildTType = typename TType::value_type;
-  using ChildTraits = ConvertToNodeTraits<ChildTypeClass, ChildTType>;
+  using ChildTraits = ConvertToNodeTraits<false, ChildTypeClass, ChildTType>;
   using value_type = typename ChildTraits::type;
   using StorageType = std::vector<value_type>;
   using iterator = typename StorageType::iterator;
   using const_iterator = typename StorageType::const_iterator;
+  using Tag = apache::thrift::type::list<
+      apache::thrift::type::infer_tag<ChildTType, true /* GuessStringTag */>>;
 
   // whether the contained type is another Cow node, or a primitive
   static constexpr bool HasChildNodes = ChildTraits::isChild::value;
@@ -56,10 +58,10 @@ struct ThriftListFields {
 
   ThriftListFields() {}
 
-  template <
-      typename T,
-      typename = std::enable_if_t<std::is_same<std::decay_t<T>, TType>::value>>
-  explicit ThriftListFields(T&& thrift) {
+  template <typename T>
+  explicit ThriftListFields(T&& thrift)
+    requires(std::is_same_v<std::decay_t<T>, TType>)
+  {
     fromThrift(std::forward<T>(thrift));
   }
 
@@ -71,10 +73,10 @@ struct ThriftListFields {
     return thrift;
   }
 
-  template <
-      typename T,
-      typename = std::enable_if_t<std::is_same<std::decay_t<T>, TType>::value>>
-  void fromThrift(T&& thrift) {
+  template <typename T>
+  void fromThrift(T&& thrift)
+    requires(std::is_same_v<std::decay_t<T>, TType>)
+  {
     storage_.clear();
     for (const auto& elem : thrift) {
       emplace_back(elem);
@@ -85,15 +87,15 @@ struct ThriftListFields {
 
   folly::dynamic toDynamic() const {
     folly::dynamic out;
-    apache::thrift::to_dynamic<TypeClass>(
-        out, toThrift(), apache::thrift::dynamic_format::JSON_1);
+    facebook::thrift::to_dynamic<Tag>(
+        out, toThrift(), facebook::thrift::dynamic_format::JSON_1);
     return out;
   }
 
   void fromDynamic(const folly::dynamic& value) {
     TType thrift;
-    apache::thrift::from_dynamic<TypeClass>(
-        thrift, value, apache::thrift::dynamic_format::JSON_1);
+    facebook::thrift::from_dynamic<Tag>(
+        thrift, value, facebook::thrift::dynamic_format::JSON_1);
     fromThrift(thrift);
   }
 
@@ -103,8 +105,16 @@ struct ThriftListFields {
     return serialize<TypeClass>(proto, toThrift());
   }
 
+  folly::IOBuf encodeBuf(fsdb::OperProtocol proto) const {
+    return serializeBuf<TypeClass>(proto, toThrift());
+  }
+
   void fromEncoded(fsdb::OperProtocol proto, const folly::fbstring& encoded) {
     fromThrift(deserialize<TypeClass, TType>(proto, encoded));
+  }
+
+  void fromEncodedBuf(fsdb::OperProtocol proto, folly::IOBuf&& encoded) {
+    fromThrift(deserializeBuf<TypeClass, TType>(proto, std::move(encoded)));
   }
 
   value_type at(std::size_t index) const {
@@ -216,8 +226,10 @@ struct ThriftListFields {
 template <typename TypeClass, typename TType>
 class ThriftListNode : public NodeBaseT<
                            ThriftListNode<TypeClass, TType>,
-                           ThriftListFields<TypeClass, TType>> {
+                           ThriftListFields<TypeClass, TType>>,
+                       public thrift_cow::Serializable {
  public:
+  using TC = TypeClass;
   using Self = ThriftListNode<TypeClass, TType>;
   using Fields = ThriftListFields<TypeClass, TType>;
   using ThriftType = typename Fields::ThriftType;
@@ -250,12 +262,13 @@ class ThriftListNode : public NodeBaseT<
   }
 #endif
 
-  folly::fbstring encode(fsdb::OperProtocol proto) const {
-    return this->getFields()->encode(proto);
+  folly::IOBuf encodeBuf(fsdb::OperProtocol proto) const override {
+    return this->getFields()->encodeBuf(proto);
   }
 
-  void fromEncoded(fsdb::OperProtocol proto, const folly::fbstring& encoded) {
-    return this->writableFields()->fromEncoded(proto, encoded);
+  void fromEncodedBuf(fsdb::OperProtocol proto, folly::IOBuf&& encoded)
+      override {
+    return this->writableFields()->fromEncodedBuf(proto, std::move(encoded));
   }
 
   value_type at(std::size_t index) const {
@@ -337,11 +350,11 @@ class ThriftListNode : public NodeBaseT<
     return this->writableFields()->remove(index);
   }
 
-  void modify(std::string token) {
-    modify(folly::to<std::size_t>(token));
+  void modify(std::string token, bool construct = true) {
+    modify(folly::to<std::size_t>(token), construct);
   }
 
-  void modify(std::size_t index) {
+  virtual void modify(std::size_t index, bool construct = true) {
     DCHECK(!this->isPublished());
 
     if (index < this->size()) {
@@ -352,7 +365,7 @@ class ThriftListNode : public NodeBaseT<
           child.swap(clonedChild);
         }
       }
-    } else {
+    } else if (construct) {
       // create unpublished default constructed child if missing
       while (this->size() <= index) {
         emplace_back();
@@ -368,31 +381,6 @@ class ThriftListNode : public NodeBaseT<
     auto newNode = ((*node)->isPublished()) ? (*node)->clone() : *node;
     newNode->modify(token);
     node->swap(newNode);
-  }
-
-  /*
-   * Visitors by string path
-   */
-
-  template <typename Func>
-  inline ThriftTraverseResult
-  visitPath(PathIter begin, PathIter end, Func&& f) {
-    return PathVisitor<TypeClass>::visit(
-        *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
-  }
-
-  template <typename Func>
-  inline ThriftTraverseResult visitPath(PathIter begin, PathIter end, Func&& f)
-      const {
-    return PathVisitor<TypeClass>::visit(
-        *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
-  }
-
-  template <typename Func>
-  inline ThriftTraverseResult cvisitPath(PathIter begin, PathIter end, Func&& f)
-      const {
-    return PathVisitor<TypeClass>::visit(
-        *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
   }
 
   const auto& impl() const {

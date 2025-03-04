@@ -8,15 +8,12 @@
  *
  */
 
-#include <thrift/lib/cpp2/protocol/Serializer.h>
-#include <thrift/lib/cpp2/reflection/folly_dynamic.h>
-#include <thrift/lib/cpp2/reflection/reflection.h>
+#include <fboss/thrift_cow/visitors/tests/VisitorTestUtils.h>
+#include <thrift/lib/cpp2/folly_dynamic/folly_dynamic.h>
 #include <thrift/lib/cpp2/reflection/testing.h>
-#include "fboss/agent/gen-cpp2/switch_config_fatal_types.h"
 #include "fboss/fsdb/if/gen-cpp2/fsdb_oper_types.h"
 #include "fboss/thrift_cow/nodes/Serializer.h"
 #include "fboss/thrift_cow/nodes/Types.h"
-#include "fboss/thrift_cow/nodes/tests/gen-cpp2/test_fatal_types.h"
 
 #include <gtest/gtest.h>
 #include <type_traits>
@@ -141,33 +138,21 @@ TEST(ThriftSetNodeTests, ThriftSetNodePrimitivesVisit) {
       node(data);
 
   folly::dynamic out;
-  auto f = [&out](auto& node) { out = node.toFollyDynamic(); };
+  auto f = [&out](auto& node, auto /*begin*/, auto /*end*/) {
+    out = node.toFollyDynamic();
+  };
 
   std::vector<std::string> path = {"1"};
-  auto result = node.visitPath(path.begin(), path.end(), f);
+  auto result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 1);
 
   path = {"1", "test"};
-  result = node.visitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::NON_EXISTENT_NODE);
 
   path = {"2"};
-  result = node.visitPath(path.begin(), path.end(), f);
-  ASSERT_EQ(result, ThriftTraverseResult::OK);
-  ASSERT_EQ(out, 2);
-
-  // also test cvisit
-  result = node.cvisitPath(path.begin(), path.end(), f);
-  ASSERT_EQ(result, ThriftTraverseResult::OK);
-  ASSERT_EQ(out, 2);
-
-  // Now create const node and test cvisit
-  const ThriftSetNode<
-      apache::thrift::type_class::set<apache::thrift::type_class::integral>,
-      std::unordered_set<int>>
-      nodeConst(data);
-  result = nodeConst.cvisitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 2);
 }
@@ -180,24 +165,28 @@ TEST(ThriftSetNodeTests, ThriftSetNodePrimitivesVisitMutable) {
       node(data);
 
   folly::dynamic toWrite, out;
-  auto write = [&toWrite](auto& node) { node.fromFollyDynamic(toWrite); };
-  auto read = [&out](auto& node) { out = node.toFollyDynamic(); };
+  auto write = [&toWrite](auto& node, auto /*begin*/, auto /*end*/) {
+    node.fromFollyDynamic(toWrite);
+  };
+  auto read = [&out](auto& node, auto /*begin*/, auto /*end*/) {
+    out = node.toFollyDynamic();
+  };
 
   std::vector<std::string> path = {"1"};
-  auto result = node.visitPath(path.begin(), path.end(), read);
+  auto result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 1);
 
   path = {"2"};
-  result = node.visitPath(path.begin(), path.end(), read);
+  result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 2);
 
   toWrite = 3;
   path = {"1"};
-  result = node.visitPath(path.begin(), path.end(), write);
+  result = visitPath(node, path.begin(), path.end(), write);
   ASSERT_EQ(result, ThriftTraverseResult::VISITOR_EXCEPTION);
-  result = node.visitPath(path.begin(), path.end(), read);
+  result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
 
   // write to a set member path should be skipped. We need a better

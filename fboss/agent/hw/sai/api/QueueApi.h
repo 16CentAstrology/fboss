@@ -57,6 +57,11 @@ struct SaiQueueTraits {
         SAI_QUEUE_ATTR_SCHEDULER_PROFILE_ID,
         SaiObjectIdT,
         SaiObjectIdDefault>;
+    using EnablePfcDldr = SaiAttribute<
+        EnumType,
+        SAI_QUEUE_ATTR_ENABLE_PFC_DLDR,
+        bool,
+        SaiBoolDefaultFalse>;
   };
   using AdapterKey = QueueSaiId;
   using AdapterHostKey =
@@ -80,6 +85,23 @@ struct SaiQueueTraits {
       SAI_QUEUE_STAT_DROPPED_BYTES,
   };
 
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+  static constexpr std::array<sai_stat_id_t, 1>
+      VoqWatchDogDeleteCounterIdsToRead = {
+          SAI_QUEUE_STAT_CREDIT_WD_DELETED_PACKETS};
+#else
+  static constexpr std::array<sai_stat_id_t, 0>
+      VoqWatchDogDeleteCounterIdsToRead = {};
+#endif
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+  static constexpr std::array<sai_stat_id_t, 1>
+      VoqLatencyWatermarkCounterIdsToRead = {SAI_QUEUE_STAT_DELAY_WATERMARK_NS};
+#else
+  static constexpr std::array<sai_stat_id_t, 0>
+      VoqLatencyWatermarkCounterIdsToRead = {};
+#endif
+
   static constexpr std::array<sai_stat_id_t, 1> WredCounterIdsToRead = {
       SAI_QUEUE_STAT_WRED_DROPPED_PACKETS,
   };
@@ -88,8 +110,9 @@ struct SaiQueueTraits {
       SAI_QUEUE_STAT_WRED_ECN_MARKED_PACKETS,
   };
 
-  static constexpr std::array<sai_stat_id_t, 1> CounterIdsToReadAndClear = {
+  static constexpr std::array<sai_stat_id_t, 2> CounterIdsToReadAndClear = {
       SAI_QUEUE_STAT_WATERMARK_BYTES,
+      SAI_QUEUE_STAT_WATERMARK_LEVEL,
   };
   // Non watermark stats
   static constexpr auto NonWatermarkCounterIdsToRead = CounterIdsToRead;
@@ -101,8 +124,15 @@ struct SaiQueueTraits {
   static constexpr auto NonWatermarkWredCounterIdsToRead = WredCounterIdsToRead;
   static constexpr auto NonWatermarkEcnCounterIdsToRead = EcnCounterIdsToRead;
   // Watermark stats
-  static constexpr auto WatermarkCounterIdsToReadAndClear =
-      CounterIdsToReadAndClear;
+  static constexpr std::array<sai_stat_id_t, 1>
+      WatermarkByteCounterIdsToReadAndClear = {
+          SAI_QUEUE_STAT_WATERMARK_BYTES,
+  };
+  static constexpr std::array<sai_stat_id_t, 1>
+      WatermarkLevelCounterIdsToReadAndClear = {
+          SAI_QUEUE_STAT_WATERMARK_LEVEL,
+  };
+  static const std::vector<sai_stat_id_t>& egressGvoqWatermarkBytes();
 };
 
 SAI_ATTRIBUTE_NAME(Queue, Type)
@@ -112,6 +142,7 @@ SAI_ATTRIBUTE_NAME(Queue, ParentSchedulerNode)
 SAI_ATTRIBUTE_NAME(Queue, WredProfileId)
 SAI_ATTRIBUTE_NAME(Queue, BufferProfileId)
 SAI_ATTRIBUTE_NAME(Queue, SchedulerProfileId)
+SAI_ATTRIBUTE_NAME(Queue, EnablePfcDldr)
 
 template <>
 struct IsSaiObjectOwnedByAdapter<SaiQueueTraits> : public std::true_type {};

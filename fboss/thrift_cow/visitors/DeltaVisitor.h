@@ -2,10 +2,12 @@
 
 #pragma once
 
+#include <glog/logging.h>
 #include <type_traits>
+#include "folly/Conv.h"
 #include "folly/ScopeGuard.h"
 
-#include <boost/function_output_iterator.hpp>
+#include <boost/iterator/function_output_iterator.hpp>
 
 #include <thrift/lib/cpp2/Thrift.h>
 #include <thrift/lib/cpp2/TypeClass.h>
@@ -13,8 +15,11 @@
 
 #include <fboss/thrift_cow/visitors/RecurseVisitor.h>
 #include <fboss/thrift_cow/visitors/TraverseHelper.h>
+#include <fboss/thrift_cow/visitors/VisitorUtils.h>
 
 namespace facebook::fboss::thrift_cow {
+
+struct HybridNodeType;
 
 /*
  * This visitor takes two ThriftCow objects, finds changed paths and
@@ -70,17 +75,38 @@ enum class DeltaVisitMode {
   FULL
 };
 
+// Visit order for added/removed paths, not applicable for changed paths.
+// For changed paths, DeltaVisitor will always visit children first to
+// determine whether there is any delta and skip visiting parent if the
+// subtree is unchanged.
+enum class DeltaVisitOrder {
+  PARENTS_FIRST,
+
+  CHILDREN_FIRST
+};
+
+struct DeltaVisitOptions {
+  explicit DeltaVisitOptions(
+      DeltaVisitMode mode,
+      DeltaVisitOrder order = DeltaVisitOrder::PARENTS_FIRST,
+      bool outputIdPaths = false,
+      bool hybridNodeDeepTraversal = false)
+      : mode(mode),
+        order(order),
+        outputIdPaths(outputIdPaths),
+        hybridNodeDeepTraversal(hybridNodeDeepTraversal) {}
+
+  DeltaVisitMode mode;
+  DeltaVisitOrder order;
+  bool outputIdPaths;
+  bool hybridNodeDeepTraversal;
+};
+
 namespace dv_detail {
 
 /*
- * invokeVisitorFnHelper allows us to support two different visitor
- * signatures:
- *
- * 1. f(traverser, ...)
- * 2. f(path, ...)
- *
- * This allows a visitor to leverage a stateful TraverseHelper if
- * desired in the visit function.
+ * invokeVisitorFnHelper allows us to support different visitor
+ * signatures if needed
  */
 
 template <typename Node, typename TraverseHelper, typename Func>
@@ -89,46 +115,20 @@ auto invokeVisitorFnHelper(
     const Node& oldNode,
     const Node& newNode,
     DeltaElemTag deltaElemTag,
-    Func&& f)
-    -> std::invoke_result_t<
-        Func,
-        TraverseHelper&,
-        const Node&,
-        const Node&,
-        DeltaElemTag> {
+    Func&& f) {
   return f(traverser, oldNode, newNode, deltaElemTag);
 }
 
-template <typename Node, typename TraverseHelper, typename Func>
-auto invokeVisitorFnHelper(
-    TraverseHelper& traverser,
-    const Node& oldNode,
-    const Node& newNode,
-    DeltaElemTag deltaElemTag,
-    Func&& f)
-    -> std::invoke_result_t<
-        Func,
-        const std::vector<std::string>&,
-        const Node&,
-        const Node&,
-        DeltaElemTag> {
-  return f(traverser.path(), oldNode, newNode, deltaElemTag);
-}
-
-template <
-    typename TC,
-    typename Node,
-    typename TraverseHelper,
-    typename Func,
-    // only enable for Node types
-    std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-        true>
+template <typename TC, typename Node, typename TraverseHelper, typename Func>
 bool visitNode(
     TraverseHelper& traverser,
     const std::shared_ptr<Node>& oldNode,
     const std::shared_ptr<Node>& newNode,
-    const DeltaVisitMode& mode,
-    Func&& f) {
+    const DeltaVisitOptions& options,
+    Func&& f)
+    // only enable for Node types
+  requires(std::is_same_v<typename Node::CowType, NodeType>)
+{
   if (oldNode == newNode) {
     // This is the main benefit of deltas against thrift cow trees,
     // ability to shortcircuit delta when we KNOW there are no changes.
@@ -143,11 +143,12 @@ bool visitNode(
       traverser,
       *oldNode->getFields(),
       *newNode->getFields(),
-      mode,
+      options,
       std::forward<Func>(f));
 
   if (hasDifferences &&
-      (mode == DeltaVisitMode::PARENTS || mode == DeltaVisitMode::FULL)) {
+      (options.mode == DeltaVisitMode::PARENTS ||
+       options.mode == DeltaVisitMode::FULL)) {
     invokeVisitorFnHelper(
         traverser,
         oldNode,
@@ -159,32 +160,31 @@ bool visitNode(
   return hasDifferences;
 }
 
-template <
-    typename TC,
-    typename Node,
-    typename TraverseHelper,
-    typename Func,
-    // only enable for Node types
-    std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-        true>
+template <typename TC, typename Node, typename TraverseHelper, typename Func>
 void visitAddedOrRemovedNode(
     TraverseHelper& traverser,
     const std::shared_ptr<Node>& oldNode,
     const std::shared_ptr<Node>& newNode,
-    const DeltaVisitMode& mode,
-    Func&& f) {
+    const DeltaVisitOptions& options,
+    Func&& f)
+    // only enable for Node types
+  requires(std::is_same_v<typename Node::CowType, NodeType>)
+{
   // Exactly one node must be non-null
   DCHECK(static_cast<bool>(oldNode) != static_cast<bool>(newNode));
 
   auto path = traverser.path();
-  invokeVisitorFnHelper(
-      traverser,
-      oldNode,
-      newNode,
-      DeltaElemTag::MINIMAL,
-      std::forward<Func>(f));
+  if (options.order == DeltaVisitOrder::PARENTS_FIRST) {
+    // for added/removed paths, visit parent first, then children
+    invokeVisitorFnHelper(
+        traverser,
+        oldNode,
+        newNode,
+        DeltaElemTag::MINIMAL,
+        std::forward<Func>(f));
+  }
 
-  if (mode == DeltaVisitMode::FULL) {
+  if (options.mode == DeltaVisitMode::FULL) {
     bool isAdd = static_cast<bool>(newNode);
     const auto target = (newNode) ? newNode : oldNode;
     auto processChange =
@@ -215,12 +215,50 @@ void visitAddedOrRemovedNode(
       return;
     }
 
+    auto subtreeVisitOrder = (options.order == DeltaVisitOrder::PARENTS_FIRST)
+        ? RecurseVisitOrder::PARENTS_FIRST
+        : RecurseVisitOrder::CHILDREN_FIRST;
     RecurseVisitor<TC>::visit(
         traverser,
         target,
-        RecurseVisitMode::FULL,
-        RecurseVisitOrder::PARENTS_FIRST,
+        RecurseVisitOptions(
+            RecurseVisitMode::FULL,
+            subtreeVisitOrder,
+            options.outputIdPaths,
+            options.hybridNodeDeepTraversal),
         std::move(processChange));
+  }
+
+  if (options.order != DeltaVisitOrder::PARENTS_FIRST) {
+    invokeVisitorFnHelper(
+        traverser,
+        oldNode,
+        newNode,
+        DeltaElemTag::MINIMAL,
+        std::forward<Func>(f));
+  }
+}
+
+template <typename TC, typename Node, typename TraverseHelper, typename Func>
+void visitAddedOrRemovedNode(
+    TraverseHelper& traverser,
+    const std::shared_ptr<Node>& oldNode,
+    const std::shared_ptr<Node>& newNode,
+    const DeltaVisitOptions& options,
+    Func&& f)
+    // only enable for HybridNode types
+  requires(std::is_same_v<typename Node::CowType, HybridNodeType>)
+{
+  if (!options.hybridNodeDeepTraversal) {
+    invokeVisitorFnHelper(
+        traverser,
+        oldNode,
+        newNode,
+        DeltaElemTag::MINIMAL,
+        std::forward<Func>(f));
+  } else {
+    throw std::runtime_error(folly::to<std::string>(
+        "DeltaVisitor support for hybridNodeDeepTraversal not implemented"));
   }
 }
 
@@ -229,7 +267,7 @@ void visitAddedOrRemovedNode(
     TraverseHelper& traverser,
     const std::optional<Node>& oldNode,
     const std::optional<Node>& newNode,
-    const DeltaVisitMode& /*mode*/,
+    const DeltaVisitOptions& /*mode*/,
     Func&& f) {
   // specialization for primitive node members
   CHECK(oldNode.has_value() != newNode.has_value());
@@ -250,37 +288,30 @@ void visitAddedOrRemovedNode(
 template <typename ValueTypeClass>
 struct DeltaVisitor<apache::thrift::type_class::set<ValueTypeClass>> {
   using TC = apache::thrift::type_class::set<ValueTypeClass>;
-  template <
-      typename Node,
-      typename TraverseHelper,
-      typename Func,
-      // only enable for Node types
-      std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-          true>
+  template <typename Node, typename TraverseHelper, typename Func>
   static inline bool visit(
       TraverseHelper& traverser,
       const std::shared_ptr<Node>& oldNode,
       const std::shared_ptr<Node>& newNode,
-      const DeltaVisitMode& mode,
-      Func&& f) {
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for Node types
+    requires(std::is_same_v<typename Node::CowType, NodeType>)
+  {
     return dv_detail::visitNode<TC>(
-        traverser, oldNode, newNode, mode, std::forward<Func>(f));
+        traverser, oldNode, newNode, options, std::forward<Func>(f));
   }
 
-  template <
-      typename Fields,
-      typename TraverseHelper,
-      typename Func,
-      // only enable for Fields types
-      std::enable_if_t<
-          std::is_same_v<typename Fields::CowType, FieldsType>,
-          bool> = true>
+  template <typename Fields, typename TraverseHelper, typename Func>
   static bool visit(
       TraverseHelper& traverser,
       const Fields& oldFields,
       const Fields& newFields,
-      const DeltaVisitMode& mode,
-      Func&& f) {
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for Fields types
+    requires(std::is_same_v<typename Fields::CowType, FieldsType>)
+  {
     // assuming that sets cannot contain any complex types, so just
     // calculating difference.
     bool hasDifferences{false};
@@ -294,26 +325,79 @@ struct DeltaVisitor<apache::thrift::type_class::set<ValueTypeClass>> {
             // shouldn't happen...
             return;
           }
+          if (oldFields.count(val) && newFields.count(val)) {
+            return;
+          }
+
           hasDifferences = true;
-          traverser.push(folly::to<std::string>(val->cref()));
+          traverser.push(
+              folly::to<std::string>(val->cref()), TCType<ValueTypeClass>);
           if (auto it = oldFields.find(val); it != oldFields.end()) {
             dv_detail::visitAddedOrRemovedNode<ValueTypeClass>(
                 traverser,
                 typename Fields::value_type{val},
                 typename Fields::value_type{},
-                mode,
+                options,
                 std::forward<Func>(f));
           } else {
             dv_detail::visitAddedOrRemovedNode<ValueTypeClass>(
                 traverser,
                 typename Fields::value_type{},
                 typename Fields::value_type{val},
-                mode,
+                options,
                 std::forward<Func>(f));
           }
-          traverser.pop();
+          traverser.pop(TCType<ValueTypeClass>);
         }));
 
+    return hasDifferences;
+  }
+
+  template <typename Fields, typename TraverseHelper, typename Func>
+  static bool visit(
+      TraverseHelper& traverser,
+      const std::shared_ptr<Fields>& oldFields,
+      const std::shared_ptr<Fields>& newFields,
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for HybridNode types
+    requires(std::is_same_v<typename Fields::CowType, HybridNodeType>)
+  {
+    if (options.hybridNodeDeepTraversal) {
+      throw std::runtime_error(folly::to<std::string>(
+          "DeltaVisitor support for hybridNodeDeepTraversal of Set not implemented"));
+    }
+    bool hasDifferences{false};
+    // if both old and new are non-null, compare contents
+    if ((oldFields != newFields) &&
+        (static_cast<bool>(oldFields) && static_cast<bool>(newFields))) {
+      const auto& oldRef = oldFields->ref();
+      const auto& newRef = newFields->ref();
+      std::set_symmetric_difference(
+          oldRef.begin(),
+          oldRef.end(),
+          newRef.begin(),
+          newRef.end(),
+          boost::make_function_output_iterator([&](const auto& val) {
+            if (!val) {
+              // shouldn't happen...
+              return;
+            }
+            if (oldRef.count(val) && newRef.count(val)) {
+              return;
+            }
+
+            hasDifferences = true;
+          }));
+    }
+    if (hasDifferences) {
+      dv_detail::invokeVisitorFnHelper(
+          traverser,
+          oldFields,
+          newFields,
+          DeltaElemTag::MINIMAL,
+          std::forward<Func>(f));
+    }
     return hasDifferences;
   }
 };
@@ -324,37 +408,30 @@ struct DeltaVisitor<apache::thrift::type_class::set<ValueTypeClass>> {
 template <typename ValueTypeClass>
 struct DeltaVisitor<apache::thrift::type_class::list<ValueTypeClass>> {
   using TC = apache::thrift::type_class::list<ValueTypeClass>;
-  template <
-      typename Node,
-      typename TraverseHelper,
-      typename Func,
-      // only enable for Node types
-      std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-          true>
+  template <typename Node, typename TraverseHelper, typename Func>
   static inline bool visit(
       TraverseHelper& traverser,
       const std::shared_ptr<Node>& oldNode,
       const std::shared_ptr<Node>& newNode,
-      const DeltaVisitMode& mode,
-      Func&& f) {
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for Node types
+    requires(std::is_same_v<typename Node::CowType, NodeType>)
+  {
     return dv_detail::visitNode<TC>(
-        traverser, oldNode, newNode, mode, std::forward<Func>(f));
+        traverser, oldNode, newNode, options, std::forward<Func>(f));
   }
 
-  template <
-      typename Fields,
-      typename TraverseHelper,
-      typename Func,
-      // only enable for Fields types
-      std::enable_if_t<
-          std::is_same_v<typename Fields::CowType, FieldsType>,
-          bool> = true>
+  template <typename Fields, typename TraverseHelper, typename Func>
   static bool visit(
       TraverseHelper& traverser,
       const Fields& oldFields,
       const Fields& newFields,
-      const DeltaVisitMode& mode,
-      Func&& f) {
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for Fields types
+    requires(std::is_same_v<typename Fields::CowType, FieldsType>)
+  {
     int minSize = std::min(oldFields.size(), newFields.size());
 
     bool hasDifferences{false};
@@ -363,26 +440,26 @@ struct DeltaVisitor<apache::thrift::type_class::list<ValueTypeClass>> {
       hasDifferences = true;
       // loop in reverse order for removals
       for (int i = oldFields.size() - 1; i >= minSize; --i) {
-        traverser.push(folly::to<std::string>(i));
+        traverser.push(folly::to<std::string>(i), TCType<ValueTypeClass>);
         dv_detail::visitAddedOrRemovedNode<ValueTypeClass>(
             traverser,
             oldFields.at(i),
             typename Fields::value_type{},
-            mode,
+            options,
             std::forward<Func>(f));
-        traverser.pop();
+        traverser.pop(TCType<ValueTypeClass>);
       }
     } else if (oldFields.size() < newFields.size()) { // entries added
       hasDifferences = true;
       for (int i = minSize; i < newFields.size(); ++i) {
-        traverser.push(folly::to<std::string>(i));
+        traverser.push(folly::to<std::string>(i), TCType<ValueTypeClass>);
         dv_detail::visitAddedOrRemovedNode<ValueTypeClass>(
             traverser,
             typename Fields::value_type{},
             newFields.at(i),
-            mode,
+            options,
             std::forward<Func>(f));
-        traverser.pop();
+        traverser.pop(TCType<ValueTypeClass>);
       }
     }
 
@@ -390,15 +467,61 @@ struct DeltaVisitor<apache::thrift::type_class::list<ValueTypeClass>> {
       const auto& oldRef = oldFields.at(i);
       const auto& newRef = newFields.at(i);
       if (oldRef != newRef) {
-        traverser.push(folly::to<std::string>(i));
+        traverser.push(folly::to<std::string>(i), TCType<ValueTypeClass>);
         if (DeltaVisitor<ValueTypeClass>::visit(
-                traverser, oldRef, newRef, mode, std::forward<Func>(f))) {
+                traverser, oldRef, newRef, options, std::forward<Func>(f))) {
           hasDifferences = true;
         }
-        traverser.pop();
+        traverser.pop(TCType<ValueTypeClass>);
       }
     }
 
+    return hasDifferences;
+  }
+
+  template <typename Fields, typename TraverseHelper, typename Func>
+  static bool visit(
+      TraverseHelper& traverser,
+      const std::shared_ptr<Fields>& oldFields,
+      const std::shared_ptr<Fields>& newFields,
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for HybridNode types
+    requires(std::is_same_v<typename Fields::CowType, HybridNodeType>)
+  {
+    if (options.hybridNodeDeepTraversal) {
+      throw std::runtime_error(folly::to<std::string>(
+          "DeltaVisitor support for hybridNodeDeepTraversal of List not implemented"));
+    }
+    bool hasDifferences{false};
+    // if both old and new are non-null, compare contents
+    if ((oldFields != newFields) &&
+        (static_cast<bool>(oldFields) && static_cast<bool>(newFields))) {
+      const auto& oldRef = oldFields->ref();
+      const auto& newRef = newFields->ref();
+
+      int minSize = std::min(oldRef.size(), newRef.size());
+
+      if (oldRef.size() != newRef.size()) { // entries added or removed
+        hasDifferences = true;
+      } else {
+        for (int i = 0; i < minSize; ++i) {
+          const auto& oldElem = oldRef.at(i);
+          const auto& newElem = newRef.at(i);
+          if (oldElem != newElem) {
+            hasDifferences = true;
+          }
+        }
+      }
+    }
+    if (hasDifferences) {
+      dv_detail::invokeVisitorFnHelper(
+          traverser,
+          oldFields,
+          newFields,
+          DeltaElemTag::MINIMAL,
+          std::forward<Func>(f));
+    }
     return hasDifferences;
   }
 };
@@ -410,53 +533,46 @@ template <typename KeyTypeClass, typename MappedTypeClass>
 struct DeltaVisitor<
     apache::thrift::type_class::map<KeyTypeClass, MappedTypeClass>> {
   using TC = apache::thrift::type_class::map<KeyTypeClass, MappedTypeClass>;
-  template <
-      typename Node,
-      typename TraverseHelper,
-      typename Func,
-      // only enable for Node types
-      std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-          true>
+  template <typename Node, typename TraverseHelper, typename Func>
   static inline bool visit(
       TraverseHelper& traverser,
       const std::shared_ptr<Node>& oldNode,
       const std::shared_ptr<Node>& newNode,
-      const DeltaVisitMode& mode,
-      Func&& f) {
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for Node types
+    requires(std::is_same_v<typename Node::CowType, NodeType>)
+  {
     return dv_detail::visitNode<TC>(
-        traverser, oldNode, newNode, mode, std::forward<Func>(f));
+        traverser, oldNode, newNode, options, std::forward<Func>(f));
   }
 
-  template <
-      typename Fields,
-      typename TraverseHelper,
-      typename Func,
-      // only enable for Fields types
-      std::enable_if_t<
-          std::is_same_v<typename Fields::CowType, FieldsType>,
-          bool> = true>
+  template <typename Fields, typename TraverseHelper, typename Func>
   static bool visit(
       TraverseHelper& traverser,
       const Fields& oldFields,
       const Fields& newFields,
-      const DeltaVisitMode& mode,
-      Func&& f) {
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for Fields types
+    requires(std::is_same_v<typename Fields::CowType, FieldsType>)
+  {
     bool hasDifferences{false};
 
     // changed fields
     for (const auto& [key, val] : oldFields) {
-      traverser.push(folly::to<std::string>(key));
+      traverser.push(folly::to<std::string>(key), TCType<MappedTypeClass>);
       if (auto it = newFields.find(key); it != newFields.end()) {
         if (DeltaVisitor<MappedTypeClass>::visit(
-                traverser, val, it->second, mode, std::forward<Func>(f))) {
+                traverser, val, it->second, options, std::forward<Func>(f))) {
           hasDifferences = true;
         }
       } else {
         hasDifferences = true;
         dv_detail::visitAddedOrRemovedNode<MappedTypeClass>(
-            traverser, val, decltype(val){}, mode, std::forward<Func>(f));
+            traverser, val, decltype(val){}, options, std::forward<Func>(f));
       }
-      traverser.pop();
+      traverser.pop(TCType<MappedTypeClass>);
     }
 
     for (const auto& [key, val] : newFields) {
@@ -464,13 +580,96 @@ struct DeltaVisitor<
         // only look at keys that didn't exist. First loop should handle all
         // replacement deltas
         hasDifferences = true;
-        traverser.push(folly::to<std::string>(key));
+        traverser.push(folly::to<std::string>(key), TCType<MappedTypeClass>);
 
         dv_detail::visitAddedOrRemovedNode<MappedTypeClass>(
-            traverser, decltype(val){}, val, mode, std::forward<Func>(f));
+            traverser, decltype(val){}, val, options, std::forward<Func>(f));
 
-        traverser.pop();
+        traverser.pop(TCType<MappedTypeClass>);
       }
+    }
+
+    return hasDifferences;
+  }
+
+  template <typename Fields, typename TraverseHelper, typename Func>
+  static bool visit(
+      TraverseHelper& traverser,
+      const std::shared_ptr<Fields>& oldFields,
+      const std::shared_ptr<Fields>& newFields,
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for Fields types
+    requires(std::is_same_v<typename Fields::CowType, HybridNodeType>)
+  {
+    if (options.hybridNodeDeepTraversal) {
+      throw std::runtime_error(folly::to<std::string>(
+          "DeltaVisitor support for hybridNodeDeepTraversal of Map not implemented"));
+    }
+
+    if (traverser.shouldShortCircuit(VisitorType::DELTA)) {
+      return false;
+    }
+
+    bool hasDifferences{false};
+    const auto& oldRef = oldFields->ref();
+    const auto& newRef = newFields->ref();
+
+    for (const auto& [key, val] : oldRef) {
+      auto it = newRef.find(key);
+      if (it != newRef.end() && val == it->second) {
+        // unchanged entry
+        continue;
+      }
+      traverser.push(folly::to<std::string>(key), TCType<MappedTypeClass>);
+      if (it == newRef.end()) {
+        // deleted entry
+        hasDifferences = true;
+        dv_detail::invokeVisitorFnHelper(
+            traverser,
+            val,
+            decltype(val){},
+            DeltaElemTag::MINIMAL,
+            std::forward<Func>(f));
+      } else if (val != it->second) {
+        // changed entry
+        hasDifferences = true;
+        dv_detail::invokeVisitorFnHelper(
+            traverser,
+            val,
+            it->second,
+            DeltaElemTag::MINIMAL,
+            std::forward<Func>(f));
+      }
+      traverser.pop(TCType<MappedTypeClass>);
+    }
+
+    // new entries only. First loop handles all replacement deltas.
+    for (const auto& [key, val] : newRef) {
+      if (oldRef.find(key) == oldRef.end()) {
+        hasDifferences = true;
+        traverser.push(folly::to<std::string>(key), TCType<MappedTypeClass>);
+
+        dv_detail::invokeVisitorFnHelper(
+            traverser,
+            decltype(val){},
+            val,
+            DeltaElemTag::MINIMAL,
+            std::forward<Func>(f));
+
+        traverser.pop(TCType<MappedTypeClass>);
+      }
+    }
+
+    if (hasDifferences &&
+        (options.mode == DeltaVisitMode::PARENTS ||
+         options.mode == DeltaVisitMode::FULL)) {
+      dv_detail::invokeVisitorFnHelper(
+          traverser,
+          oldFields,
+          newFields,
+          DeltaElemTag::NOT_MINIMAL,
+          std::forward<Func>(f));
     }
 
     return hasDifferences;
@@ -483,37 +682,30 @@ struct DeltaVisitor<
 template <>
 struct DeltaVisitor<apache::thrift::type_class::variant> {
   using TC = apache::thrift::type_class::variant;
-  template <
-      typename Node,
-      typename TraverseHelper,
-      typename Func,
-      // only enable for Node types
-      std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-          true>
+  template <typename Node, typename TraverseHelper, typename Func>
   static inline bool visit(
       TraverseHelper& traverser,
       const std::shared_ptr<Node>& oldNode,
       const std::shared_ptr<Node>& newNode,
-      const DeltaVisitMode& mode,
-      Func&& f) {
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for Node types
+    requires(std::is_same_v<typename Node::CowType, NodeType>)
+  {
     return dv_detail::visitNode<TC>(
-        traverser, oldNode, newNode, mode, std::forward<Func>(f));
+        traverser, oldNode, newNode, options, std::forward<Func>(f));
   }
 
-  template <
-      typename Fields,
-      typename TraverseHelper,
-      typename Func,
-      // only enable for Fields types
-      std::enable_if_t<
-          std::is_same_v<typename Fields::CowType, FieldsType>,
-          bool> = true>
+  template <typename Fields, typename TraverseHelper, typename Func>
   static bool visit(
       TraverseHelper& traverser,
       const Fields& oldFields,
       const Fields& newFields,
-      const DeltaVisitMode& mode,
-      Func&& f) {
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for Fields types
+    requires(std::is_same_v<typename Fields::CowType, FieldsType>)
+  {
     using Members = typename Fields::Members;
 
     bool hasDifferences{false};
@@ -531,9 +723,10 @@ struct DeltaVisitor<apache::thrift::type_class::variant> {
               using tc = typename descriptor::metadata::type_class;
 
               std::string memberName =
-                  std::string(fatal::z_data<name>(), fatal::size<name>::value);
+                  getMemberName<typename descriptor::metadata>(
+                      options.outputIdPaths);
 
-              traverser.push(std::move(memberName));
+              traverser.push(std::move(memberName), TCType<tc>);
 
               const auto& oldRef = oldFields.template cref<name>();
 
@@ -542,10 +735,10 @@ struct DeltaVisitor<apache::thrift::type_class::variant> {
                   oldRef,
                   // default constructed member type
                   decltype(oldRef){},
-                  mode,
+                  options,
                   std::forward<Func>(f));
 
-              traverser.pop();
+              traverser.pop(TCType<tc>);
             });
       }
       if (isSet) {
@@ -556,9 +749,10 @@ struct DeltaVisitor<apache::thrift::type_class::variant> {
               using tc = typename descriptor::metadata::type_class;
 
               std::string memberName =
-                  std::string(fatal::z_data<name>(), fatal::size<name>::value);
+                  getMemberName<typename descriptor::metadata>(
+                      options.outputIdPaths);
 
-              traverser.push(std::move(memberName));
+              traverser.push(std::move(memberName), TCType<tc>);
 
               const auto& newRef = newFields.template cref<name>();
 
@@ -567,10 +761,10 @@ struct DeltaVisitor<apache::thrift::type_class::variant> {
                   // default constructed member type
                   decltype(newRef){},
                   newRef,
-                  mode,
+                  options,
                   std::forward<Func>(f));
 
-              traverser.pop();
+              traverser.pop(TCType<tc>);
             });
       }
     } else {
@@ -580,20 +774,56 @@ struct DeltaVisitor<apache::thrift::type_class::variant> {
             using name = typename descriptor::metadata::name;
             using tc = typename descriptor::metadata::type_class;
 
-            std::string memberName(
-                fatal::z_data<name>(), fatal::size<name>::value);
+            std::string memberName =
+                getMemberName<typename descriptor::metadata>(
+                    options.outputIdPaths);
 
-            traverser.push(std::move(memberName));
+            traverser.push(std::move(memberName), TCType<tc>);
             hasDifferences = DeltaVisitor<tc>::visit(
                 traverser,
                 oldFields.template cref<name>(),
                 newFields.template cref<name>(),
-                mode,
+                options,
                 std::forward<Func>(f));
-            traverser.pop();
+            traverser.pop(TCType<tc>);
           });
     }
 
+    return hasDifferences;
+  }
+
+  template <typename Fields, typename TraverseHelper, typename Func>
+  static bool visit(
+      TraverseHelper& traverser,
+      const std::shared_ptr<Fields>& oldFields,
+      const std::shared_ptr<Fields>& newFields,
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for Fields types
+    requires(std::is_same_v<typename Fields::CowType, HybridNodeType>)
+  {
+    if (options.hybridNodeDeepTraversal) {
+      throw std::runtime_error(folly::to<std::string>(
+          "DeltaVisitor support for hybridNodeDeepTraversal of Variant not implemented"));
+    }
+    bool hasDifferences{false};
+    // if both old and new are non-null, compare contents
+    if ((oldFields != newFields) &&
+        (static_cast<bool>(oldFields) && static_cast<bool>(newFields))) {
+      const auto& oldRef = oldFields->ref();
+      const auto& newRef = newFields->ref();
+      if (oldRef != newRef) {
+        hasDifferences = true;
+      }
+    }
+    if (hasDifferences) {
+      dv_detail::invokeVisitorFnHelper(
+          traverser,
+          oldFields,
+          newFields,
+          DeltaElemTag::MINIMAL,
+          std::forward<Func>(f));
+    }
     return hasDifferences;
   }
 };
@@ -608,43 +838,36 @@ struct DeltaVisitor<apache::thrift::type_class::structure> {
   static bool visit(
       const std::shared_ptr<Node>& oldNode,
       const std::shared_ptr<Node>& newNode,
-      const DeltaVisitMode& mode,
+      const DeltaVisitOptions& options,
       Func&& f) {
     SimpleTraverseHelper traverser;
-    return visit(traverser, oldNode, newNode, mode, std::forward<Func>(f));
+    return visit(traverser, oldNode, newNode, options, std::forward<Func>(f));
   }
 
-  template <
-      typename Node,
-      typename TraverseHelper,
-      typename Func,
-      // only enable for Node types
-      std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-          true>
+  template <typename Node, typename TraverseHelper, typename Func>
   static inline bool visit(
       TraverseHelper& traverser,
       const std::shared_ptr<Node>& oldNode,
       const std::shared_ptr<Node>& newNode,
-      const DeltaVisitMode& mode,
-      Func&& f) {
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for Node types
+    requires(std::is_same_v<typename Node::CowType, NodeType>)
+  {
     return dv_detail::visitNode<TC>(
-        traverser, oldNode, newNode, mode, std::forward<Func>(f));
+        traverser, oldNode, newNode, options, std::forward<Func>(f));
   }
 
-  template <
-      typename Fields,
-      typename TraverseHelper,
-      typename Func,
-      // only enable for Fields types
-      std::enable_if_t<
-          std::is_same_v<typename Fields::CowType, FieldsType>,
-          bool> = true>
+  template <typename Fields, typename TraverseHelper, typename Func>
   static bool visit(
       TraverseHelper& traverser,
       const Fields& oldFields,
       const Fields& newFields,
-      const DeltaVisitMode& mode,
-      Func&& f) {
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for Fields types
+    requires(std::is_same_v<typename Fields::CowType, FieldsType>)
+  {
     using Members = typename Fields::Members;
 
     bool hasDifferences{false};
@@ -655,11 +878,11 @@ struct DeltaVisitor<apache::thrift::type_class::structure> {
       using tc = typename member::type_class;
 
       // Look for the expected member name
-      std::string memberName(fatal::z_data<name>(), fatal::size<name>::value);
+      std::string memberName = getMemberName<member>(options.outputIdPaths);
 
-      traverser.push(std::move(memberName));
+      traverser.push(std::move(memberName), TCType<tc>);
       SCOPE_EXIT {
-        traverser.pop();
+        traverser.pop(TCType<tc>);
       };
 
       const auto& oldRef = oldFields.template cref<name>();
@@ -672,18 +895,53 @@ struct DeltaVisitor<apache::thrift::type_class::structure> {
         } else if (!oldRef || !newRef) {
           hasDifferences = true;
           dv_detail::visitAddedOrRemovedNode<tc>(
-              traverser, oldRef, newRef, mode, std::forward<Func>(f));
+              traverser, oldRef, newRef, options, std::forward<Func>(f));
           return;
         }
       }
 
       // Recurse further if pointer has changed
       if (DeltaVisitor<tc>::visit(
-              traverser, oldRef, newRef, mode, std::forward<Func>(f))) {
+              traverser, oldRef, newRef, options, std::forward<Func>(f))) {
         hasDifferences = true;
       }
     });
 
+    return hasDifferences;
+  }
+
+  template <typename Fields, typename TraverseHelper, typename Func>
+  static bool visit(
+      TraverseHelper& traverser,
+      const std::shared_ptr<Fields>& oldFields,
+      const std::shared_ptr<Fields>& newFields,
+      const DeltaVisitOptions& options,
+      Func&& f)
+      // only enable for Fields types
+    requires(std::is_same_v<typename Fields::CowType, HybridNodeType>)
+  {
+    if (options.hybridNodeDeepTraversal) {
+      throw std::runtime_error(folly::to<std::string>(
+          "DeltaVisitor support for hybridNodeDeepTraversal of Struct not implemented"));
+    }
+    bool hasDifferences{false};
+    // if both old and new are non-null, compare contents
+    if ((oldFields != newFields) &&
+        (static_cast<bool>(oldFields) && static_cast<bool>(newFields))) {
+      const auto& oldRef = oldFields->ref();
+      const auto& newRef = newFields->ref();
+      if (oldRef != newRef) {
+        hasDifferences = true;
+      }
+    }
+    if (hasDifferences) {
+      dv_detail::invokeVisitorFnHelper(
+          traverser,
+          oldFields,
+          newFields,
+          DeltaElemTag::MINIMAL,
+          std::forward<Func>(f));
+    }
     return hasDifferences;
   }
 };
@@ -708,7 +966,7 @@ struct DeltaVisitor {
       TraverseHelper& traverser,
       const Fields& oldFields,
       const Fields& newFields,
-      const DeltaVisitMode& /*mode*/,
+      const DeltaVisitOptions& /*mode*/,
       Func&& f) {
     if (oldFields != newFields) {
       dv_detail::invokeVisitorFnHelper(

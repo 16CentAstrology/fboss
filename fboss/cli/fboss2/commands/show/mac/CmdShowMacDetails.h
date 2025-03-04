@@ -18,6 +18,8 @@
 namespace facebook::fboss {
 
 struct CmdShowMacDetailsTraits : public BaseCommandTraits {
+  static constexpr utils::ObjectArgTypeId ObjectArgTypeId =
+      utils::ObjectArgTypeId::OBJECT_ARG_TYPE_ID_NONE;
   using ObjectArgType = utils::NoneArgType;
   using RetType = cli::ShowMacDetailsModel;
   static constexpr bool ALLOW_FILTERING = true;
@@ -38,17 +40,6 @@ class CmdShowMacDetails
     client->sync_getAllPortInfo(portEntries);
     client->sync_getAggregatePortTable(aggPortentries);
     return createModel(entries, portEntries, aggPortentries);
-  }
-
-  std::string getl2EntryTypeStr(L2EntryType l2EntryType) {
-    switch (l2EntryType) {
-      case L2EntryType::L2_ENTRY_TYPE_PENDING:
-        return "Pending";
-      case L2EntryType::L2_ENTRY_TYPE_VALIDATED:
-        return "Validated";
-      default:
-        return "Unknown";
-    }
   }
 
   void printOutput(const RetType& model, std::ostream& out = std::cout) {
@@ -80,7 +71,8 @@ class CmdShowMacDetails
       l2Details.mac() = entry.get_mac();
       l2Details.port() = entry.get_port();
       l2Details.vlanID() = entry.get_vlanID();
-      l2Details.l2EntryType() = getl2EntryTypeStr(entry.get_l2EntryType());
+      l2Details.l2EntryType() =
+          utils::getl2EntryTypeStr(entry.get_l2EntryType());
       auto trunkPtr = entry.get_trunk();
       if (trunkPtr != nullptr) {
         l2Details.trunk() = *trunkPtr;

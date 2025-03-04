@@ -16,12 +16,14 @@ TEST(RegisterValueTest, Hex) {
   nlohmann::json j = val;
   EXPECT_TRUE(j.is_object());
   EXPECT_TRUE(j.contains("type") && j["type"].is_string());
-  EXPECT_TRUE(j.contains("time") && j["time"].is_number_integer());
-  EXPECT_TRUE(j.contains("value") && j["value"].is_array());
-  EXPECT_EQ(std::string(j["type"]), "hex");
-  EXPECT_EQ(j["time"], 0);
-  EXPECT_EQ(j["value"].size(), 4);
-  EXPECT_EQ(std::vector<uint8_t>(j["value"]), exp);
+  EXPECT_TRUE(j.contains("timestamp") && j["timestamp"].is_number_integer());
+  EXPECT_TRUE(
+      j.contains("value") && j["value"].contains("rawValue") &&
+      j["value"]["rawValue"].is_array());
+  EXPECT_EQ(std::string(j["type"]), "RAW");
+  EXPECT_EQ(j["timestamp"], 0);
+  EXPECT_EQ(j["value"]["rawValue"].size(), 4);
+  EXPECT_EQ(std::vector<uint8_t>(j["value"]["rawValue"]), exp);
 }
 
 TEST(RegisterValueTest, STRING) {
@@ -38,16 +40,19 @@ TEST(RegisterValueTest, STRING) {
   nlohmann::json j = val;
   EXPECT_TRUE(j.is_object());
   EXPECT_TRUE(j.contains("type") && j["type"].is_string());
-  EXPECT_TRUE(j.contains("time") && j["time"].is_number_integer());
-  EXPECT_TRUE(j.contains("value") && j["value"].is_string());
-  EXPECT_EQ(std::string(j["type"]), "string");
-  EXPECT_EQ(j["time"], 0x12345678);
-  EXPECT_EQ(j["value"], "700-014671-0000 ");
+  EXPECT_TRUE(j.contains("timestamp") && j["timestamp"].is_number_integer());
+  EXPECT_TRUE(
+      j.contains("value") && j["value"].contains("strValue") &&
+      j["value"]["strValue"].is_string());
+  EXPECT_EQ(std::string(j["type"]), "STRING");
+  EXPECT_EQ(j["timestamp"], 0x12345678);
+  EXPECT_EQ(j["value"]["strValue"], "700-014671-0000 ");
 }
 
 TEST(RegisterValueTest, INTEGER) {
   RegisterDescriptor d;
   d.format = RegisterValueType::INTEGER;
+  d.sign = true;
   RegisterValue val({0x1234, 0x5678}, d, 0x12345678);
   EXPECT_EQ(val.type, RegisterValueType::INTEGER);
   EXPECT_EQ(std::get<int32_t>(val.value), 0x12345678);
@@ -55,21 +60,91 @@ TEST(RegisterValueTest, INTEGER) {
   nlohmann::json j = val;
   EXPECT_TRUE(j.is_object());
   EXPECT_TRUE(j.contains("type") && j["type"].is_string());
-  EXPECT_TRUE(j.contains("time") && j["time"].is_number_integer());
-  EXPECT_TRUE(j.contains("value") && j["value"].is_number_integer());
-  EXPECT_EQ(std::string(j["type"]), "integer");
-  EXPECT_EQ(j["time"], 0x12345678);
-  EXPECT_TRUE(j["value"].is_number_integer());
-  EXPECT_EQ(j["value"], 0x12345678);
+  EXPECT_TRUE(j.contains("timestamp") && j["timestamp"].is_number_integer());
+  EXPECT_TRUE(
+      j.contains("value") && j["value"].contains("intValue") &&
+      j["value"]["intValue"].is_number_integer());
+  EXPECT_EQ(std::string(j["type"]), "INTEGER");
+  EXPECT_EQ(j["timestamp"], 0x12345678);
+  EXPECT_EQ(j["value"]["intValue"], 0x12345678);
+}
+
+TEST(RegisterValueTest, NEGATIVE_INTEGER) {
+  RegisterDescriptor d;
+  d.format = RegisterValueType::INTEGER;
+  d.sign = true;
+  RegisterValue val({0xFFFE}, d, 0x12345678);
+  EXPECT_EQ(val.type, RegisterValueType::INTEGER);
+  EXPECT_EQ(std::get<int32_t>(val.value), -2);
+
+  RegisterValue val2({0xFFFF, 0xFFFE}, d, 0x12345678);
+  EXPECT_EQ(val2.type, RegisterValueType::INTEGER);
+  EXPECT_EQ(std::get<int32_t>(val2.value), -2);
+}
+
+TEST(RegisterValueTest, UNSIGNED_INTEGER) {
+  RegisterDescriptor d;
+  d.format = RegisterValueType::INTEGER;
+  RegisterValue val({0xFFFE}, d, 0x12345678);
+  EXPECT_EQ(val.type, RegisterValueType::INTEGER);
+  EXPECT_EQ(std::get<int32_t>(val.value), 0xFFFE);
+}
+
+TEST(RegisterValueTest, LONG_UNSIGNED_INTEGER) {
+  RegisterDescriptor d;
+  d.format = RegisterValueType::INTEGER;
+  RegisterValue val({0xFFFF, 0xFFFE}, d, 0x12345678);
+  EXPECT_EQ(val.type, RegisterValueType::LONG);
+  EXPECT_EQ(std::get<int64_t>(val.value), 0xFFFFFFFE);
+}
+
+TEST(RegisterValueTest, LONG_UNSIGNED_INTEGER_EXPLICIT) {
+  RegisterDescriptor d;
+  d.format = RegisterValueType::LONG;
+  RegisterValue val({0xFFFE}, d, 0x12345678);
+  EXPECT_EQ(val.type, RegisterValueType::LONG);
+  EXPECT_EQ(std::get<int64_t>(val.value), 0xFFFE);
+}
+
+TEST(RegisterValueTest, LONG_64BIT_VALUE) {
+  RegisterDescriptor d;
+  d.format = RegisterValueType::INTEGER;
+  RegisterValue val({0xFFFF, 0xFFFF, 0xFFFE, 0x0000}, d, 0x12345678);
+  EXPECT_EQ(val.type, RegisterValueType::LONG);
+  EXPECT_EQ(std::get<int64_t>(val.value), 0xFFFFFFFFFFFE0000ULL);
 }
 
 TEST(RegisterValueTest, LITTLE_INTEGER) {
   RegisterDescriptor d;
   d.format = RegisterValueType::INTEGER;
   d.endian = RegisterEndian::LITTLE;
+  d.sign = true;
   RegisterValue val({0x1234, 0x5678}, d, 0x12345678);
   EXPECT_EQ(val.type, RegisterValueType::INTEGER);
   EXPECT_EQ(std::get<int32_t>(val.value), 0x78563412);
+}
+
+TEST(RegisterValueTest, NEGATIVE_LITTLE_INTEGER) {
+  RegisterDescriptor d;
+  d.format = RegisterValueType::INTEGER;
+  d.endian = RegisterEndian::LITTLE;
+  d.sign = true;
+  RegisterValue val({0xFEFF}, d, 0x12345678);
+  EXPECT_EQ(val.type, RegisterValueType::INTEGER);
+  EXPECT_EQ(std::get<int32_t>(val.value), -2);
+
+  RegisterValue val2({0xFEFF, 0xFFFF}, d, 0x12345678);
+  EXPECT_EQ(val2.type, RegisterValueType::INTEGER);
+  EXPECT_EQ(std::get<int32_t>(val2.value), -2);
+}
+
+TEST(RegisterValueTest, UNSIGNED_LITTLE_INTEGER) {
+  RegisterDescriptor d;
+  d.format = RegisterValueType::INTEGER;
+  d.endian = RegisterEndian::LITTLE;
+  RegisterValue val({0xFEFF}, d, 0x12345678);
+  EXPECT_EQ(val.type, RegisterValueType::INTEGER);
+  EXPECT_EQ(std::get<int32_t>(val.value), 0xFFFE);
 }
 
 TEST(RegisterValueTest, FLOAT) {
@@ -83,11 +158,44 @@ TEST(RegisterValueTest, FLOAT) {
   nlohmann::json j = val;
   EXPECT_TRUE(j.is_object());
   EXPECT_TRUE(j.contains("type") && j["type"].is_string());
-  EXPECT_TRUE(j.contains("time") && j["time"].is_number_integer());
-  EXPECT_TRUE(j.contains("value") && j["value"].is_number_float());
-  EXPECT_EQ(std::string(j["type"]), "float");
-  EXPECT_EQ(j["time"], 0x12345678);
-  EXPECT_NEAR(j["value"], 12.623, 0.001);
+  EXPECT_TRUE(j.contains("timestamp") && j["timestamp"].is_number_integer());
+  EXPECT_TRUE(
+      j.contains("value") && j["value"].contains("floatValue") &&
+      j["value"]["floatValue"].is_number_float());
+  EXPECT_EQ(std::string(j["type"]), "FLOAT");
+  EXPECT_EQ(j["timestamp"], 0x12345678);
+  EXPECT_NEAR(j["value"]["floatValue"], 12.623, 0.001);
+
+  d.scale = 0.1;
+  d.shift = 10.0;
+  RegisterValue val2({0x64fc}, d, 0x12345678);
+  EXPECT_EQ(val2.type, RegisterValueType::FLOAT);
+  EXPECT_NEAR(std::get<float>(val2.value), 11.2623, 0.001);
+  j = val2;
+  EXPECT_NEAR(j["value"]["floatValue"], 11.2623, 0.001);
+}
+
+TEST(RegisterValueTest, LONG_FLOAT) {
+  RegisterDescriptor d;
+  d.format = RegisterValueType::FLOAT;
+  d.precision = 11;
+  RegisterValue val({0x0000, 0x64fc}, d, 0x12345678);
+  EXPECT_EQ(val.type, RegisterValueType::FLOAT);
+  EXPECT_NEAR(std::get<float>(val.value), 12.623, 0.001);
+
+  RegisterValue val2({0x0000, 0x0000, 0x0000, 0x64fc}, d, 0x12345678);
+  EXPECT_EQ(val.type, RegisterValueType::FLOAT);
+  EXPECT_NEAR(std::get<float>(val.value), 12.623, 0.001);
+}
+
+TEST(RegisterValueTest, NEGATIVE_FLOAT) {
+  RegisterDescriptor d;
+  d.format = RegisterValueType::FLOAT;
+  d.precision = 11;
+  d.sign = true;
+  RegisterValue val({0xE4fc}, d, 0x12345678);
+  EXPECT_EQ(val.type, RegisterValueType::FLOAT);
+  EXPECT_NEAR(std::get<float>(val.value), -3.375, 0.002);
 }
 
 TEST(RegisterValueTest, FLAGS) {
@@ -113,23 +221,25 @@ TEST(RegisterValueTest, FLAGS) {
   nlohmann::json j = val3;
   EXPECT_TRUE(j.is_object());
   EXPECT_TRUE(j.contains("type") && j["type"].is_string());
-  EXPECT_TRUE(j.contains("time") && j["time"].is_number_integer());
-  EXPECT_TRUE(j.contains("value") && j["value"].is_array());
-  EXPECT_EQ(std::string(j["type"]), "flags");
-  EXPECT_EQ(j["time"], 0x12345678);
-  EXPECT_EQ(j["value"].size(), 2);
-  EXPECT_TRUE(j["value"][0].is_array());
-  EXPECT_TRUE(j["value"][1].is_array());
-  EXPECT_EQ(j["value"][0].size(), 3);
-  EXPECT_EQ(j["value"][1].size(), 3);
-  EXPECT_TRUE(j["value"][0][0].is_boolean());
-  EXPECT_TRUE(j["value"][1][0].is_boolean());
-  EXPECT_TRUE(j["value"][0][1].is_string());
-  EXPECT_TRUE(j["value"][1][1].is_string());
-  EXPECT_FALSE(j["value"][0][0]);
-  EXPECT_TRUE(j["value"][1][0]);
-  EXPECT_EQ(std::string(j["value"][0][1]), "HELLO");
-  EXPECT_EQ(std::string(j["value"][1][1]), "WORLD");
+  EXPECT_TRUE(j.contains("timestamp") && j["timestamp"].is_number_integer());
+  EXPECT_TRUE(
+      j.contains("value") && j["value"].contains("flagsValue") &&
+      j["value"]["flagsValue"].is_array());
+  EXPECT_EQ(std::string(j["type"]), "FLAGS");
+  EXPECT_EQ(j["timestamp"], 0x12345678);
+  EXPECT_EQ(j["value"]["flagsValue"].size(), 2);
+  for (int i = 0; i < 2; i++) {
+    EXPECT_TRUE(j["value"]["flagsValue"][i].contains("name"));
+    EXPECT_TRUE(j["value"]["flagsValue"][i].contains("value"));
+    EXPECT_TRUE(j["value"]["flagsValue"][i].contains("bitOffset"));
+    EXPECT_TRUE(j["value"]["flagsValue"][i]["name"].is_string());
+    EXPECT_TRUE(j["value"]["flagsValue"][i]["value"].is_boolean());
+    EXPECT_TRUE(j["value"]["flagsValue"][i]["bitOffset"].is_number_integer());
+  }
+  EXPECT_FALSE(j["value"]["flagsValue"][0]["value"]);
+  EXPECT_TRUE(j["value"]["flagsValue"][1]["value"]);
+  EXPECT_EQ(std::string(j["value"]["flagsValue"][0]["name"]), "HELLO");
+  EXPECT_EQ(std::string(j["value"]["flagsValue"][1]["name"]), "WORLD");
 }
 
 TEST(RegisterValueTest, LargeFlags) {

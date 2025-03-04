@@ -14,23 +14,23 @@
 namespace facebook {
 namespace fboss {
 std::unique_ptr<WedgeManager> createFBWedgeManager(
-    std::unique_ptr<PlatformProductInfo> /*productInfo*/) {
+    std::unique_ptr<PlatformProductInfo> /*productInfo*/,
+    const std::string& /* platformMappingStr */) {
   return std::unique_ptr<WedgeManager>{};
 }
 
-std::unique_ptr<WedgeManager> createYampWedgeManager() {
+std::unique_ptr<WedgeManager> createYampWedgeManager(
+    const std::string& /* platformMappingStr */) {
   return std::unique_ptr<WedgeManager>{};
 }
 
-std::unique_ptr<WedgeManager> createDarwinWedgeManager() {
+std::unique_ptr<WedgeManager> createDarwinWedgeManager(
+    const std::string& /* platformMappingStr */) {
   return std::unique_ptr<WedgeManager>{};
 }
 
-std::unique_ptr<WedgeManager> createLassenWedgeManager() {
-  return std::unique_ptr<WedgeManager>{};
-}
-
-std::unique_ptr<WedgeManager> createElbertWedgeManager() {
+std::unique_ptr<WedgeManager> createElbertWedgeManager(
+    const std::string& /* platformMappingStr */) {
   return std::unique_ptr<WedgeManager>{};
 }
 
@@ -43,8 +43,12 @@ bool isElbert8DD() {
   return false;
 }
 
-std::unique_ptr<WedgeManager> createSandiaWedgeManager() {
-  return std::unique_ptr<WedgeManager>{};
+std::string getDeviceDatacenter() {
+  return "";
+}
+
+std::string getDeviceHostnameScheme() {
+  return "";
 }
 
 } // namespace fboss

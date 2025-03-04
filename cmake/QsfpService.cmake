@@ -4,6 +4,7 @@
 # cmake/FooBar.cmake
 
 add_library(qsfp_lib
+  fboss/qsfp_service/fsdb/QsfpFsdbSubscriber.cpp
   fboss/qsfp_service/fsdb/QsfpFsdbSyncManager.cpp
   fboss/qsfp_service/fsdb/oss/QsfpFsdbSyncManager.cpp
   fboss/qsfp_service/oss/StatsPublisher.cpp
@@ -15,6 +16,7 @@ add_library(qsfp_lib
 target_link_libraries(qsfp_lib
     qsfp_cpp2
     ctrl_cpp2
+    pim_state_cpp2
     i2c_controller_stats_cpp2
     transceiver_cpp2
     alert_logger
@@ -25,7 +27,11 @@ target_link_libraries(qsfp_lib
     fsdb_stream_client
     fsdb_pub_sub
     fsdb_flags
+    fsdb_syncer
+    fsdb_model
     qsfp_bsp_core
+    thrift_cow_serializer
+    io_stats_recorder
 )
 
 add_library(qsfp_config
@@ -45,22 +51,97 @@ add_library(bsp_platform_mapping
 
 target_link_libraries(bsp_platform_mapping
   bsp_platform_mapping_cpp2
+  FBThrift::thriftcpp2
 )
 
-add_library(kamet_bsp
-  fboss/lib/bsp/kamet/KametBspPlatformMapping.cpp
+add_library(meru400bfu_bsp
+  fboss/lib/bsp/meru400bfu/Meru400bfuBspPlatformMapping.cpp
 )
 
-target_link_libraries(kamet_bsp
+target_link_libraries(meru400bfu_bsp
   bsp_platform_mapping_cpp2
+  FBThrift::thriftcpp2
 )
 
-add_library(makalu_bsp
-  fboss/lib/bsp/makalu/MakaluBspPlatformMapping.cpp
+add_library(meru400bia_bsp
+  fboss/lib/bsp/meru400bia/Meru400biaBspPlatformMapping.cpp
 )
 
-target_link_libraries(makalu_bsp
+target_link_libraries(meru400bia_bsp
   bsp_platform_mapping_cpp2
+  FBThrift::thriftcpp2
+)
+
+add_library(meru400biu_bsp
+  fboss/lib/bsp/meru400biu/Meru400biuBspPlatformMapping.cpp
+)
+
+target_link_libraries(meru400biu_bsp
+  bsp_platform_mapping_cpp2
+  FBThrift::thriftcpp2
+)
+
+add_library(meru800bia_bsp
+  fboss/lib/bsp/meru800bia/Meru800biaBspPlatformMapping.cpp
+)
+
+target_link_libraries(meru800bia_bsp
+  bsp_platform_mapping_cpp2
+  FBThrift::thriftcpp2
+)
+
+add_library(meru800bfa_bsp
+  fboss/lib/bsp/meru800bfa/Meru800bfaBspPlatformMapping.cpp
+)
+
+target_link_libraries(meru800bfa_bsp
+  bsp_platform_mapping_cpp2
+  FBThrift::thriftcpp2
+)
+
+add_library(montblanc_bsp
+  fboss/lib/bsp/montblanc/MontblancBspPlatformMapping.cpp
+)
+
+target_link_libraries(montblanc_bsp
+  bsp_platform_mapping_cpp2
+  FBThrift::thriftcpp2
+)
+
+add_library(minipack3n_bsp
+  fboss/lib/bsp/minipack3n/Minipack3NBspPlatformMapping.cpp
+)
+
+target_link_libraries(minipack3n_bsp
+  bsp_platform_mapping_cpp2
+  FBThrift::thriftcpp2
+)
+
+add_library(morgan800cc_bsp
+  fboss/lib/bsp/morgan800cc/Morgan800ccBspPlatformMapping.cpp
+)
+
+target_link_libraries(morgan800cc_bsp
+  bsp_platform_mapping_cpp2
+  FBThrift::thriftcpp2
+)
+
+add_library(janga800bic_bsp
+  fboss/lib/bsp/janga800bic/Janga800bicBspPlatformMapping.cpp
+)
+
+target_link_libraries(janga800bic_bsp
+  bsp_platform_mapping_cpp2
+  FBThrift::thriftcpp2
+)
+
+add_library(tahan800bc_bsp
+  fboss/lib/bsp/tahan800bc/Tahan800bcBspPlatformMapping.cpp
+)
+
+target_link_libraries(tahan800bc_bsp
+  bsp_platform_mapping_cpp2
+  FBThrift::thriftcpp2
 )
 
 add_library(qsfp_bsp_core
@@ -85,8 +166,16 @@ target_link_libraries(qsfp_bsp_core
   common_file_utils
   i2c_controller_stats_cpp2
   Folly::folly
-  kamet_bsp
-  makalu_bsp
+  meru400bfu_bsp
+  meru400bia_bsp
+  meru400biu_bsp
+  meru800bia_bsp
+  meru800bfa_bsp
+  montblanc_bsp
+  minipack3n_bsp
+  morgan800cc_bsp
+  janga800bic_bsp
+  tahan800bc_bsp
   device_mdio
   fpga_device
   phy_management_base
@@ -94,6 +183,15 @@ target_link_libraries(qsfp_bsp_core
   fpga_multi_pim_container
   ledIO
   led_mapping_cpp2
+)
+
+add_library(transceiver_validator
+  fboss/qsfp_service/TransceiverValidator.cpp
+)
+
+target_link_libraries(transceiver_validator
+  transceiver_validation_cpp2
+  Folly::folly
 )
 
 add_library(transceiver_manager STATIC
@@ -113,6 +211,10 @@ target_link_libraries(transceiver_manager
   thread_heartbeat
   utils
   product_info
+  fsdb_flags
+  firmware_upgrader
+  transceiver_validator
+  ${RE2}
 )
 
 add_library(qsfp_handler
@@ -123,6 +225,9 @@ target_link_libraries(qsfp_handler
   Folly::folly
   transceiver_manager
   log_thrift_call
+  fsdb_stream_client
+  fsdb_pub_sub
+  fsdb_flags
 )
 
 add_library(qsfp_core
@@ -149,3 +254,5 @@ target_link_libraries(qsfp_service
     qsfp_core
     qsfp_handler
 )
+
+install(TARGETS qsfp_service)

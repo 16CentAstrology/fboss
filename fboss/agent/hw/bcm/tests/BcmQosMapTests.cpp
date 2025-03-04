@@ -9,7 +9,6 @@
  */
 #include "fboss/agent/hw/bcm/BcmQosPolicy.h"
 #include "fboss/agent/hw/bcm/tests/BcmTest.h"
-#include "fboss/agent/platforms/tests/utils/BcmTestPlatform.h"
 
 #include "fboss/agent/ApplyThriftConfig.h"
 #include "fboss/agent/hw/bcm/BcmError.h"
@@ -19,7 +18,6 @@
 
 extern "C" {
 #include <bcm/cosq.h>
-#include <bcm/error.h>
 #include <bcm/qos.h>
 }
 
@@ -40,7 +38,10 @@ class BcmQosMapTest : public BcmTest {
  protected:
   cfg::SwitchConfig initialConfig() const override {
     return utility::oneL3IntfNPortConfig(
-        getHwSwitch(), {masterLogicalPortIds()[0], masterLogicalPortIds()[1]});
+        getHwSwitch()->getPlatform()->getPlatformMapping(),
+        getHwSwitch()->getPlatform()->getAsic(),
+        {masterLogicalPortIds()[0], masterLogicalPortIds()[1]},
+        getHwSwitch()->getPlatform()->supportsAddRemovePort());
   }
 
   cfg::SwitchConfig setupDefaultQueueWithPfcMaps() {

@@ -3,12 +3,12 @@
 
 #include "fboss/agent/types.h"
 #include "fboss/lib/firmware_storage/FbossFirmware.h"
-#include "fboss/lib/i2c/FirmwareUpgrader.h"
 #include "fboss/lib/usb/TransceiverI2CApi.h"
 #include "fboss/lib/usb/TransceiverPlatformApi.h"
 #include "fboss/lib/usb/TransceiverPlatformI2cApi.h"
 #include "fboss/qsfp_service/TransceiverManager.h"
 #include "fboss/qsfp_service/lib/QsfpClient.h"
+#include "fboss/qsfp_service/module/FirmwareUpgrader.h"
 
 #include <memory>
 #include <utility>
@@ -32,10 +32,11 @@ DECLARE_int32(reset_action);
 DECLARE_bool(electrical_loopback);
 DECLARE_bool(optical_loopback);
 DECLARE_bool(clear_loopback);
+DECLARE_bool(skip_check);
 DECLARE_bool(read_reg);
 DECLARE_bool(write_reg);
 DECLARE_int32(offset);
-DECLARE_int32(data);
+DECLARE_string(data);
 DECLARE_int32(length);
 DECLARE_int32(page);
 DECLARE_int32(pause_remediation);
@@ -66,6 +67,8 @@ DECLARE_bool(prbs_stats);
 DECLARE_bool(generator);
 DECLARE_bool(checker);
 DECLARE_bool(module_io_stats);
+DECLARE_bool(capabilities);
+DECLARE_bool(dump_tcvr_i2c_log);
 
 enum LoopbackMode { noLoopback, electricalLoopback, opticalLoopback };
 
@@ -94,7 +97,10 @@ bool rateSelect(unsigned int port, uint8_t value);
 
 bool appSel(TransceiverI2CApi* bus, unsigned int port, uint8_t value);
 
-TransceiverManagementInterface getModuleType(
+std::map<int32_t, TransceiverManagementInterface> getModuleType(
+    const std::vector<unsigned int>& ports);
+
+TransceiverManagementInterface getModuleTypeDirect(
     TransceiverI2CApi* bus,
     unsigned int port);
 
@@ -131,7 +137,7 @@ bool doWriteRegViaService(
     const std::vector<int32_t>& ports,
     int offset,
     int page,
-    uint8_t value,
+    const std::vector<uint8_t>& data,
     folly::EventBase& evb);
 
 int doWriteReg(
@@ -139,7 +145,7 @@ int doWriteReg(
     std::vector<unsigned int>& ports,
     int offset,
     int page,
-    uint8_t data,
+    const std::vector<uint8_t>& data,
     folly::EventBase& evb);
 
 int writeRegister(
@@ -202,11 +208,15 @@ void printCmisDetailService(
     unsigned int port,
     bool verbose);
 
-void printPortDetail(const DOMDataUnion& domDataUnion, unsigned int port);
+void printPortDetail(
+    const DOMDataUnion& domDataUnion,
+    unsigned int port,
+    const std::string& portNames);
 void printPortDetailService(
     const TransceiverInfo& transceiverInfo,
     unsigned int port,
-    bool verbose);
+    bool verbose,
+    const std::string& portNames);
 
 void tryOpenBus(TransceiverI2CApi* bus);
 
@@ -214,18 +224,27 @@ bool doQsfpHardReset(TransceiverI2CApi* bus, unsigned int port);
 
 int resetQsfp(const std::vector<std::string>& ports, folly::EventBase& evb);
 
-bool doMiniphotonLoopback(
+int dumpTransceiverI2cLog(
+    const std::vector<std::string>& ports,
+    folly::EventBase& evb);
+
+bool doMiniphotonLoopbackDirect(
     TransceiverI2CApi* bus,
     unsigned int port,
     LoopbackMode mode);
 
-void cmisHostInputLoopback(
+void cmisHostInputLoopbackDirect(
     TransceiverI2CApi* bus,
     unsigned int port,
     LoopbackMode mode);
-void cmisMediaInputLoopback(
+void cmisMediaInputLoopbackDirect(
     TransceiverI2CApi* bus,
     unsigned int port,
+    LoopbackMode mode);
+
+bool setTransceiverLoopback(
+    DirectI2cInfo i2cInfo,
+    std::vector<std::string> portList,
     LoopbackMode mode);
 
 bool cliModulefirmwareUpgrade(
@@ -242,7 +261,7 @@ void get_module_fw_info(
     unsigned int moduleA,
     unsigned int moduleB);
 
-void doCdbCommand(TransceiverI2CApi* bus, unsigned int module);
+void doCdbCommand(DirectI2cInfo i2cInfo, unsigned int module);
 
 bool printVdmInfo(DirectI2cInfo i2cInfo, unsigned int port);
 
@@ -276,15 +295,17 @@ void bucketize(
 std::vector<int> getPidForProcess(std::string proccessName);
 
 void setModulePrbs(
-    folly::EventBase& evb,
+    DirectI2cInfo i2cInfo,
     std::vector<std::string> portList,
     bool start);
-void getModulePrbsStats(folly::EventBase& evb, std::vector<PortID> portList);
+void getModulePrbsStats(DirectI2cInfo i2cInfo, std::vector<PortID> portList);
 
 bool verifyDirectI2cCompliance();
 
 void printModuleTransactionStats(
     const std::vector<int32_t>& ports,
     folly::EventBase& evb);
+
+bool printDiagsInfo(folly::EventBase& evb);
 
 } // namespace facebook::fboss

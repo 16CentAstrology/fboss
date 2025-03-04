@@ -32,9 +32,9 @@ class MirrorManagerTest : public ManagerTestBase {
       PortID portId = PortID(1)) {
     auto mirror = std::make_shared<Mirror>(
         mirrorId,
-        std::make_optional<PortID>(portId),
+        std::make_optional<PortDescriptor>(PortDescriptor(portId)),
         std::optional<folly::IPAddress>());
-    saiManagerTable->mirrorManager().addMirror(mirror);
+    saiManagerTable->mirrorManager().addNode(mirror);
   }
 
   void createTunnelMirror(
@@ -51,11 +51,12 @@ class MirrorManagerTest : public ManagerTestBase {
       uint32_t udpDstPort = 7962) {
     auto mirror = std::make_shared<Mirror>(
         mirrorId,
-        std::make_optional<PortID>(portId),
+        std::make_optional<PortDescriptor>(PortDescriptor(portId)),
         std::make_optional<folly::IPAddress>(dstIp),
         std::make_optional<folly::IPAddress>(srcIp),
         std::optional<TunnelUdpPorts>(),
         tos);
+    mirror->setEgressPortDesc(PortDescriptor(portId));
     auto mirrorTunnel = type == SAI_MIRROR_SESSION_TYPE_ENHANCED_REMOTE
         ? MirrorTunnel{srcIp, dstIp, srcMac, dstMac, ttl}
         : MirrorTunnel{
@@ -66,7 +67,7 @@ class MirrorManagerTest : public ManagerTestBase {
               TunnelUdpPorts{udpSrcPort, udpDstPort},
               ttl};
     mirror->setMirrorTunnel(mirrorTunnel);
-    saiManagerTable->mirrorManager().addMirror(mirror);
+    saiManagerTable->mirrorManager().addNode(mirror);
   }
 
   void checkLocalMirror(
@@ -198,9 +199,9 @@ TEST_F(MirrorManagerTest, removeMirror) {
   saiManagerTable->portManager().addPort(swPort1);
   auto mirror = std::make_shared<Mirror>(
       mirrorId,
-      std::make_optional<PortID>(swPort1->getID()),
+      std::make_optional<PortDescriptor>(PortDescriptor(swPort1->getID())),
       std::optional<folly::IPAddress>());
-  saiManagerTable->mirrorManager().addMirror(mirror);
+  saiManagerTable->mirrorManager().addNode(mirror);
   saiManagerTable->mirrorManager().removeMirror(mirror);
   EXPECT_THROW(
       saiManagerTable->mirrorManager().removeMirror(mirror), FbossError);

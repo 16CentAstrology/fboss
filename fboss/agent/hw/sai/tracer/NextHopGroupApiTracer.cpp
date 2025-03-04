@@ -13,7 +13,6 @@
 #include <utility>
 
 #include "fboss/agent/hw/sai/api/NextHopGroupApi.h"
-#include "fboss/agent/hw/sai/tracer/NextHopGroupApiTracer.h"
 #include "fboss/agent/hw/sai/tracer/Utils.h"
 
 using folly::to;
@@ -22,6 +21,9 @@ namespace {
 std::map<int32_t, std::pair<std::string, std::size_t>> _NextHopGroupMap{
     SAI_ATTR_MAP(NextHopGroup, NextHopMemberList),
     SAI_ATTR_MAP(NextHopGroup, Type),
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+    SAI_ATTR_MAP(NextHopGroup, ArsObjectId),
+#endif
 };
 
 std::map<int32_t, std::pair<std::string, std::size_t>> _NextHopGroupMemberMap{

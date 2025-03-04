@@ -63,10 +63,27 @@ HwPortStats getInitedStats() {
       {{0, 3}, {7, 3}}, // outPfc_
       {{1, 0}, {2, 0}}, // queueWredDroppedPackets
       {{1, 0}, {2, 0}}, // queueEcnMarkedPackets
+      0, // fecCorrectedBits_
+      {{0, 100}, {1, 10}, {2, 1}}, // fecCodewords
+      0, // pqpErrorEgressDroppedPackets_
+      0, // fabricLinkDownDroppedCells_
+      0, // linkLayerFlowControlWatermark_
       0, // timestamp
       "test", // portName
       {}, // macsec stats,
-      0 // inLabelMissDiscards_
+      0, // inLabelMissDiscards_
+      {}, // queueWatermarkLevel
+      0, // inCongestionDiscards
+      0, // inAclDiscards
+      0, // inTrapDiscards
+      0, // outForwardingDiscards
+      0, // fabricConnectivityMismatch
+      1, // logicalPortId
+      2, // leakyBucketFlapCount_
+      100, // cableLengthMeters
+      true, // dataCellsFilterIsOn
+      {{1, 0}, {2, 0}}, // egressGvoqWatermarkBytes_
+      {{1, 0}}, // pgInCongestionDiscards_
   };
 }
 
@@ -76,7 +93,7 @@ void updateStats(HwCpuFb303Stats& cpuStats) {
   HwPortStats empty{};
   // Need to populate queue stats, since by default these
   // maps are empty
-  *empty.queueOutDiscardPackets_() = *empty.queueOutPackets_() =
+  *empty.queueOutDiscardPackets_() =
       *empty.queueOutPackets_() = {{1, 0}, {2, 0}};
   cpuStats.updateStats(empty, now);
   cpuStats.updateStats(getInitedStats(), now);
@@ -85,10 +102,14 @@ void updateStats(HwCpuFb303Stats& cpuStats) {
 void verifyUpdatedStats(const HwCpuFb303Stats& cpuStats) {
   auto curValue{1};
   curValue = 1;
-  for (auto counterName : HwCpuFb303Stats::kQueueStatKeys()) {
+  for (auto counterName : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
     for (const auto& queueIdAndName : kQueue2Name) {
       EXPECT_EQ(
           cpuStats.getCounterLastIncrement(HwCpuFb303Stats::statName(
+              counterName, queueIdAndName.first, queueIdAndName.second)),
+          curValue);
+      EXPECT_EQ(
+          cpuStats.getCumulativeValueIf(HwCpuFb303Stats::statName(
               counterName, queueIdAndName.first, queueIdAndName.second)),
           curValue);
     }
@@ -98,7 +119,7 @@ void verifyUpdatedStats(const HwCpuFb303Stats& cpuStats) {
 } // namespace
 
 TEST(HwCpuFb303StatsTest, StatName) {
-  for (auto statKey : HwCpuFb303Stats::kQueueStatKeys()) {
+  for (auto statKey : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
     EXPECT_EQ(
         HwCpuFb303Stats::statName(statKey, 1, "high"),
         folly::to<std::string>("cpu.queue1.cpuQueue-high.", statKey));
@@ -106,7 +127,7 @@ TEST(HwCpuFb303StatsTest, StatName) {
 }
 TEST(HwCpuFb303StatsTest, StatsInit) {
   HwCpuFb303Stats stats(kQueue2Name);
-  for (auto statKey : HwCpuFb303Stats::kQueueStatKeys()) {
+  for (auto statKey : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
     for (const auto& queueIdAndName : kQueue2Name) {
       EXPECT_TRUE(fbData->getStatMap()->contains(HwCpuFb303Stats::statName(
           statKey, queueIdAndName.first, queueIdAndName.second)));
@@ -116,7 +137,7 @@ TEST(HwCpuFb303StatsTest, StatsInit) {
 
 TEST(HwCpuFb303StatsTest, StatsDeInit) {
   { HwCpuFb303Stats stats(kQueue2Name); }
-  for (auto statKey : HwCpuFb303Stats::kQueueStatKeys()) {
+  for (auto statKey : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
     for (const auto& queueIdAndName : kQueue2Name) {
       EXPECT_FALSE(fbData->getStatMap()->contains(HwCpuFb303Stats::statName(
           statKey, queueIdAndName.first, queueIdAndName.second)));
@@ -129,11 +150,39 @@ TEST(HwCpuFb303Stats, UpdateStats) {
   updateStats(cpuStats);
   verifyUpdatedStats(cpuStats);
 }
+
+TEST(HwCpuFb303Stats, UpdateCpuFb303Stats) {
+  HwCpuFb303Stats cpuStats(kQueue2Name);
+  // To get last increment from monotonic counter we need to update it twice
+  CpuPortStats empty{};
+  *empty.queueDiscardPackets_() =
+      *empty.queueInPackets_() = {{1, 0}, {2, 0}, {3, 0}};
+  *empty.queueToName_() = {
+      {1, "high"},
+      {2, "low"},
+      {3, "mid"},
+  };
+  CpuPortStats initedStats{};
+  *initedStats.queueToName_() = {
+      {1, "high"},
+      {2, "low"},
+  };
+  *initedStats.queueDiscardPackets_() = {{1, 2}, {2, 2}};
+  *initedStats.queueInPackets_() = {{1, 1}, {2, 1}};
+  cpuStats.updateStats(empty);
+  cpuStats.updateStats(initedStats);
+  verifyUpdatedStats(cpuStats);
+  for (auto statKey : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
+    EXPECT_FALSE(fbData->getStatMap()->contains(
+        HwCpuFb303Stats::statName(statKey, 3, "mid")));
+  }
+}
+
 TEST(HwCpuFb303StatsTest, RenameQueue) {
   HwCpuFb303Stats stats(kQueue2Name);
   stats.queueChanged(1, "very_high");
   auto newQueueMapping = kQueue2Name;
-  for (auto statKey : HwCpuFb303Stats::kQueueStatKeys()) {
+  for (auto statKey : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
     EXPECT_TRUE(fbData->getStatMap()->contains(
         HwCpuFb303Stats::statName(statKey, 1, "very_high")));
     EXPECT_FALSE(fbData->getStatMap()->contains(
@@ -148,7 +197,7 @@ TEST(HwCpuFb303StatsTest, AddQueue) {
   HwCpuFb303Stats stats(kQueue2Name);
   stats.queueChanged(3, "very_high");
   auto newQueueMapping = kQueue2Name;
-  for (auto statKey : HwCpuFb303Stats::kQueueStatKeys()) {
+  for (auto statKey : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
     EXPECT_TRUE(fbData->getStatMap()->contains(
         HwCpuFb303Stats::statName(statKey, 1, "high")));
     EXPECT_TRUE(fbData->getStatMap()->contains(
@@ -161,7 +210,7 @@ TEST(HwCpuFb303StatsTest, RemoveQueue) {
   HwCpuFb303Stats stats(kQueue2Name);
   stats.queueRemoved(1);
   auto newQueueMapping = kQueue2Name;
-  for (auto statKey : HwCpuFb303Stats::kQueueStatKeys()) {
+  for (auto statKey : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
     EXPECT_FALSE(fbData->getStatMap()->contains(
         HwCpuFb303Stats::statName(statKey, 1, "high")));
     EXPECT_TRUE(fbData->getStatMap()->contains(
@@ -175,7 +224,7 @@ TEST(HwCpuFb303Stats, queueNameChangeResetsValue) {
   cpuStats.queueChanged(1, "very_high");
   cpuStats.queueChanged(2, "very_low");
   HwCpuFb303Stats::QueueId2Name newQueues = {{1, "very_high"}, {2, "very_low"}};
-  for (auto counterName : HwCpuFb303Stats::kQueueStatKeys()) {
+  for (auto counterName : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
     for (const auto& queueIdAndName : newQueues) {
       EXPECT_TRUE(fbData->getStatMap()->contains(HwCpuFb303Stats::statName(
           counterName, queueIdAndName.first, queueIdAndName.second)));
@@ -185,10 +234,46 @@ TEST(HwCpuFb303Stats, queueNameChangeResetsValue) {
           0);
     }
   }
-  for (auto counterName : HwCpuFb303Stats::kQueueStatKeys()) {
+  for (auto counterName : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
     for (const auto& queueIdAndName : kQueue2Name) {
       EXPECT_FALSE(fbData->getStatMap()->contains(HwCpuFb303Stats::statName(
           counterName, queueIdAndName.first, queueIdAndName.second)));
     }
+  }
+}
+
+TEST(HwCpuFb303Stats, queueNameWithSwitchId) {
+  std::string switchIdPrefix("switch.0.");
+  HwCpuFb303Stats cpuStats(kQueue2Name, switchIdPrefix);
+  updateStats(cpuStats);
+  for (auto counterName : HwCpuFb303Stats::kQueueMonotonicCounterStatKeys()) {
+    for (const auto& queueIdAndName : kQueue2Name) {
+      EXPECT_TRUE(fbData->getStatMap()->contains(
+          switchIdPrefix +
+          HwCpuFb303Stats::statName(
+              counterName, queueIdAndName.first, queueIdAndName.second)));
+    }
+  }
+}
+
+TEST(HwCpuFb303Stats, getCpuStats) {
+  HwCpuFb303Stats cpuStats(kQueue2Name);
+  updateStats(cpuStats);
+
+  const auto cpuPortStats = cpuStats.getCpuPortStats();
+  EXPECT_EQ(cpuPortStats.queueToName_()->size(), 2);
+  EXPECT_EQ(cpuPortStats.queueInPackets_()->size(), 2);
+  EXPECT_EQ(cpuPortStats.queueDiscardPackets_()->size(), 2);
+
+  for (const auto& queueIdAndName : *cpuPortStats.queueToName_()) {
+    const auto& iter1 =
+        cpuPortStats.queueDiscardPackets_()->find(queueIdAndName.first);
+    EXPECT_TRUE(iter1 != cpuPortStats.queueDiscardPackets_()->end());
+    EXPECT_EQ(iter1->second, 2);
+
+    const auto& iter2 =
+        cpuPortStats.queueInPackets_()->find(queueIdAndName.first);
+    EXPECT_TRUE(iter2 != cpuPortStats.queueInPackets_()->end());
+    EXPECT_EQ(iter2->second, 1);
   }
 }

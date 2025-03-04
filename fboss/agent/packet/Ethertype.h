@@ -8,6 +8,7 @@
  *
  */
 #pragma once
+#include <cinttypes>
 
 /*
  * EtherType

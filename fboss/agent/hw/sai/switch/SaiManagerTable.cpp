@@ -15,6 +15,8 @@
 #include "fboss/agent/hw/sai/switch/ConcurrentIndices.h"
 #include "fboss/agent/hw/sai/switch/SaiAclTableGroupManager.h"
 #include "fboss/agent/hw/sai/switch/SaiAclTableManager.h"
+#include "fboss/agent/hw/sai/switch/SaiArsManager.h"
+#include "fboss/agent/hw/sai/switch/SaiArsProfileManager.h"
 #include "fboss/agent/hw/sai/switch/SaiBridgeManager.h"
 #include "fboss/agent/hw/sai/switch/SaiBufferManager.h"
 #include "fboss/agent/hw/sai/switch/SaiCounterManager.h"
@@ -40,6 +42,8 @@
 #include "fboss/agent/hw/sai/switch/SaiSystemPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiTamManager.h"
 #include "fboss/agent/hw/sai/switch/SaiTunnelManager.h"
+#include "fboss/agent/hw/sai/switch/SaiUdfManager.h"
+#include "fboss/agent/hw/sai/switch/SaiVendorSwitchManager.h"
 #include "fboss/agent/hw/sai/switch/SaiVirtualRouterManager.h"
 #include "fboss/agent/hw/sai/switch/SaiVlanManager.h"
 #include "fboss/agent/hw/sai/switch/SaiWredManager.h"
@@ -65,6 +69,9 @@ void SaiManagerTable::createSaiTableManagers(
       std::make_unique<SaiAclTableGroupManager>(saiStore, this, platform);
   aclTableManager_ =
       std::make_unique<SaiAclTableManager>(saiStore, this, platform);
+  arsManager_ = std::make_unique<SaiArsManager>(saiStore, this, platform);
+  arsProfileManager_ =
+      std::make_unique<SaiArsProfileManager>(saiStore, this, platform);
   bridgeManager_ = std::make_unique<SaiBridgeManager>(saiStore, this, platform);
   bufferManager_ = std::make_unique<SaiBufferManager>(saiStore, this, platform);
   counterManager_ =
@@ -105,17 +112,15 @@ void SaiManagerTable::createSaiTableManagers(
   lagManager_ = std::make_unique<SaiLagManager>(
       saiStore, this, platform, concurrentIndices);
   wredManager_ = std::make_unique<SaiWredManager>(saiStore, this, platform);
-  // CSP CS00011823810
-#if !defined(SAI_VERSION_7_2_0_0_ODP) && !defined(SAI_VERSION_8_2_0_0_ODP) && \
-    !defined(SAI_VERSION_8_2_0_0_DNX_ODP) &&                                  \
-    !defined(SAI_VERSION_8_2_0_0_SIM_ODP) &&                                  \
-    !defined(SAI_VERSION_9_0_EA_SIM_ODP) &&                                   \
-    !defined(SAI_VERSION_9_0_EA_ODP) && !defined(SAI_VERSION_9_0_EA_DNX_ODP)
   tamManager_ = std::make_unique<SaiTamManager>(saiStore, this, platform);
-#endif
   tunnelManager_ = std::make_unique<SaiTunnelManager>(saiStore, this, platform);
   teFlowEntryManager_ =
       std::make_unique<UnsupportedFeatureManager>("EM entries");
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+  udfManager_ = std::make_unique<SaiUdfManager>(saiStore, this, platform);
+#endif
+  vendorSwitchManager_ =
+      std::make_unique<SaiVendorSwitchManager>(saiStore, this, platform);
 }
 
 SaiManagerTable::~SaiManagerTable() {
@@ -157,6 +162,7 @@ void SaiManagerTable::reset(bool skipSwitchManager) {
   // dependency with mirror and can be removed.
   mirrorManager_.reset();
   macsecManager_.reset();
+  systemPortManager_->resetQueues();
   // Reset the qos maps on system port before ports are
   // removed from the system.
   systemPortManager_->resetQosMaps();
@@ -164,16 +170,17 @@ void SaiManagerTable::reset(bool skipSwitchManager) {
   // ports. So before we delete system ports, its required
   // to reset the queue associations.
   portManager_->resetQueues();
-  systemPortManager_.reset();
-  portManager_.reset();
+  portManager_->clearQosPolicy();
   // Hash manager is going away, reset hashes
   switchManager_->resetHashes();
   hashManager_.reset();
   // Qos map manager is going away, reset global qos maps
   switchManager_->resetQosMaps();
-  qosMapManager_.reset();
-  hostifManager_.reset();
   samplePacketManager_.reset();
+
+  switchManager_->resetArsProfile();
+  arsProfileManager_.reset();
+  arsManager_.reset();
 
   // ACL Table Group is going away, reset ingressACL pointing to it
   if (!skipSwitchManager) {
@@ -186,22 +193,43 @@ void SaiManagerTable::reset(bool skipSwitchManager) {
   aclTableGroupManager_.reset();
   aclTableManager_.reset();
 
-  bufferManager_.reset();
+  // aclTable might depends on user defined hostif trap. For example,
+  // to trap packet to a specific CPU queue, some platforms require creating an
+  // ACL with action to set hostif user defined mapping to a specific queue id.
+  hostifManager_.reset();
   wredManager_.reset();
 
-  // CSP CS00011823810
-#if !defined(SAI_VERSION_7_2_0_0_ODP) && !defined(SAI_VERSION_8_2_0_0_ODP) && \
-    !defined(SAI_VERSION_8_2_0_0_DNX_ODP) &&                                  \
-    !defined(SAI_VERSION_8_2_0_0_SIM_ODP) &&                                  \
-    !defined(SAI_VERSION_9_0_EA_SIM_ODP) &&                                   \
-    !defined(SAI_VERSION_9_0_EA_ODP) && !defined(SAI_VERSION_9_0_EA_DNX_ODP)
-  tamManager_.reset();
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  // Must unbind Tam objects before resetting Tam manager.
+  // Note that we can't use SaiTamManager::removeMirrorOnDropReport(), because
+  // it relies on SaiManagerTable, which is undergoing destruction.
+  switchManager_->resetTamObject();
+  for (auto portId : tamManager_->getAllMirrorOnDropPortIds()) {
+    portManager_->resetTamObject(portId);
+  }
 #endif
+  tamManager_.reset();
+
+  // ports may be referenced in acls, reset ports after acls
+  systemPortManager_.reset();
+  portManager_.reset();
+
+  // qos maps and buffer pools are referenced in ports, reset after ports
+  qosMapManager_.reset();
+  bufferManager_.reset();
+
   tunnelManager_.reset();
   queueManager_.reset();
   routeManager_.reset();
   schedulerManager_.reset();
   teFlowEntryManager_.reset();
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+  udfManager_.reset();
+#endif
+
+  vendorSwitchManager_.reset();
+
   if (!skipSwitchManager) {
     switchManager_.reset();
   }
@@ -219,6 +247,20 @@ SaiAclTableManager& SaiManagerTable::aclTableManager() {
 }
 const SaiAclTableManager& SaiManagerTable::aclTableManager() const {
   return *aclTableManager_;
+}
+
+SaiArsManager& SaiManagerTable::arsManager() {
+  return *arsManager_;
+}
+const SaiArsManager& SaiManagerTable::arsManager() const {
+  return *arsManager_;
+}
+
+SaiArsProfileManager& SaiManagerTable::arsProfileManager() {
+  return *arsProfileManager_;
+}
+const SaiArsProfileManager& SaiManagerTable::arsProfileManager() const {
+  return *arsProfileManager_;
 }
 
 SaiBridgeManager& SaiManagerTable::bridgeManager() {
@@ -430,4 +472,21 @@ SaiTunnelManager& SaiManagerTable::tunnelManager() {
 const SaiTunnelManager& SaiManagerTable::tunnelManager() const {
   return *tunnelManager_;
 }
+
+SaiUdfManager& SaiManagerTable::udfManager() {
+  return *udfManager_;
+}
+
+const SaiUdfManager& SaiManagerTable::udfManager() const {
+  return *udfManager_;
+}
+
+SaiVendorSwitchManager& SaiManagerTable::vendorSwitchManager() {
+  return *vendorSwitchManager_;
+}
+
+const SaiVendorSwitchManager& SaiManagerTable::vendorSwitchManager() const {
+  return *vendorSwitchManager_;
+}
+
 } // namespace facebook::fboss

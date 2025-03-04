@@ -10,10 +10,13 @@
 #pragma once
 
 #include <folly/Conv.h>
+#include <folly/ScopeGuard.h>
+#include "fboss/lib/IOStatsRecorder.h"
 #include "fboss/mdio/Phy.h"
 #include "folly/File.h"
 
 #include <cstdint>
+#include <exception>
 #include <mutex>
 
 #include <folly/Synchronized.h>
@@ -23,8 +26,7 @@ namespace {
 constexpr auto kMdioLockFilePath = "/var/lock/mdio";
 }
 
-namespace facebook {
-namespace fboss {
+namespace facebook::fboss {
 
 /*
  * Base classes for managing MDIO reads and writes. There are the
@@ -52,7 +54,7 @@ namespace fboss {
 
 class Mdio {
  public:
-  virtual ~Mdio() {}
+  virtual ~Mdio() = default;
 
   virtual void init(bool /* forceReset */) {}
 
@@ -154,6 +156,16 @@ class MdioController {
       phy::PhyAddress physAddr,
       phy::Cl45DeviceAddress devAddr,
       phy::Cl45RegisterAddress regAddr) {
+    ioStatsRecorder_.recordReadAttempted();
+    SCOPE_EXIT {
+      ioStatsRecorder_.updateReadDownTime();
+    };
+    SCOPE_FAIL {
+      ioStatsRecorder_.recordReadFailed();
+    };
+    SCOPE_SUCCESS {
+      ioStatsRecorder_.recordReadSuccess();
+    };
     return rawIO_.readCl45(physAddr, devAddr, regAddr);
   }
 
@@ -162,6 +174,16 @@ class MdioController {
       phy::Cl45DeviceAddress devAddr,
       phy::Cl45RegisterAddress regAddr,
       phy::Cl45Data data) {
+    ioStatsRecorder_.recordWriteAttempted();
+    SCOPE_EXIT {
+      ioStatsRecorder_.updateWriteDownTime();
+    };
+    SCOPE_FAIL {
+      ioStatsRecorder_.recordWriteFailed();
+    };
+    SCOPE_SUCCESS {
+      ioStatsRecorder_.recordWriteSuccess();
+    };
     rawIO_.writeCl45(physAddr, devAddr, regAddr, data);
   }
 
@@ -170,6 +192,16 @@ class MdioController {
       phy::Cl45DeviceAddress devAddr,
       phy::Cl45RegisterAddress regAddr) {
     auto locked = fully_lock();
+    ioStatsRecorder_.recordReadAttempted();
+    SCOPE_EXIT {
+      ioStatsRecorder_.updateReadDownTime();
+    };
+    SCOPE_FAIL {
+      ioStatsRecorder_.recordReadFailed();
+    };
+    SCOPE_SUCCESS {
+      ioStatsRecorder_.recordReadSuccess();
+    };
     return locked->readCl45(physAddr, devAddr, regAddr);
   }
 
@@ -179,6 +211,16 @@ class MdioController {
       phy::Cl45RegisterAddress regAddr,
       phy::Cl45Data data) {
     auto locked = fully_lock();
+    ioStatsRecorder_.recordWriteAttempted();
+    SCOPE_EXIT {
+      ioStatsRecorder_.updateWriteDownTime();
+    };
+    SCOPE_FAIL {
+      ioStatsRecorder_.recordWriteFailed();
+    };
+    SCOPE_SUCCESS {
+      ioStatsRecorder_.recordWriteSuccess();
+    };
     locked->writeCl45(physAddr, devAddr, regAddr, data);
   }
 
@@ -188,6 +230,10 @@ class MdioController {
 
   folly::EventBase* getEventBase() {
     return eventBase_.get();
+  }
+
+  IOStats getIOStats() {
+    return ioStatsRecorder_.getStats();
   }
 
  public:
@@ -225,6 +271,7 @@ class MdioController {
   std::shared_ptr<folly::File> lockFile_;
   std::unique_ptr<std::thread> controllerThread_{nullptr};
   std::unique_ptr<folly::EventBase> eventBase_;
+  IOStatsRecorder ioStatsRecorder_;
 };
 
 template <typename IO>
@@ -241,5 +288,4 @@ struct MdioDevice {
   const phy::PhyAddress address{0};
 };
 
-} // namespace fboss
-} // namespace facebook
+} // namespace facebook::fboss

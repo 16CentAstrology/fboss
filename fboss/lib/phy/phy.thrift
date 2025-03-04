@@ -13,6 +13,8 @@ include "fboss/qsfp_service/if/transceiver.thrift"
 include "common/fb303/if/fb303.thrift"
 include "fboss/agent/if/fboss.thrift"
 include "fboss/lib/phy/prbs.thrift"
+include "fboss/lib/if/io_stats.thrift"
+include "thrift/annotation/thrift.thrift"
 
 enum IpModulation {
   NRZ = 1,
@@ -85,6 +87,7 @@ enum InterfaceType {
   CR = 10,
   CR2 = 11,
   CR4 = 12,
+  CR8 = 13,
   // Optics
   SR = 20,
   SR4 = 21,
@@ -109,6 +112,11 @@ enum Side {
   LINE = 2,
 }
 
+enum Direction {
+  TRANSMIT = 1,
+  RECEIVE = 2,
+}
+
 enum Loopback {
   ON = 1,
   OFF = 2,
@@ -121,6 +129,7 @@ struct TxSettings {
   4: i16 post = 0;
   5: i16 post2 = 0;
   6: i16 post3 = 0;
+  7: optional i16 lutMode;
   8: optional i16 driveCurrent;
   9: optional i32 diffEncoderEn;
   10: optional i32 digGain;
@@ -134,6 +143,17 @@ struct TxSettings {
   18: optional i32 setPrecode;
   19: optional i32 pre3;
   20: optional i32 driverSwing;
+  21: optional i32 innerEyeNeg;
+  22: optional i32 innerEyePos;
+  23: optional i32 ffeCoeff5;
+  24: optional i32 ldoBypass;
+  25: optional i32 firPre1;
+  26: optional i32 firPre2;
+  27: optional i32 firPre3;
+  28: optional i32 firMain;
+  29: optional i32 firPost1;
+  30: optional i32 firPost2;
+  31: optional i32 firPost3;
 }
 
 struct RxSettings {
@@ -152,6 +172,31 @@ struct RxSettings {
   13: optional i32 thpEn;
   14: optional i32 dcTermEn;
   15: optional i32 setPrecode;
+  16: optional i32 instgBoost1Start;
+  17: optional i32 instgBoost1Step;
+  18: optional i32 instgBoost1Stop;
+  19: optional i32 instgBoost2OrHrStart;
+  20: optional i32 instgBoost2OrHrStep;
+  21: optional i32 instgBoost2OrHrStop;
+  22: optional i32 instgC1Start1p7;
+  23: optional i32 instgC1Step1p7;
+  24: optional i32 instgC1Stop1p7;
+  25: optional i32 instgDfeStart1p7;
+  26: optional i32 instgDfeStep1p7;
+  27: optional i32 instgDfeStop1p7;
+  28: optional i32 enableScanSelection;
+  29: optional i32 instgScanUseSrSettings;
+  30: optional i32 cdrCfgOvEn;
+  31: optional i32 cdrTdet1stOrdStepOvVal;
+  32: optional i32 cdrTdet2ndOrdStepOvVal;
+  33: optional i32 cdrTdetFineStepOvVal;
+  34: optional i32 ldoBypass;
+  35: optional i32 ffeLengthBitmap;
+  36: optional i32 instgEnableScan;
+  37: optional i32 dcwEn;
+  38: optional i32 dcwStepCoarseOvVal;
+  39: optional i32 dcwStepFineOvVal;
+  40: optional i32 dcwOvEn;
 }
 
 struct LaneMap {
@@ -219,6 +264,7 @@ enum DataPlanePhyChipType {
   IPHY = 1,
   XPHY = 2,
   TRANSCEIVER = 3,
+  BACKPLANE = 4,
 }
 
 struct DataPlanePhyChip {
@@ -297,6 +343,9 @@ struct PrbsLaneStats {
   5: i32 numLossOfLock;
   6: i32 timeSinceLastLocked;
   7: i32 timeSinceLastClear;
+  8: optional double snr;
+  9: optional double maxSnr;
+  10: i32 timeCollected;
 }
 
 struct PrbsStats {
@@ -308,25 +357,48 @@ struct PrbsStats {
 
 // structs for Phy(both IPHY and XPHY) diagnostic info
 struct PhyInfo {
-  1: DataPlanePhyChip phyChip (deprecated = "Moved to state/stats");
-  2: optional PhyFwVersion fwVersion (deprecated = "Moved to state/stats");
-  3: switch_config.PortSpeed speed (deprecated = "Moved to state/stats");
-  4: string name (deprecated = "Moved to state/stats"); // port name
-  5: optional bool linkState (deprecated = "Moved to state/stats");
-  6: optional i64 linkFlapCount (deprecated = "Moved to state/stats");
-  10: optional PhySideInfo system (deprecated = "Moved to state/stats");
-  11: PhySideInfo line (deprecated = "Moved to state/stats");
-  12: i32 timeCollected (deprecated = "Moved to state/stats"); // Time the diagnostic info was collected at
-  13: optional i32 switchID (deprecated = "Moved to state/stats");
-  // During the transition, the new state and states will be optional.
-  // Both new and old fields will be filled in by QSFP service. Users
-  // should checked the new fields and use it if available but fall back
-  // to old fields if it's not. Once all users can understand the new
-  // fields, we can then remove the old fields and make the new fields
-  // non-optional. If making changes during this transition, please
-  // make sure to change both the new and the old structs.
-  14: optional PhyState state;
-  15: optional PhyStats stats;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  1: optional DataPlanePhyChip phyChip;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  2: optional PhyFwVersion fwVersion;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  3: switch_config.PortSpeed speed;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  4: string name; // port name
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  5: optional bool linkState;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  6: optional i64 linkFlapCount;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  10: optional PhySideInfo system;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  11: optional PhySideInfo line;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  12: i32 timeCollected; // Time the diagnostic info was collected at
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  13: optional i32 switchID;
+  14: PhyState state;
+  15: PhyStats stats;
 }
 
 struct PhySideInfo {
@@ -387,6 +459,12 @@ struct RsFecInfo {
   // This also means that the preFECBer could be approximated as well.
   3: i64 correctedBits;
   4: double preFECBer;
+  // Map of symbol error to number of codewords with that many symbol errors.
+  // Stores cumulative counts
+  5: map<i16, i64> codewordStats;
+  6: optional i16 fecTail;
+  // maxSupportedFecTail = 7 for RS-528, 15 for RS-544
+  7: optional i16 maxSupportedFecTail;
 }
 
 struct PmdInfo {
@@ -441,6 +519,8 @@ struct LaneStats {
 struct LinkFaultStatus {
   1: bool localFault;
   2: bool remoteFault;
+  3: bool highCrcErrorRateLive;
+  4: i32 highCrcErrorRateChangedCount = 0;
 }
 
 struct RsInfo {
@@ -463,12 +543,26 @@ struct PhyStats {
   1: optional PhySideStats system;
   2: PhySideStats line;
   3: optional i64 linkFlapCount;
+  9: io_stats.IOStats ioStats;
   10: i32 timeCollected;
 }
 
 union LinkSnapshot {
   1: transceiver.TransceiverInfo transceiverInfo;
   2: PhyInfo phyInfo;
+}
+
+struct TxRxEnableRequest {
+  1: string portName;
+  2: PortComponent component;
+  3: Direction direction;
+  4: bool enable;
+  5: optional i32 laneMask;
+}
+
+struct TxRxEnableResponse {
+  1: string portName;
+  2: bool success;
 }
 
 /*
@@ -482,6 +576,9 @@ service FbossCommonPhyCtrl extends fb303.FacebookService {
     1: fboss.FbossBaseError error,
   );
   map<string, PhyInfo> getInterfacePhyInfo(1: list<string> portNames) throws (
+    1: fboss.FbossBaseError error,
+  );
+  map<string, PhyInfo> getAllInterfacePhyInfo() throws (
     1: fboss.FbossBaseError error,
   );
   /*
@@ -531,5 +628,13 @@ service FbossCommonPhyCtrl extends fb303.FacebookService {
   void clearInterfacePrbsStats(
     1: string portName,
     2: PortComponent component,
+  ) throws (1: fboss.FbossBaseError error);
+
+  /*
+   * Enable/Disable the port's channels Tx/Rx at ASIC/PHY/Transcciver on
+   * system/line side
+   */
+  list<TxRxEnableResponse> setInterfaceTxRx(
+    1: list<TxRxEnableRequest> txRxEnableRequests,
   ) throws (1: fboss.FbossBaseError error);
 }

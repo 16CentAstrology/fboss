@@ -10,15 +10,14 @@
 #pragma once
 
 #include <folly/io/Cursor.h>
+#include <cstdint>
 #include "fboss/agent/Utils.h"
 #include "fboss/agent/packet/HdrParseError.h"
 #include "fboss/agent/types.h"
 
-namespace folly {
-namespace io {
+namespace folly::io {
 class Cursor;
-}
-} // namespace folly
+} // namespace folly::io
 
 constexpr int PTP_DELAY_REQUEST_MSG_SIZE = 44;
 constexpr int PTP_UDP_EVENT_PORT = 319;
@@ -56,6 +55,9 @@ struct PTPHeader {
 
   explicit PTPHeader(folly::io::Cursor* cursor);
   uint64_t getCorrectionField();
+  PTPMessageType getPtpType();
+  PTPVersion getPtpVersion();
+  uint16_t getPtpMessageLength();
 
   uint8_t ptpType_{static_cast<uint8_t>(
       PTPMessageType::PTP_UNKNOWN)}; // messageType: upper 4 bits only

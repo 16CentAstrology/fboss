@@ -16,6 +16,8 @@
 #include "fboss/agent/SysError.h"
 #include "fboss/agent/hw/sai/api/LoggingUtil.h"
 #include "fboss/agent/hw/sai/tracer/AclApiTracer.h"
+#include "fboss/agent/hw/sai/tracer/ArsApiTracer.h"
+#include "fboss/agent/hw/sai/tracer/ArsProfileApiTracer.h"
 #include "fboss/agent/hw/sai/tracer/BridgeApiTracer.h"
 #include "fboss/agent/hw/sai/tracer/BufferApiTracer.h"
 #include "fboss/agent/hw/sai/tracer/CounterApiTracer.h"
@@ -41,7 +43,10 @@
 #include "fboss/agent/hw/sai/tracer/SwitchApiTracer.h"
 #include "fboss/agent/hw/sai/tracer/SystemPortApiTracer.h"
 #include "fboss/agent/hw/sai/tracer/TamApiTracer.h"
+#include "fboss/agent/hw/sai/tracer/TamEventAgingGroupApiTracer.h" // NOLINT(facebook-unused-include-check)
 #include "fboss/agent/hw/sai/tracer/TunnelApiTracer.h"
+#include "fboss/agent/hw/sai/tracer/UdfApiTracer.h"
+#include "fboss/agent/hw/sai/tracer/VendorSwitchApiTracer.h" // NOLINT(facebook-unused-include-check)
 #include "fboss/agent/hw/sai/tracer/VirtualRouterApiTracer.h"
 #include "fboss/agent/hw/sai/tracer/VlanApiTracer.h"
 #include "fboss/agent/hw/sai/tracer/WredApiTracer.h"
@@ -104,6 +109,11 @@ DEFINE_int32(
     100,
     "Log timeout value in milliseconds. Logger will periodically"
     "flush logs even if the buffer is not full");
+
+DEFINE_bool(
+    log_variable_name,
+    false,
+    "Flag to indicate whether to log variable names or simply object ID");
 
 using facebook::fboss::SaiTracer;
 using folly::to;
@@ -187,6 +197,31 @@ sai_status_t __wrap_sai_api_query(
     return rv;
   }
 
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  if (UNLIKELY(sai_api_id >= SAI_API_MAX)) {
+    switch (static_cast<sai_api_extensions_t>(sai_api_id)) {
+      case SAI_API_TAM_EVENT_AGING_GROUP:
+        SaiTracer::getInstance()->tamEventAgingGroupApi_ =
+            static_cast<sai_tam_event_aging_group_api_t*>(*api_method_table);
+        *api_method_table = facebook::fboss::wrappedTamEventAgingGroupApi();
+        SaiTracer::getInstance()->logApiQuery(
+            sai_api_id, "tam_event_aging_group_api");
+        break;
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+      case SAI_API_VENDOR_SWITCH:
+        SaiTracer::getInstance()->vendorSwitchApi_ =
+            static_cast<sai_vendor_switch_api_t*>(*api_method_table);
+        *api_method_table = facebook::fboss::wrappedVendorSwitchApi();
+        SaiTracer::getInstance()->logApiQuery(sai_api_id, "vendor_switch_api");
+        break;
+#endif
+      default:
+        break;
+    }
+    return rv;
+  }
+#endif
+
   switch (sai_api_id) {
     case SAI_API_ACL:
       SaiTracer::getInstance()->aclApi_ =
@@ -194,6 +229,20 @@ sai_status_t __wrap_sai_api_query(
       *api_method_table = facebook::fboss::wrappedAclApi();
       SaiTracer::getInstance()->logApiQuery(sai_api_id, "acl_api");
       break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+    case SAI_API_ARS:
+      SaiTracer::getInstance()->arsApi_ =
+          static_cast<sai_ars_api_t*>(*api_method_table);
+      *api_method_table = facebook::fboss::wrappedArsApi();
+      SaiTracer::getInstance()->logApiQuery(sai_api_id, "ars_api");
+      break;
+    case SAI_API_ARS_PROFILE:
+      SaiTracer::getInstance()->arsProfileApi_ =
+          static_cast<sai_ars_profile_api_t*>(*api_method_table);
+      *api_method_table = facebook::fboss::wrappedArsProfileApi();
+      SaiTracer::getInstance()->logApiQuery(sai_api_id, "ars_profile_api");
+      break;
+#endif
     case SAI_API_BRIDGE:
       SaiTracer::getInstance()->bridgeApi_ =
           static_cast<sai_bridge_api_t*>(*api_method_table);
@@ -344,6 +393,12 @@ sai_status_t __wrap_sai_api_query(
       *api_method_table = facebook::fboss::wrappedTunnelApi();
       SaiTracer::getInstance()->logApiQuery(sai_api_id, "tunnel_api");
       break;
+    case SAI_API_UDF:
+      SaiTracer::getInstance()->udfApi_ =
+          static_cast<sai_udf_api_t*>(*api_method_table);
+      *api_method_table = facebook::fboss::wrappedUdfApi();
+      SaiTracer::getInstance()->logApiQuery(sai_api_id, "udf_api");
+      break;
     case SAI_API_VIRTUAL_ROUTER:
       SaiTracer::getInstance()->virtualRouterApi_ =
           static_cast<sai_virtual_router_api_t*>(*api_method_table);
@@ -367,6 +422,7 @@ sai_status_t __wrap_sai_api_query(
       // funtion here
       break;
   }
+
   return rv;
 }
 
@@ -437,6 +493,8 @@ sai_status_t __wrap_sai_get_object_key(
 namespace {
 
 folly::Singleton<facebook::fboss::SaiTracer> _saiTracer;
+constexpr std::string_view kGlobalVarStart = "/* Global Variables Start */";
+constexpr std::string_view kGlobalVarEnd = "/* Global Variables End */";
 
 } // namespace
 
@@ -528,7 +586,9 @@ void SaiTracer::logApiQuery(sai_api_t api_id, const std::string& api_var) {
   init_api_.emplace(api_id, api_var);
 
   writeToFile(
-      {to<string>("sai_", api_var, "_t* ", api_var),
+      {to<string>(kGlobalVarStart),
+       to<string>("sai_", api_var, "_t* ", api_var),
+       to<string>(kGlobalVarEnd),
        to<string>(
            "sai_api_query((sai_api_t)", api_id, ",(void**)&", api_var, ")"),
        to<string>(
@@ -866,7 +926,9 @@ void SaiTracer::logRemoveFn(
   writeToFile(lines, /*linefeed*/ false);
 
   // Remove object from variables_
-  variables_.erase(remove_object_id);
+  if (FLAGS_log_variable_name) {
+    variables_.erase(remove_object_id);
+  }
 }
 
 void SaiTracer::logRouteEntrySetAttrFn(
@@ -986,9 +1048,8 @@ void SaiTracer::logInsegEntrySetAttrFn(
   writeToFile(lines);
 }
 
-void SaiTracer::logGetAttrFn(
-    const string& fn_name,
-    sai_object_id_t get_object_id,
+// Prior to GET calls, log the attributes used for GET.
+void SaiTracer::logAttrPreGet(
     uint32_t attr_count,
     const sai_attribute_t* attr,
     sai_object_type_t object_type) {
@@ -996,22 +1057,42 @@ void SaiTracer::logGetAttrFn(
     return;
   }
 
-  vector<string> lines = setAttrList(attr, attr_count, object_type);
-  lines.push_back(
-      to<string>("memset(get_attribute,0,ATTR_SIZE*", maxAttrCount_, ")"));
+  writeToFile(std::move(setAttrList(attr, attr_count, object_type, 0)), false);
+}
 
-  // Make getAttribute call
-  lines.push_back(to<string>(
-      "rv=",
-      folly::get_or_throw(
-          fnPrefix_, object_type, "Unsupported Sai Object type in Sai Tracer"),
-      fn_name,
-      "(",
-      getVariable(get_object_id),
-      ",",
-      attr_count,
-      ",get_attribute)"));
+void SaiTracer::logGetAttrFn(
+    const string& fn_name,
+    sai_object_id_t get_object_id,
+    uint32_t attr_count,
+    const sai_attribute_t* attr,
+    sai_object_type_t object_type,
+    sai_status_t rv) {
+  if (!FLAGS_enable_replayer || !FLAGS_enable_get_attr_log) {
+    return;
+  }
 
+  // Make getAttribute call and copy results to get_attribute
+  vector<string> lines{
+      to<string>(
+          "rv=",
+          folly::get_or_throw(
+              fnPrefix_,
+              object_type,
+              "Unsupported Sai Object type in Sai Tracer"),
+          fn_name,
+          "(",
+          getVariable(get_object_id),
+          ",",
+          attr_count,
+          ",s_a)"),
+      to<string>("memcpy(get_attribute, s_a, ATTR_SIZE*", maxAttrCount_, ")")};
+
+  // Log the values retrieved at runtime
+  auto runtimeAttr = setAttrList(attr, attr_count, object_type, rv);
+  lines.insert(lines.end(), runtimeAttr.begin(), runtimeAttr.end());
+
+  // Compare values
+  lines.push_back(to<string>("attrCheck(get_attribute, s_a, ", numCalls_, ")"));
   writeToFile(lines, /*linefeed*/ false);
 }
 
@@ -1164,9 +1245,6 @@ void SaiTracer::logGetStatsFn(
     lines.push_back(to<string>("counter_list[", i, "]=", counter_ids[i]));
   }
 
-  // Log current timestamp, object id and return value
-  lines.push_back(logTimeAndRv(rv, object_id));
-
   // Make clearStats call
   lines.push_back(to<string>(
       "rv=",
@@ -1181,10 +1259,7 @@ void SaiTracer::logGetStatsFn(
       mode ? to<string>("(sai_stats_mode_t)", mode, ",") : "",
       "(uint64_t*)&counter_vals)"));
 
-  // Check return value to be the same as the original run
-  lines.push_back(rvCheck(rv));
-
-  writeToFile(lines);
+  writeToFile(lines, /*linefeed*/ false);
 }
 
 void SaiTracer::logClearStatsFn(
@@ -1243,7 +1318,8 @@ std::tuple<string, string> SaiTracer::declareVariable(
       varCounts_, object_type, "Unsupported Sai Object type in Sai Tracer")++;
   string varName = to<string>(varPrefix, num);
 
-  return std::make_tuple(to<string>(varType, varName), varName);
+  return std::make_tuple(
+      to<string>("[[maybe_unused]] ", varType, varName), varName);
 }
 
 string SaiTracer::getVariable(sai_object_id_t object_id) {
@@ -1253,7 +1329,9 @@ string SaiTracer::getVariable(sai_object_id_t object_id) {
   if (object_id == SAI_NULL_OBJECT_ID) {
     return "SAI_NULL_OBJECT_ID";
   }
-
+  if (!FLAGS_log_variable_name) {
+    return to<string>(object_id, "U");
+  }
   auto& varName = variables_[object_id];
   return varName.empty() ? to<string>(object_id, "U") : varName;
 }
@@ -1261,7 +1339,8 @@ string SaiTracer::getVariable(sai_object_id_t object_id) {
 vector<string> SaiTracer::setAttrList(
     const sai_attribute_t* attr_list,
     uint32_t attr_count,
-    sai_object_type_t object_type) {
+    sai_object_type_t object_type,
+    sai_status_t rv) {
   if (!FLAGS_enable_replayer) {
     return {};
   }
@@ -1280,161 +1359,205 @@ vector<string> SaiTracer::setAttrList(
         to<string>(sai_attribute, "[", i, "].id=", attr_list[i].id));
   }
 
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  if (UNLIKELY(object_type >= SAI_OBJECT_TYPE_MAX)) {
+    switch (static_cast<sai_object_type_extensions_t>(object_type)) {
+      case SAI_OBJECT_TYPE_TAM_EVENT_AGING_GROUP:
+        setTamEventAgingGroupAttributes(attr_list, attr_count, attrLines, rv);
+        break;
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+      case SAI_OBJECT_TYPE_VENDOR_SWITCH:
+        setVendorSwitchAttributes(attr_list, attr_count, attrLines, rv);
+        break;
+#endif
+      default:
+        break;
+    }
+    return attrLines;
+  }
+#endif
+
   // Call functions defined in *ApiTracer.h to serialize attributes
   // that are specific to each Sai object type
   switch (object_type) {
     case SAI_OBJECT_TYPE_ACL_COUNTER:
-      setAclCounterAttributes(attr_list, attr_count, attrLines);
+      setAclCounterAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_ACL_ENTRY:
-      setAclEntryAttributes(attr_list, attr_count, attrLines);
+      setAclEntryAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_ACL_TABLE:
-      setAclTableAttributes(attr_list, attr_count, attrLines);
+      setAclTableAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_ACL_TABLE_GROUP:
-      setAclTableGroupAttributes(attr_list, attr_count, attrLines);
+      setAclTableGroupAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_ACL_TABLE_GROUP_MEMBER:
-      setAclTableGroupMemberAttributes(attr_list, attr_count, attrLines);
+      setAclTableGroupMemberAttributes(attr_list, attr_count, attrLines, rv);
       break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+    case SAI_OBJECT_TYPE_ARS:
+      setArsAttributes(attr_list, attr_count, attrLines, rv);
+      break;
+    case SAI_OBJECT_TYPE_ARS_PROFILE:
+      setArsProfileAttributes(attr_list, attr_count, attrLines, rv);
+      break;
+#endif
     case SAI_OBJECT_TYPE_BRIDGE:
-      setBridgeAttributes(attr_list, attr_count, attrLines);
+      setBridgeAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_BRIDGE_PORT:
-      setBridgePortAttributes(attr_list, attr_count, attrLines);
+      setBridgePortAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_BUFFER_POOL:
-      setBufferPoolAttributes(attr_list, attr_count, attrLines);
+      setBufferPoolAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_BUFFER_PROFILE:
-      setBufferProfileAttributes(attr_list, attr_count, attrLines);
+      setBufferProfileAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_COUNTER:
-      setCounterAttributes(attr_list, attr_count, attrLines);
+      setCounterAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_DEBUG_COUNTER:
-      setDebugCounterAttributes(attr_list, attr_count, attrLines);
+      setDebugCounterAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_FDB_ENTRY:
-      setFdbEntryAttributes(attr_list, attr_count, attrLines);
+      setFdbEntryAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_HASH:
-      setHashAttributes(attr_list, attr_count, attrLines);
+      setHashAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_HOSTIF_PACKET:
-      setHostifPacketAttributes(attr_list, attr_count, attrLines);
+      setHostifPacketAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_HOSTIF_TRAP:
-      setHostifTrapAttributes(attr_list, attr_count, attrLines);
+      setHostifTrapAttributes(attr_list, attr_count, attrLines, rv);
+      break;
+    case SAI_OBJECT_TYPE_HOSTIF_USER_DEFINED_TRAP:
+      setHostifUserDefinedTrapAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_HOSTIF_TRAP_GROUP:
-      setHostifTrapGroupAttributes(attr_list, attr_count, attrLines);
+      setHostifTrapGroupAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_INSEG_ENTRY:
-      setInsegEntryAttributes(attr_list, attr_count, attrLines);
+      setInsegEntryAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_INGRESS_PRIORITY_GROUP:
-      setIngressPriorityGroupAttributes(attr_list, attr_count, attrLines);
+      setIngressPriorityGroupAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_LAG:
-      setLagAttributes(attr_list, attr_count, attrLines);
+      setLagAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_LAG_MEMBER:
-      setLagMemberAttributes(attr_list, attr_count, attrLines);
+      setLagMemberAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_MACSEC:
-      setMacsecAttributes(attr_list, attr_count, attrLines);
+      setMacsecAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_MACSEC_PORT:
-      setMacsecPortAttributes(attr_list, attr_count, attrLines);
+      setMacsecPortAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_MACSEC_FLOW:
-      setMacsecFlowAttributes(attr_list, attr_count, attrLines);
+      setMacsecFlowAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_MACSEC_SA:
-      setMacsecSAAttributes(attr_list, attr_count, attrLines);
+      setMacsecSAAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_MACSEC_SC:
-      setMacsecSCAttributes(attr_list, attr_count, attrLines);
+      setMacsecSCAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_MIRROR_SESSION:
-      setMirrorSessionAttributes(attr_list, attr_count, attrLines);
+      setMirrorSessionAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_NEIGHBOR_ENTRY:
-      setNeighborEntryAttributes(attr_list, attr_count, attrLines);
+      setNeighborEntryAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_NEXT_HOP:
-      setNextHopAttributes(attr_list, attr_count, attrLines);
+      setNextHopAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_NEXT_HOP_GROUP:
-      setNextHopGroupAttributes(attr_list, attr_count, attrLines);
+      setNextHopGroupAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_NEXT_HOP_GROUP_MEMBER:
-      setNextHopGroupMemberAttributes(attr_list, attr_count, attrLines);
+      setNextHopGroupMemberAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_PORT:
-      setPortAttributes(attr_list, attr_count, attrLines);
+      setPortAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_PORT_SERDES:
-      setPortSerdesAttributes(attr_list, attr_count, attrLines);
+      setPortSerdesAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_PORT_CONNECTOR:
-      setPortConnectorAttributes(attr_list, attr_count, attrLines);
+      setPortConnectorAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_QOS_MAP:
-      setQosMapAttributes(attr_list, attr_count, attrLines);
+      setQosMapAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_QUEUE:
-      setQueueAttributes(attr_list, attr_count, attrLines);
+      setQueueAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_ROUTE_ENTRY:
-      setRouteEntryAttributes(attr_list, attr_count, attrLines);
+      setRouteEntryAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_ROUTER_INTERFACE:
-      setRouterInterfaceAttributes(attr_list, attr_count, attrLines);
+      setRouterInterfaceAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_SAMPLEPACKET:
-      setSamplePacketAttributes(attr_list, attr_count, attrLines);
+      setSamplePacketAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_SCHEDULER:
-      setSchedulerAttributes(attr_list, attr_count, attrLines);
+      setSchedulerAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_SWITCH:
-      setSwitchAttributes(attr_list, attr_count, attrLines);
+      setSwitchAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_SYSTEM_PORT:
-      setSystemPortAttributes(attr_list, attr_count, attrLines);
+      setSystemPortAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_TAM:
-      setTamAttributes(attr_list, attr_count, attrLines);
+      setTamAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_TAM_EVENT:
-      setTamEventAttributes(attr_list, attr_count, attrLines);
+      setTamEventAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_TAM_EVENT_ACTION:
-      setTamEventActionAttributes(attr_list, attr_count, attrLines);
+      setTamEventActionAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_TAM_REPORT:
-      setTamReportAttributes(attr_list, attr_count, attrLines);
+      setTamReportAttributes(attr_list, attr_count, attrLines, rv);
+      break;
+    case SAI_OBJECT_TYPE_TAM_TRANSPORT:
+      setTamTransportAttributes(attr_list, attr_count, attrLines, rv);
+      break;
+    case SAI_OBJECT_TYPE_TAM_COLLECTOR:
+      setTamCollectorAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_TUNNEL:
-      setTunnelAttributes(attr_list, attr_count, attrLines);
+      setTunnelAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_TUNNEL_TERM_TABLE_ENTRY:
-      setTunnelTermAttributes(attr_list, attr_count, attrLines);
+      setTunnelTermAttributes(attr_list, attr_count, attrLines, rv);
+      break;
+    case SAI_OBJECT_TYPE_UDF:
+      setUdfAttributes(attr_list, attr_count, attrLines, rv);
+      break;
+    case SAI_OBJECT_TYPE_UDF_MATCH:
+      setUdfMatchAttributes(attr_list, attr_count, attrLines, rv);
+      break;
+    case SAI_OBJECT_TYPE_UDF_GROUP:
+      setUdfGroupAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_VIRTUAL_ROUTER:
-      setVirtualRouterAttributes(attr_list, attr_count, attrLines);
+      setVirtualRouterAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_VLAN:
-      setVlanAttributes(attr_list, attr_count, attrLines);
+      setVlanAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_VLAN_MEMBER:
-      setVlanMemberAttributes(attr_list, attr_count, attrLines);
+      setVlanMemberAttributes(attr_list, attr_count, attrLines, rv);
       break;
     case SAI_OBJECT_TYPE_WRED:
-      setWredAttributes(attr_list, attr_count, attrLines);
+      setWredAttributes(attr_list, attr_count, attrLines, rv);
       break;
     default:
       // TODO: For other APIs, create new API wrappers and invoke
@@ -1497,6 +1620,10 @@ void SaiTracer::setNeighborEntry(
   lines.push_back(
       to<string>("n_e.rif_id=", getVariable(neighbor_entry->rif_id)));
 
+  folly::IPAddress ipAddress =
+      facebook::fboss::fromSaiIpAddress(neighbor_entry->ip_address);
+  lines.push_back(to<string>("// ", ipAddress.str()));
+
   if (neighbor_entry->ip_address.addr_family == SAI_IP_ADDR_FAMILY_IPV4) {
     lines.push_back("n_e.ip_address.addr_family=SAI_IP_ADDR_FAMILY_IPV4");
     lines.push_back(to<string>(
@@ -1527,6 +1654,10 @@ void SaiTracer::setRouteEntry(
   lines.push_back(
       to<string>("r_e.switch_id=", getVariable(route_entry->switch_id)));
   lines.push_back(to<string>("r_e.vr_id=", getVariable(route_entry->vr_id)));
+
+  auto [ipAddr, mask] =
+      facebook::fboss::fromSaiIpPrefix(route_entry->destination);
+  lines.push_back(to<string>("// ", ipAddr.str(), "/", mask));
 
   if (route_entry->destination.addr_family == SAI_IP_ADDR_FAMILY_IPV4) {
     lines.push_back("r_e.destination.addr_family=SAI_IP_ADDR_FAMILY_IPV4");
@@ -1651,7 +1782,7 @@ void SaiTracer::logPostInvocation(
     std::optional<std::string> varName) {
   // In the case of create fn, objectID is known after invocation.
   // Therefore, add it to the variable mapping here.
-  if (varName) {
+  if (varName && FLAGS_log_variable_name) {
     variables_.emplace(object_id, *varName);
   }
 
@@ -1668,40 +1799,50 @@ void SaiTracer::logPostInvocation(
 void SaiTracer::setupGlobals() {
   // TODO(zecheng): Handle list size that's larger than 512 bytes.
   vector<string> globalVar = {to<string>(
-      "sai_attribute_t *s_a=(sai_attribute_t*)malloc(ATTR_SIZE * ",
+      to<string>(kGlobalVarStart),
+      "\n",
+      "[[maybe_unused]] sai_attribute_t *s_a=(sai_attribute_t*)malloc(ATTR_SIZE * ",
       FLAGS_default_list_size,
       ")")};
 
   if (FLAGS_enable_get_attr_log) {
     globalVar.push_back(to<string>(
-        "sai_attribute_t *get_attribute=(sai_attribute_t*)malloc(ATTR_SIZE * ",
+        "[[maybe_unused]] sai_attribute_t *get_attribute=(sai_attribute_t*)malloc(ATTR_SIZE * ",
         FLAGS_default_list_size,
         ")"));
   }
 
   for (int i = 0; i < FLAGS_default_list_count; i++) {
-    globalVar.push_back(
-        to<string>("int list_", i, "[", FLAGS_default_list_size, "]"));
+    globalVar.push_back(to<string>(
+        "[[maybe_unused]] int list_", i, "[", FLAGS_default_list_size, "]"));
   }
 
-  globalVar.push_back("uint8_t* mac");
-  globalVar.push_back("uint8_t* u");
-  globalVar.push_back("sai_status_t rv");
-  globalVar.push_back("sai_route_entry_t r_e");
-  globalVar.push_back("sai_neighbor_entry_t n_e");
-  globalVar.push_back("sai_fdb_entry_t f_e");
-  globalVar.push_back("sai_inseg_entry_t i_e");
-  globalVar.push_back("uint32_t expected_object_count");
-  globalVar.push_back("uint32_t object_count");
-  globalVar.push_back("std::vector<sai_object_key_t> object_list");
+  globalVar.push_back("[[maybe_unused]] uint8_t* mac");
+  globalVar.push_back("[[maybe_unused]] uint8_t* u");
+  globalVar.push_back("[[maybe_unused]] sai_status_t rv");
+  globalVar.push_back("[[maybe_unused]] sai_route_entry_t r_e");
+  globalVar.push_back("[[maybe_unused]] sai_neighbor_entry_t n_e");
+  globalVar.push_back("[[maybe_unused]] sai_fdb_entry_t f_e");
+  globalVar.push_back("[[maybe_unused]] sai_inseg_entry_t i_e");
+  globalVar.push_back("[[maybe_unused]] uint32_t expected_object_count");
+  globalVar.push_back("[[maybe_unused]] uint32_t object_count");
+  globalVar.push_back(
+      "[[maybe_unused]] std::vector<sai_object_key_t> object_list");
   globalVar.push_back(to<string>(
-      "sai_status_t object_statuses[", FLAGS_default_list_size, "]"));
-  globalVar.push_back(
-      to<string>("sai_object_id_t obj_list[", FLAGS_default_list_size, "]"));
-  globalVar.push_back(
-      to<string>("sai_stat_id_t counter_list[", FLAGS_default_list_size, "]"));
-  globalVar.push_back(
-      to<string>("uint64_t counter_vals[", FLAGS_default_list_size, "]"));
+      "[[maybe_unused]] sai_status_t object_statuses[",
+      FLAGS_default_list_size,
+      "]"));
+  globalVar.push_back(to<string>(
+      "[[maybe_unused]] sai_object_id_t obj_list[",
+      FLAGS_default_list_size,
+      "]"));
+  globalVar.push_back(to<string>(
+      "[[maybe_unused]] sai_stat_id_t counter_list[",
+      FLAGS_default_list_size,
+      "]"));
+  globalVar.push_back(to<string>(
+      "[[maybe_unused]] uint64_t counter_vals[", FLAGS_default_list_size, "]"));
+  globalVar.push_back(to<string>(kGlobalVarEnd));
   writeToFile(globalVar);
 
   maxAttrCount_ = FLAGS_default_list_size;
@@ -1723,6 +1864,10 @@ void SaiTracer::initVarCounts() {
   varCounts_.emplace(SAI_OBJECT_TYPE_ACL_TABLE, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_ACL_TABLE_GROUP, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_ACL_TABLE_GROUP_MEMBER, 0);
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+  varCounts_.emplace(SAI_OBJECT_TYPE_ARS, 0);
+  varCounts_.emplace(SAI_OBJECT_TYPE_ARS_PROFILE, 0);
+#endif
   varCounts_.emplace(SAI_OBJECT_TYPE_BRIDGE, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_BRIDGE_PORT, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_BUFFER_POOL, 0);
@@ -1732,6 +1877,7 @@ void SaiTracer::initVarCounts() {
   varCounts_.emplace(SAI_OBJECT_TYPE_HASH, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_HOSTIF, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_HOSTIF_TRAP, 0);
+  varCounts_.emplace(SAI_OBJECT_TYPE_HOSTIF_USER_DEFINED_TRAP, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_HOSTIF_TRAP_GROUP, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_INGRESS_PRIORITY_GROUP, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_LAG, 0);
@@ -1757,13 +1903,25 @@ void SaiTracer::initVarCounts() {
   varCounts_.emplace(SAI_OBJECT_TYPE_SCHEDULER_GROUP, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_SWITCH, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_SYSTEM_PORT, 0);
+  varCounts_.emplace(SAI_OBJECT_TYPE_TAM_COLLECTOR, 0);
+  varCounts_.emplace(SAI_OBJECT_TYPE_TAM_TRANSPORT, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_TAM_REPORT, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_TAM_EVENT_ACTION, 0);
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  varCounts_.emplace(
+      static_cast<sai_object_type_t>(SAI_OBJECT_TYPE_TAM_EVENT_AGING_GROUP), 0);
+#endif
   varCounts_.emplace(SAI_OBJECT_TYPE_TAM_EVENT, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_TAM, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_TUNNEL, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_TUNNEL_TERM_TABLE_ENTRY, 0);
+  varCounts_.emplace(SAI_OBJECT_TYPE_UDF, 0);
+  varCounts_.emplace(SAI_OBJECT_TYPE_UDF_MATCH, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_UDF_GROUP, 0);
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+  varCounts_.emplace(
+      static_cast<sai_object_type_t>(SAI_OBJECT_TYPE_VENDOR_SWITCH), 0);
+#endif
   varCounts_.emplace(SAI_OBJECT_TYPE_VIRTUAL_ROUTER, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_VLAN, 0);
   varCounts_.emplace(SAI_OBJECT_TYPE_VLAN_MEMBER, 0);

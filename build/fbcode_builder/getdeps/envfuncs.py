@@ -3,6 +3,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import os
 import shlex
 import sys
@@ -32,7 +34,7 @@ class Env(object):
         # project uses `unicode_literals`.  `subprocess` will raise an error
         # if the environment that it is passed has a mixture of byte and
         # unicode strings.
-        # It is simplest to force everthing to be `str` for the sake of
+        # It is simplest to force everything to be `str` for the sake of
         # consistency.
         key = str(key)
         if sys.platform.startswith("win"):

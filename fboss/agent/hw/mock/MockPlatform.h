@@ -9,11 +9,12 @@
  */
 #pragma once
 
-#include <folly/experimental/TestUtil.h>
+#include <folly/testing/TestUtil.h>
 #include "fboss/agent/Platform.h"
 #include "fboss/agent/ThriftHandler.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/hw/switch_asics/MockAsic.h"
+#include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/types.h"
 
@@ -40,32 +41,34 @@ class MockPlatform : public Platform {
   ~MockPlatform() override;
 
   HwSwitch* getHwSwitch() const override;
-  std::string getVolatileStateDir() const override;
-  std::string getPersistentStateDir() const override;
-  std::unique_ptr<HwTestHandle> createTestHandle(std::unique_ptr<SwSwitch> sw);
   HwAsic* getAsic() const override;
   static const folly::MacAddress& getMockLocalMac();
   static const folly::IPAddressV6& getMockLinkLocalIp6();
   PlatformPort* getPlatformPort(PortID id) const override;
   HwSwitchWarmBootHelper* getWarmBootHelper() override;
+  const AgentDirectoryUtil* getDirectoryUtil() const override {
+    return agentDirUtil_.get();
+  }
 
-  MOCK_METHOD1(createHandler, std::unique_ptr<ThriftHandler>(SwSwitch* sw));
+  MOCK_METHOD0(
+      createHandler,
+      std::shared_ptr<apache::thrift::AsyncProcessorFactory>());
   MOCK_METHOD1(getProductInfo, void(ProductInfo& productInfo));
   MOCK_CONST_METHOD2(
       getPortMapping,
-      TransceiverIdxThrift(PortID port, cfg::PortSpeed speed));
+      TransceiverIdxThrift(PortID port, cfg::PortProfileID profileID));
   MOCK_METHOD0(stop, void());
-  MOCK_METHOD1(onHwInitialized, void(SwSwitch* sw));
-  MOCK_METHOD1(onInitialConfigApplied, void(SwSwitch* sw));
+  MOCK_METHOD1(onHwInitialized, void(HwSwitchCallback* sw));
   MOCK_METHOD0(initPorts, void());
   MOCK_CONST_METHOD0(supportsAddRemovePort, bool());
-  MOCK_CONST_METHOD0(getQsfpCache, QsfpCache*());
+  MOCK_METHOD1(stateChanged, void(const StateDelta& delta));
 
  private:
   void setupAsic(
-      cfg::SwitchType switchType,
       std::optional<int64_t> switchId,
-      std::optional<cfg::Range64> systemPortRange) override;
+      const cfg::SwitchInfo& switchInfo,
+      std::optional<HwAsic::FabricNodeRole> role) override;
+
   void createTmpDir();
   void cleanupTmpDir();
 
@@ -82,6 +85,7 @@ class MockPlatform : public Platform {
   std::unique_ptr<MockHwSwitch> hw_;
   std::unique_ptr<MockAsic> asic_;
   std::unordered_map<PortID, std::unique_ptr<MockPlatformPort>> portMapping_;
+  std::unique_ptr<AgentDirectoryUtil> agentDirUtil_;
 };
 
 } // namespace facebook::fboss

@@ -68,10 +68,18 @@ class TxPacket : public Packet {
       std::optional<VlanID> vlan,
       uint16_t protocol);
 
- protected:
   TxPacket() {}
 
+  static std::unique_ptr<TxPacket> allocateTxPacket(size_t size) {
+    return std::unique_ptr<TxPacket>(new TxPacket(size));
+  }
+
  private:
+  explicit TxPacket(size_t size) {
+    buf_ = folly::IOBuf::create(size);
+    buf_->append(size);
+  }
+
   // Forbidden copy constructor and assignment operator
   TxPacket(TxPacket const&) = delete;
   TxPacket& operator=(TxPacket const&) = delete;

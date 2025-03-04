@@ -11,56 +11,43 @@
 #include "fboss/agent/hw/test/HwTestProdConfigUtils.h"
 
 #include "fboss/agent/HwSwitch.h"
-#include "fboss/agent/Platform.h"
-#include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/hw/test/HwTestCoppUtils.h"
 #include "fboss/agent/hw/test/LoadBalancerUtils.h"
-#include "fboss/agent/hw/test/dataplane_tests/HwTestOlympicUtils.h"
-#include "fboss/agent/hw/test/dataplane_tests/HwTestPfcUtils.h"
+
+#include "fboss/agent/test/utils/OlympicTestUtils.h"
 
 namespace facebook::fboss::utility {
 
 void addProdFeaturesToConfig(
     cfg::SwitchConfig& config,
-    const HwSwitch* hwSwitch,
-    bool mmuLossless,
-    const std::vector<PortID>& ports) {
-  auto hwAsic = hwSwitch->getPlatform()->getAsic();
+    const HwAsic* hwAsic,
+    bool isSai) {
   /*
    * Configures port queue for cpu port
    */
-  utility::addCpuQueueConfig(config, hwAsic);
+  utility::addCpuQueueConfig(config, {hwAsic}, isSai);
   if (hwAsic->isSupported(HwAsic::Feature::L3_QOS)) {
     /*
      * Enable Olympic QOS
      */
-    utility::addOlympicQosMaps(config);
+    utility::addOlympicQosMaps(config, {hwAsic});
 
     /*
      * Enable Olympic Queue Config
      */
-    auto streamType = *(hwSwitch->getPlatform()
-                            ->getAsic()
-                            ->getQueueStreamTypes(cfg::PortType::INTERFACE_PORT)
-                            .begin());
-    utility::addOlympicQueueConfig(&config, streamType, hwAsic, true);
+    utility::addOlympicQueueConfig(&config, {hwAsic}, true);
   }
   /*
    * Configure COPP, CPU traffic policy and ACLs
    */
-  utility::setDefaultCpuTrafficPolicyConfig(config, hwAsic);
+  utility::setDefaultCpuTrafficPolicyConfig(
+      config, std::vector<const HwAsic*>({hwAsic}), isSai);
 
   /*
    * Enable Load balancer
    */
   if (hwAsic->isSupported(HwAsic::Feature::HASH_FIELDS_CUSTOMIZATION)) {
-    config.loadBalancers()->push_back(
-        utility::getEcmpFullHashConfig(hwSwitch->getPlatform()));
-  }
-
-  if (hwAsic->isSupported(HwAsic::Feature::PFC) && mmuLossless) {
-    // pfc works reliably only in mmu lossless mode
-    utility::addPfcConfig(config, hwSwitch, ports);
+    config.loadBalancers()->push_back(utility::getEcmpFullHashConfig({hwAsic}));
   }
 }
 } // namespace facebook::fboss::utility

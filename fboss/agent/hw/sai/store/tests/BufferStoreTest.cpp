@@ -29,7 +29,7 @@ class BufferStoreTest : public SaiStoreTest {
     SaiBufferPoolTraits::Attributes::Size size{42};
     SaiBufferPoolTraits::Attributes::ThresholdMode mode{
         SAI_BUFFER_POOL_THRESHOLD_MODE_DYNAMIC};
-    std::optional<SaiBufferPoolTraits::Attributes::XoffSize> xoffSize;
+    std::optional<SaiBufferPoolTraits::Attributes::XoffSize> xoffSize{0};
     return {type, size, mode, xoffSize};
   }
   BufferPoolSaiId createBufferPool() const {
@@ -38,25 +38,48 @@ class BufferStoreTest : public SaiStoreTest {
   }
 
   SaiBufferProfileTraits::CreateAttributes createProfileAttrs(
-      BufferPoolSaiId _pool) const {
+      BufferPoolSaiId _pool,
+      bool dynamic = true) const {
     SaiBufferProfileTraits::Attributes::PoolId pool{_pool};
     std::optional<SaiBufferProfileTraits::Attributes::ReservedBytes>
         reservedBytes{42};
-    std::optional<SaiBufferProfileTraits::Attributes::ThresholdMode> mode{
-        SAI_BUFFER_PROFILE_THRESHOLD_MODE_DYNAMIC};
+    std::optional<SaiBufferProfileTraits::Attributes::ThresholdMode> mode;
     std::optional<SaiBufferProfileTraits::Attributes::SharedDynamicThreshold>
-        dynamicThresh{24};
+        dynamicThresh{0};
+    std::optional<SaiBufferProfileTraits::Attributes::SharedStaticThreshold>
+        staticThresh{0};
     std::optional<SaiBufferProfileTraits::Attributes::XoffTh> xoffTh{293624};
     std::optional<SaiBufferProfileTraits::Attributes::XonTh> xonTh{0};
     std::optional<SaiBufferProfileTraits::Attributes::XonOffsetTh> xonOffsetTh{
         4826};
+    if (dynamic) {
+      dynamicThresh = 24;
+      mode = SAI_BUFFER_PROFILE_THRESHOLD_MODE_DYNAMIC;
+    } else {
+      staticThresh = 34;
+      mode = SAI_BUFFER_PROFILE_THRESHOLD_MODE_STATIC;
+    }
     return SaiBufferProfileTraits::CreateAttributes{
-        pool, reservedBytes, mode, dynamicThresh, xoffTh, xonTh, xonOffsetTh};
+        pool,
+        reservedBytes,
+        mode,
+        dynamicThresh,
+        staticThresh,
+        xoffTh,
+        xonTh,
+        xonOffsetTh,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt};
   }
-  BufferProfileSaiId createBufferProfile(BufferPoolSaiId _pool) {
+  BufferProfileSaiId createBufferProfile(
+      BufferPoolSaiId _pool,
+      bool dynamic = true) {
     auto& bufferApi = saiApiTable->bufferApi();
     return bufferApi.create<SaiBufferProfileTraits>(
-        createProfileAttrs(_pool), 0);
+        createProfileAttrs(_pool, dynamic), 0);
   }
   SaiIngressPriorityGroupTraits::CreateAttributes
   createIngressPriorityGroupAttrs(BufferProfileSaiId profileId) const {
@@ -81,7 +104,11 @@ TEST_F(BufferStoreTest, loadBufferPool) {
   SaiStore s(0);
   s.reload();
   auto& store = s.get<SaiBufferPoolTraits>();
-  auto got = store.get(SAI_BUFFER_POOL_TYPE_EGRESS);
+  SaiBufferPoolTraits::AdapterHostKey k = tupleProjection<
+      SaiBufferPoolTraits::CreateAttributes,
+      SaiBufferPoolTraits::AdapterHostKey>(createPoolAttrs());
+  auto got = store.get(k);
+
   EXPECT_EQ(got->adapterKey(), poolId);
   EXPECT_EQ(
       std::get<SaiBufferPoolTraits::Attributes::ThresholdMode>(
@@ -102,6 +129,19 @@ TEST_F(BufferStoreTest, loadBufferProfile) {
       SAI_BUFFER_PROFILE_THRESHOLD_MODE_DYNAMIC);
 }
 
+TEST_F(BufferStoreTest, loadStaticBufferProfile) {
+  auto poolId = createBufferPool();
+  auto profileId = createBufferProfile(poolId, false /* dynamic */);
+  SaiStore s(0);
+  s.reload();
+  auto& store = s.get<SaiBufferProfileTraits>();
+  auto got = store.get(createProfileAttrs(poolId, false /* dynamic */));
+  EXPECT_EQ(got->adapterKey(), profileId);
+  EXPECT_EQ(
+      GET_OPT_ATTR(BufferProfile, ThresholdMode, got->attributes()),
+      SAI_BUFFER_PROFILE_THRESHOLD_MODE_STATIC);
+}
+
 TEST_F(BufferStoreTest, loadBufferPoolFromJson) {
   auto poolId = createBufferPool();
   SaiStore s(0);
@@ -110,7 +150,10 @@ TEST_F(BufferStoreTest, loadBufferPoolFromJson) {
   SaiStore s2(0);
   s2.reload(&json);
   auto& store = s2.get<SaiBufferPoolTraits>();
-  auto got = store.get(SAI_BUFFER_POOL_TYPE_EGRESS);
+  SaiBufferPoolTraits::AdapterHostKey k = tupleProjection<
+      SaiBufferPoolTraits::CreateAttributes,
+      SaiBufferPoolTraits::AdapterHostKey>(createPoolAttrs());
+  auto got = store.get(k);
   EXPECT_EQ(got->adapterKey(), poolId);
   EXPECT_EQ(
       std::get<SaiBufferPoolTraits::Attributes::ThresholdMode>(
@@ -134,6 +177,22 @@ TEST_F(BufferStoreTest, loadBufferProfileFromJson) {
       SAI_BUFFER_PROFILE_THRESHOLD_MODE_DYNAMIC);
 }
 
+TEST_F(BufferStoreTest, loadStaticBufferProfileFromJson) {
+  auto poolId = createBufferPool();
+  auto profileId = createBufferProfile(poolId, false /* dynamic */);
+  SaiStore s(0);
+  s.reload();
+  auto json = s.adapterKeysFollyDynamic();
+  SaiStore s2(0);
+  s2.reload(&json);
+  auto& store = s2.get<SaiBufferProfileTraits>();
+  auto got = store.get(createProfileAttrs(poolId, false /* dynamic */));
+  EXPECT_EQ(got->adapterKey(), profileId);
+  EXPECT_EQ(
+      GET_OPT_ATTR(BufferProfile, ThresholdMode, got->attributes()),
+      SAI_BUFFER_PROFILE_THRESHOLD_MODE_STATIC);
+}
+
 TEST_F(BufferStoreTest, bufferPoolLoadCtor) {
   auto poolId = createBufferPool();
   SaiObject<SaiBufferPoolTraits> obj = createObj<SaiBufferPoolTraits>(poolId);
@@ -150,14 +209,33 @@ TEST_F(BufferStoreTest, bufferProfileLoadCtor) {
   EXPECT_EQ(GET_OPT_ATTR(BufferProfile, ReservedBytes, obj.attributes()), 42);
 }
 
+TEST_F(BufferStoreTest, staticBufferProfileLoadCtor) {
+  auto poolId = createBufferPool();
+  auto profileId = createBufferProfile(poolId, false /* dynamic */);
+  SaiObject<SaiBufferProfileTraits> obj =
+      createObj<SaiBufferProfileTraits>(profileId);
+  EXPECT_EQ(obj.adapterKey(), profileId);
+  EXPECT_EQ(GET_OPT_ATTR(BufferProfile, ReservedBytes, obj.attributes()), 42);
+}
+
 TEST_F(BufferStoreTest, bufferPoolCreateCtor) {
-  SaiObject<SaiBufferPoolTraits> obj =
-      createObj<SaiBufferPoolTraits>(24, createPoolAttrs(), 0);
+  auto c = createPoolAttrs();
+  SaiBufferPoolTraits::AdapterHostKey k = tupleProjection<
+      SaiBufferPoolTraits::CreateAttributes,
+      SaiBufferPoolTraits::AdapterHostKey>(c);
+  SaiObject<SaiBufferPoolTraits> obj = createObj<SaiBufferPoolTraits>(k, c, 0);
   EXPECT_EQ(GET_ATTR(BufferPool, Size, obj.attributes()), 42);
 }
 
 TEST_F(BufferStoreTest, bufferProfileCreateCtor) {
   auto c = createProfileAttrs(createBufferPool());
+  SaiObject<SaiBufferProfileTraits> obj =
+      createObj<SaiBufferProfileTraits>(c, c, 0);
+  EXPECT_EQ(GET_OPT_ATTR(BufferProfile, ReservedBytes, obj.attributes()), 42);
+}
+
+TEST_F(BufferStoreTest, staticBufferProfileCreateCtor) {
+  auto c = createProfileAttrs(createBufferPool(), false /* dynamic */);
   SaiObject<SaiBufferProfileTraits> obj =
       createObj<SaiBufferProfileTraits>(c, c, 0);
   EXPECT_EQ(GET_OPT_ATTR(BufferProfile, ReservedBytes, obj.attributes()), 42);

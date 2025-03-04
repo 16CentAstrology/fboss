@@ -26,10 +26,10 @@
  *   XFER_STATUS_RESPONSE has previously indicated that the read is complete.
  */
 #include "fboss/lib/usb/CP2112.h"
+#include <glog/logging.h>
+#include <sstream>
 #include "fboss/lib/BmcRestClient.h"
 #include "fboss/lib/usb/UsbError.h"
-
-#include <glog/logging.h>
 
 #include <folly/ScopeGuard.h>
 #include <folly/lang/Bits.h>
@@ -83,34 +83,18 @@ void vlogHex(
     return;
   }
 
-  const size_t kLineLength = 55; // The length of 1 line worth of output
-  const size_t hexLen =
-      (label.size() + 1 + kLineLength * (1 + (length / 16)) + 1);
-  char hexBuf[hexLen];
-
+  std::stringstream log;
   size_t idx = 0;
-  memcpy(hexBuf, label.begin(), label.size());
-  hexBuf[label.size()] = '\n';
-  size_t bufIdx = label.size() + 1;
+  log << label << '\n';
   while (idx < length) {
-    int ret = snprintf(hexBuf + bufIdx, hexLen - bufIdx, "%04zx:", idx);
-    bufIdx += ret;
+    log << fmt::format("{:04x}:", idx);
 
     for (unsigned int n = 0; n < 16 && idx < length; ++n, ++idx) {
-      ret = snprintf(
-          hexBuf + bufIdx,
-          hexLen - bufIdx,
-          "%s%02x",
-          n == 8 ? "  " : " ",
-          buf[idx]);
-      bufIdx += ret;
+      log << fmt::format("{:s}{:02x}", n == 8 ? "  " : " ", buf[idx]);
     }
-    hexBuf[bufIdx] = '\n';
-    ++bufIdx;
+    log << '\n';
   }
-  CHECK_LE(bufIdx, hexLen);
-  hexBuf[bufIdx] = '\0';
-  VLOG(vlogLevel) << hexBuf;
+  VLOG(vlogLevel) << log.str();
 }
 
 } // namespace
@@ -178,7 +162,7 @@ bool CP2112::resetFromRestEndpoint() {
       VLOG(1) << "Reset CP2112 via REST endpoint failed..returned error ";
       return false;
     }
-  } catch (const std::exception& ex) {
+  } catch (const std::exception&) {
     VLOG(2) << "Reset CP2112 via REST endpoint failed..fall back.";
     return false;
   }
@@ -293,7 +277,7 @@ void CP2112::read(uint8_t address, MutableByteRange buf, milliseconds timeout) {
     LOG(ERROR) << "I2c read parameter error";
     throw UsbError("cannot read more than 512 bytes at once");
   }
-  if (buf.size() < 1) {
+  if (buf.empty()) {
     // As far as I can tell, CP2112 doesn't support 0-length "quick" reads.
     // The docs indicate that 0-lengths reads will be ignored.  The transfer
     // status after issuing a 0-length read appears to confirm this.
@@ -312,7 +296,7 @@ void CP2112::read(uint8_t address, MutableByteRange buf, milliseconds timeout) {
   // Wait for the response data
   try {
     processReadResponse(buf, timeout);
-  } catch (UsbError& e) {
+  } catch (UsbError&) {
     XLOG(DBG5) << "CP2112 i2c read error";
     // Increment the counter for I2c read failure and throw error
     incrReadFailed();
@@ -331,7 +315,7 @@ void CP2112::write(uint8_t address, ByteRange buf, milliseconds timeout) {
     LOG(ERROR) << "I2c write parameter error";
     throw UsbError("cannot write more than 61 bytes at once");
   }
-  if (buf.size() < 1) {
+  if (buf.empty()) {
     // As far as I can tell, CP2112 doesn't support 0-length "quick" writes.
     // The docs indicate that 0-lengths writes will be ignored.  The transfer
     // status after issuing a 0-length write appears to confirm this.
@@ -355,7 +339,7 @@ void CP2112::write(uint8_t address, ByteRange buf, milliseconds timeout) {
 
   try {
     waitForTransfer("write", end);
-  } catch (UsbError& e) {
+  } catch (UsbError&) {
     XLOG(DBG5) << "cp2112 i2c write error";
     // Increment the counter for I2c write failure and throw error
     incrWriteFailed();
@@ -382,7 +366,7 @@ void CP2112::writeReadUnsafe(
         "cannot write more than 16 bytes at once for "
         "read-after-write");
   }
-  if (writeBuf.size() < 1) {
+  if (writeBuf.empty()) {
     LOG(ERROR) << "I2c write parameter error";
     throw UsbError("must write at least 1 byte for read-after-write");
   }
@@ -390,7 +374,7 @@ void CP2112::writeReadUnsafe(
     LOG(ERROR) << "I2c read parameter error";
     throw UsbError("cannot read more than 512 bytes at once");
   }
-  if (readBuf.size() < 1) {
+  if (readBuf.empty()) {
     LOG(ERROR) << "I2c read parameter error";
     throw UsbError("0-length reads are not allowed");
   }
@@ -408,7 +392,7 @@ void CP2112::writeReadUnsafe(
   // Wait for the response data
   try {
     processReadResponse(readBuf, timeout);
-  } catch (UsbError& e) {
+  } catch (UsbError&) {
     LOG(ERROR) << "cp2112 i2c write read error";
     // Increment the counter for I2c write and read failure, then throw error
     incrReadFailed();
@@ -618,7 +602,7 @@ void CP2112::processReadResponse(MutableByteRange buf, milliseconds timeout) {
 
   // The device has finished reading data from the I2C bus.
   // Now we just have to read it over USB.
-  uint8_t usbBuf[64];
+  std::array<uint8_t, 64> usbBuf;
   uint16_t bytesRead{0};
   bool sendRead = true;
   while (true) {
@@ -627,7 +611,8 @@ void CP2112::processReadResponse(MutableByteRange buf, milliseconds timeout) {
     if (sendRead) {
       usbBuf[0] = ReportID::READ_FORCE_SEND;
       usbBuf[1] = 1;
-      intrOut("read force send", usbBuf, sizeof(usbBuf), milliseconds(5));
+      intrOut(
+          "read force send", usbBuf.data(), sizeof(usbBuf), milliseconds(5));
       sendRead = false;
     }
 
@@ -641,7 +626,7 @@ void CP2112::processReadResponse(MutableByteRange buf, milliseconds timeout) {
     // avoid this case, though.  I haven't seen the device get stuck waiting on
     // READ_FORCE_SEND yet with the current logic.)
     try {
-      intrIn(usbBuf, sizeof(usbBuf), milliseconds(10));
+      intrIn(usbBuf.data(), sizeof(usbBuf), milliseconds(10));
     } catch (const LibusbError& ex) {
       VLOG(1) << "timed out waiting on READ_RESPONSE, sending READ_FORCE_SEND";
       // If we timed out, send a READ_FORCE_SEND and keep trying.
@@ -674,7 +659,13 @@ void CP2112::processReadResponse(MutableByteRange buf, milliseconds timeout) {
     VLOG(5) << "SMBus read response: status=" << (int)status
             << ", length=" << (int)length;
 
-    memcpy(buf.begin() + bytesRead, usbBuf + 3, length);
+    if (bytesRead + length > buf.size() || length + 3 > usbBuf.size()) {
+      throw UsbError("Read would cause overrun");
+    }
+    std::copy(
+        usbBuf.begin() + 3,
+        usbBuf.begin() + 3 + length,
+        buf.begin() + bytesRead);
     bytesRead += length;
 
     if (status == 0 || status == 2) {
@@ -795,8 +786,8 @@ milliseconds CP2112::waitForTransfer(
     uint8_t status1 = usbBuf[2];
     // Bytes 3-4 are status2, and bytes 5-6 are status3.  However we currently
     // don't use these values other than logging them here.
-    VLOG(5) << operation << " xfer status:"
-            << " status0=" << (int)status0 << " status1=" << (int)status1
+    VLOG(5) << operation << " xfer status:" << " status0=" << (int)status0
+            << " status1=" << (int)status1
             << " status2=" << readBE<uint16_t>(usbBuf + 3)
             << " status3=" << readBE<uint16_t>(usbBuf + 5);
 
@@ -846,8 +837,8 @@ uint16_t
 CP2112::featureReportIn(ReportID report, uint8_t* buf, uint16_t length) {
   CHECK(isOpen());
   uint8_t bRequestType =
-      (LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_CLASS |
-       LIBUSB_RECIPIENT_INTERFACE);
+      ((uint8_t)LIBUSB_ENDPOINT_IN | (uint8_t)LIBUSB_REQUEST_TYPE_CLASS |
+       (uint8_t)LIBUSB_RECIPIENT_INTERFACE);
   uint8_t bRequest = Hid::GET_REPORT;
   uint16_t wValue = ReportType::FEATURE | static_cast<uint16_t>(report);
   uint16_t wIndex = 0; // the interface index
@@ -889,8 +880,8 @@ void CP2112::featureReportOut(
     const uint8_t* buf,
     uint16_t length) {
   uint8_t bRequestType =
-      (LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_CLASS |
-       LIBUSB_RECIPIENT_INTERFACE);
+      ((uint8_t)LIBUSB_ENDPOINT_OUT | (uint8_t)LIBUSB_REQUEST_TYPE_CLASS |
+       (uint8_t)LIBUSB_RECIPIENT_INTERFACE);
   uint8_t bRequest = Hid::SET_REPORT;
   uint16_t wValue = ReportType::FEATURE | static_cast<uint16_t>(report);
   uint16_t wIndex = 0; // the interface index

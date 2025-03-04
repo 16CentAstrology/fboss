@@ -146,7 +146,7 @@ BcmPortGroup::~BcmPortGroup() {}
 BcmPortGroup::LaneMode BcmPortGroup::numLanesToLaneMode(uint8_t numLanes) {
   try {
     return static_cast<LaneMode>(numLanes);
-  } catch (const std::exception& ex) {
+  } catch (const std::exception&) {
     throw FbossError(
         "Unexpected number of lanes retrieved for bcm port ", numLanes);
   }
@@ -235,7 +235,7 @@ std::vector<std::shared_ptr<Port>> BcmPortGroup::getSwPorts(
     const auto& portList = utility::getPlatformPortsByControllingPort(
         platformPorts, controllingPort_->getPortID());
     for (const auto& port : portList) {
-      auto swPort = state->getPorts()->getPortIf(PortID(*port.mapping()->id()));
+      auto swPort = state->getPorts()->getNodeIf(PortID(*port.mapping()->id()));
       // Platform port doesn't exist in sw config, no need to program
       if (swPort) {
         ports.push_back(swPort);

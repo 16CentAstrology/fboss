@@ -10,15 +10,17 @@
 
 #include "fboss/agent/hw/sai/switch/SaiRouterInterfaceManager.h"
 
+#include <folly/logging/xlog.h>
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/hw/sai/store/SaiStore.h"
 #include "fboss/agent/hw/sai/switch/SaiManagerTable.h"
+#include "fboss/agent/hw/sai/switch/SaiPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiSwitchManager.h"
 #include "fboss/agent/hw/sai/switch/SaiSystemPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiVirtualRouterManager.h"
 #include "fboss/agent/hw/sai/switch/SaiVlanManager.h"
-
-#include <folly/logging/xlog.h>
+#include "fboss/agent/hw/switch_asics/HwAsic.h"
+#include "fboss/agent/platforms/sai/SaiPlatform.h"
 
 namespace facebook::fboss {
 
@@ -63,8 +65,12 @@ RouterInterfaceSaiId SaiRouterInterfaceManager::addOrUpdateVlanRouterInterface(
   SaiVlanRouterInterfaceTraits::Attributes::SrcMac srcMacAttribute{srcMac};
 
   // get MTU
-  SaiVlanRouterInterfaceTraits::Attributes::Mtu mtuAttribute{
-      static_cast<uint32_t>(swInterface->getMtu())};
+  std::optional<SaiVlanRouterInterfaceTraits::Attributes::Mtu> mtuAttribute =
+      std::nullopt;
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::L3_INTF_MTU)) {
+    mtuAttribute = SaiVlanRouterInterfaceTraits::Attributes::Mtu(
+        static_cast<uint32_t>(swInterface->getMtu()));
+  }
 
   // create the router interface
   SaiVlanRouterInterfaceTraits::CreateAttributes attributes{
@@ -80,8 +86,10 @@ RouterInterfaceSaiId SaiRouterInterfaceManager::addOrUpdateVlanRouterInterface(
   auto& store = saiStore_->get<SaiVlanRouterInterfaceTraits>();
   std::shared_ptr<SaiVlanRouterInterface> vlanRouterInterface =
       store.setObject(k, attributes, swInterface->getID());
-  auto vlanRouterInterfaceHandle = std::make_unique<SaiRouterInterfaceHandle>();
+  auto vlanRouterInterfaceHandle =
+      std::make_unique<SaiRouterInterfaceHandle>(swInterface->getType());
   vlanRouterInterfaceHandle->routerInterface = vlanRouterInterface;
+  vlanRouterInterfaceHandle->setLocal(isLocal);
 
   if (isLocal) {
     // create the ToMe routes for this (local) router interface
@@ -97,7 +105,9 @@ RouterInterfaceSaiId SaiRouterInterfaceManager::addOrUpdateVlanRouterInterface(
 RouterInterfaceSaiId SaiRouterInterfaceManager::addOrUpdatePortRouterInterface(
     const std::shared_ptr<Interface>& swInterface,
     bool isLocal) {
-  CHECK(swInterface->getType() == cfg::InterfaceType::SYSTEM_PORT);
+  CHECK(
+      swInterface->getType() == cfg::InterfaceType::SYSTEM_PORT ||
+      swInterface->getType() == cfg::InterfaceType::PORT);
   // compute the virtual router id for this router interface
   RouterID routerId = swInterface->getRouterID();
   SaiVirtualRouterHandle* virtualRouterHandle =
@@ -113,26 +123,22 @@ RouterInterfaceSaiId SaiRouterInterfaceManager::addOrUpdatePortRouterInterface(
   SaiPortRouterInterfaceTraits::Attributes::Type typeAttribute{
       SAI_ROUTER_INTERFACE_TYPE_PORT};
 
-  // compute the system port sai id for this router interface
-  SystemPortID swSystemPortId{swInterface->getID()};
-  SaiSystemPortHandle* saiSystemPortHandle =
-      managerTable_->systemPortManager().getSystemPortHandle(swSystemPortId);
-  if (!saiSystemPortHandle) {
-    throw FbossError(
-        "Failed to add router interface: no sai system port for ID ",
-        swSystemPortId);
-  }
-  SaiPortRouterInterfaceTraits::Attributes::PortId portIdAttribute{
-      saiSystemPortHandle->systemPort->adapterKey()};
-
   // get the src mac for this router interface
   folly::MacAddress srcMac = swInterface->getMac();
   SaiPortRouterInterfaceTraits::Attributes::SrcMac srcMacAttribute{srcMac};
 
   // get MTU
-  SaiPortRouterInterfaceTraits::Attributes::Mtu mtuAttribute{
-      static_cast<uint32_t>(swInterface->getMtu())};
+  std::optional<SaiVlanRouterInterfaceTraits::Attributes::Mtu> mtuAttribute =
+      std::nullopt;
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::L3_INTF_MTU)) {
+    mtuAttribute = SaiVlanRouterInterfaceTraits::Attributes::Mtu(
+        static_cast<uint32_t>(swInterface->getMtu()));
+  }
 
+  SaiPortRouterInterfaceTraits::Attributes::PortId portIdAttribute =
+      swInterface->getType() == cfg::InterfaceType::SYSTEM_PORT
+      ? getSystemPortId(swInterface)
+      : getPortId(swInterface);
   // create the router interface
   SaiPortRouterInterfaceTraits::CreateAttributes attributes{
       virtualRouterIdAttribute,
@@ -147,9 +153,10 @@ RouterInterfaceSaiId SaiRouterInterfaceManager::addOrUpdatePortRouterInterface(
   auto& store = saiStore_->get<SaiPortRouterInterfaceTraits>();
   std::shared_ptr<SaiPortRouterInterface> portRouterInterface =
       store.setObject(k, attributes, swInterface->getID());
-  auto portRouterInterfaceHandle = std::make_unique<SaiRouterInterfaceHandle>();
+  auto portRouterInterfaceHandle =
+      std::make_unique<SaiRouterInterfaceHandle>(swInterface->getType());
   portRouterInterfaceHandle->routerInterface = portRouterInterface;
-
+  portRouterInterfaceHandle->setLocal(isLocal);
   if (isLocal) {
     // create the ToMe routes for this (local) router interface
     auto toMeRoutes =
@@ -177,6 +184,7 @@ RouterInterfaceSaiId SaiRouterInterfaceManager::addOrUpdateRouterInterface(
   switch (swInterface->getType()) {
     case cfg::InterfaceType::VLAN:
       return addOrUpdateVlanRouterInterface(swInterface, isLocal);
+    case cfg::InterfaceType::PORT:
     case cfg::InterfaceType::SYSTEM_PORT:
       return addOrUpdatePortRouterInterface(swInterface, isLocal);
   }
@@ -234,6 +242,67 @@ SaiRouterInterfaceManager::getRouterInterfaceHandleImpl(
     XLOG(FATAL) << "Invalid null router interface for InterfaceID " << swId;
   }
   return itr->second.get();
+}
+
+SaiPortRouterInterfaceTraits::Attributes::PortId
+SaiRouterInterfaceManager::getSystemPortId(
+    const std::shared_ptr<Interface>& swInterface) {
+  CHECK(swInterface->getType() == cfg::InterfaceType::SYSTEM_PORT);
+  // compute the system port sai id for this router interface
+  SystemPortID swSystemPortId{swInterface->getID()};
+  SaiSystemPortHandle* saiSystemPortHandle =
+      managerTable_->systemPortManager().getSystemPortHandle(swSystemPortId);
+  if (!saiSystemPortHandle) {
+    throw FbossError(
+        "Failed to add router interface: no sai system port for ID ",
+        swSystemPortId);
+  }
+  return SaiPortRouterInterfaceTraits::Attributes::PortId{
+      saiSystemPortHandle->systemPort->adapterKey()};
+}
+
+SaiPortRouterInterfaceTraits::Attributes::PortId
+SaiRouterInterfaceManager::getPortId(
+    const std::shared_ptr<Interface>& swInterface) {
+  CHECK(swInterface->getType() == cfg::InterfaceType::PORT);
+  PortID portID(swInterface->getPortID());
+  auto* portHandle = managerTable_->portManager().getPortHandle(portID);
+  if (!portHandle) {
+    throw FbossError("Failed to add router interface: no sai port ID ", portID);
+  }
+  return SaiPortRouterInterfaceTraits::Attributes::PortId{
+      portHandle->port->adapterKey()};
+}
+
+std::optional<InterfaceID>
+SaiRouterInterfaceManager::getRouterPortInterfaceIDIf(PortID port) const {
+  auto portHandle = managerTable_->portManager().getPortHandle(port);
+  if (!portHandle) {
+    return std::nullopt;
+  }
+  return getRouterPortInterfaceIDIf(portHandle->port->adapterKey());
+}
+
+std::optional<InterfaceID>
+SaiRouterInterfaceManager::getRouterPortInterfaceIDIf(PortSaiId port) const {
+  auto itr =
+      std::find_if(handles_.begin(), handles_.end(), [port](const auto& entry) {
+        const auto& intfHandle = entry.second;
+        if (intfHandle->type() != cfg::InterfaceType::PORT) {
+          return false;
+        }
+        auto intf = intfHandle->getPortRouterInterface();
+        auto attributes = intf->attributes();
+        return std::get<SaiPortRouterInterfaceTraits::Attributes::PortId>(
+                   attributes)
+                   .value() == port;
+      });
+
+  if (itr == handles_.end()) {
+    return std::nullopt;
+  }
+
+  return itr->first;
 }
 
 } // namespace facebook::fboss

@@ -19,7 +19,6 @@
 
 #include "fboss/agent/hw/bcm/tests/BcmSwitchEnsemble.h"
 #include "fboss/agent/hw/test/HwSwitchEnsemble.h"
-#include "fboss/lib/platforms/PlatformMode.h"
 
 extern "C" {
 #include <bcm/port.h>
@@ -207,8 +206,8 @@ void verifyTxSettting(
     cfg::PortProfileID profileID,
     Platform* platform,
     const std::vector<phy::PinConfig>& expectedPinConfigs) {
-  if (platform->getMode() == PlatformMode::FAKE_WEDGE ||
-      platform->getMode() == PlatformMode::FAKE_WEDGE40) {
+  if (platform->getType() == PlatformType::PLATFORM_FAKE_WEDGE ||
+      platform->getType() == PlatformType::PLATFORM_FAKE_WEDGE40) {
     // TODO: skip fake now, add support for TxSettings in fake SDK
     return;
   }
@@ -233,14 +232,16 @@ void verifyTxSettting(
     EXPECT_EQ(programmedTx.main(), expectedTx->main());
     EXPECT_EQ(programmedTx.post(), expectedTx->post());
     EXPECT_EQ(programmedTx.pre2(), expectedTx->pre2());
+    EXPECT_EQ(programmedTx.post2(), expectedTx->post2());
+    EXPECT_EQ(programmedTx.post3(), expectedTx->post3());
     EXPECT_EQ(programmedTx.driveCurrent(), expectedTx->driveCurrent());
   }
 }
 
-void verifyLedStatus(HwSwitchEnsemble* ensemble, PortID port, bool up) {
+bool verifyLedStatus(HwSwitchEnsemble* ensemble, PortID port, bool up) {
   BcmTestPlatform* platform =
       static_cast<BcmTestPlatform*>(ensemble->getPlatform());
-  EXPECT_TRUE(platform->verifyLEDStatus(port, up));
+  return platform->verifyLEDStatus(port, up);
 }
 
 void verifyRxSettting(
@@ -261,4 +262,9 @@ void verifyFec(
   auto bcmPort = bcmSwitch->getPortTable()->getBcmPort(portID);
   EXPECT_EQ(*expectedProfileConfig.fec(), bcmPort->getFECMode());
 }
+
+void enableSixtapProgramming() {
+  // Flag only needed for Sai
+  return;
+};
 } // namespace facebook::fboss::utility

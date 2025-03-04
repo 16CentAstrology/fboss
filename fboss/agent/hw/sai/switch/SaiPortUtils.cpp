@@ -9,6 +9,13 @@
  */
 
 #include "fboss/agent/hw/sai/switch/SaiPortUtils.h"
+#if defined(BRCM_SAI_SDK_DNX)
+#ifndef IS_OSS_BRCM_SAI
+#include <experimental/saiportextensions.h>
+#else
+#include <saiportextensions.h>
+#endif
+#endif
 #include "fboss/agent/FbossError.h"
 #include "thrift/lib/cpp/util/EnumUtils.h"
 
@@ -26,6 +33,43 @@ sai_port_flow_control_mode_t getSaiPortPauseMode(cfg::PortPause pause) {
   }
 }
 
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+int getSaiPortLoopbackMode(cfg::PortLoopbackMode loopbackMode) {
+  switch (loopbackMode) {
+    case cfg::PortLoopbackMode::NONE:
+      return SAI_PORT_LOOPBACK_MODE_NONE;
+    case cfg::PortLoopbackMode::PHY:
+      return SAI_PORT_LOOPBACK_MODE_PHY;
+    case cfg::PortLoopbackMode::MAC:
+      return SAI_PORT_LOOPBACK_MODE_MAC;
+    case cfg::PortLoopbackMode::NIF:
+#if defined(BRCM_SAI_SDK_DNX)
+      // experimental and hence not added to _sai_port_loopback_mode_t
+      return SAI_PORT_LOOPBACK_MODE_NIF;
+#else
+      break;
+#endif
+  }
+  throw FbossError("Bad loopback mode: ", (int)loopbackMode);
+}
+
+cfg::PortLoopbackMode getCfgPortLoopbackMode(sai_port_loopback_mode_t mode) {
+  switch (static_cast<int>(mode)) {
+    case SAI_PORT_LOOPBACK_MODE_NONE:
+      return cfg::PortLoopbackMode::NONE;
+    case SAI_PORT_LOOPBACK_MODE_PHY:
+      return cfg::PortLoopbackMode::PHY;
+    case SAI_PORT_LOOPBACK_MODE_MAC:
+      return cfg::PortLoopbackMode::MAC;
+#if defined(BRCM_SAI_SDK_DNX)
+    case SAI_PORT_LOOPBACK_MODE_NIF:
+      return cfg::PortLoopbackMode::NIF;
+#endif
+  }
+  throw FbossError("Bad sai_port_loopback mode: ", (int)mode);
+}
+
+#endif
 sai_port_internal_loopback_mode_t getSaiPortInternalLoopbackMode(
     cfg::PortLoopbackMode loopbackMode) {
   switch (loopbackMode) {
@@ -95,6 +139,7 @@ sai_port_media_type_t getSaiPortMediaFromInterfaceType(
     case phy::InterfaceType::CR:
     case phy::InterfaceType::CR2:
     case phy::InterfaceType::CR4:
+    case phy::InterfaceType::CR8:
       return SAI_PORT_MEDIA_TYPE_COPPER;
 
     case phy::InterfaceType::SR:
@@ -153,10 +198,13 @@ phy::FecMode getFecModeFromSaiFecMode(
         case cfg::PortProfileID::PROFILE_100G_4_NRZ_RS528:
         case cfg::PortProfileID::PROFILE_25G_1_NRZ_RS528_COPPER:
         case cfg::PortProfileID::PROFILE_50G_2_NRZ_RS528_COPPER:
+        case cfg::PortProfileID::PROFILE_50G_2_NRZ_RS528_OPTICAL:
         case cfg::PortProfileID::PROFILE_100G_4_NRZ_RS528_COPPER:
         case cfg::PortProfileID::PROFILE_100G_4_NRZ_RS528_OPTICAL:
           mode = phy::FecMode::RS528;
           break;
+        case cfg::PortProfileID::PROFILE_100G_2_PAM4_RS544X2N_OPTICAL:
+        case cfg::PortProfileID::PROFILE_100G_2_PAM4_RS544X2N_COPPER:
         case cfg::PortProfileID::PROFILE_200G_4_PAM4_RS544X2N:
         case cfg::PortProfileID::PROFILE_400G_8_PAM4_RS544X2N:
         case cfg::PortProfileID::PROFILE_200G_4_PAM4_RS544X2N_COPPER:
@@ -165,11 +213,17 @@ phy::FecMode getFecModeFromSaiFecMode(
         case cfg::PortProfileID::PROFILE_400G_8_PAM4_RS544X2N_COPPER:
         case cfg::PortProfileID::PROFILE_400G_4_PAM4_RS544X2N_OPTICAL:
         case cfg::PortProfileID::PROFILE_800G_8_PAM4_RS544X2N_OPTICAL:
+        case cfg::PortProfileID::PROFILE_400G_4_PAM4_RS544X2N_COPPER:
           mode = phy::FecMode::RS544_2N;
           break;
         case cfg::PortProfileID::PROFILE_53POINT125G_1_PAM4_RS545_COPPER:
         case cfg::PortProfileID::PROFILE_53POINT125G_1_PAM4_RS545_OPTICAL:
           mode = phy::FecMode::RS545;
+          break;
+        case cfg::PortProfileID::PROFILE_106POINT25G_1_PAM4_RS544_COPPER:
+        case cfg::PortProfileID::PROFILE_106POINT25G_1_PAM4_RS544_OPTICAL:
+        case cfg::PortProfileID::PROFILE_100G_1_PAM4_RS544_OPTICAL:
+          mode = phy::FecMode::RS544;
           break;
         default:
           mode = phy::FecMode::NONE;
@@ -239,4 +293,16 @@ sai_port_ptp_mode_t getSaiPortPtpMode(bool enable) {
                 : SAI_PORT_PTP_MODE_NONE;
 }
 
+bool isPortOperUp(sai_port_oper_status_t operStatus) {
+#if defined(BRCM_SAI_SDK_GTE_11_0) && defined(BRCM_SAI_SDK_DNX)
+  auto operStatusExt =
+      static_cast<sai_port_oper_status_extensions_t>(operStatus);
+  return (
+      operStatus == SAI_PORT_OPER_STATUS_UP ||
+      operStatusExt == SAI_PORT_OPER_STATUS_FAILED ||
+      operStatusExt == SAI_PORT_OPER_STATUS_WRONG_CONNECTIVITY);
+#else
+  return operStatus == SAI_PORT_OPER_STATUS_UP;
+#endif
+}
 } // namespace facebook::fboss::utility

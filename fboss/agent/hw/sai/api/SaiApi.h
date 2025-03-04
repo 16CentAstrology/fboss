@@ -9,7 +9,6 @@
  */
 #pragma once
 
-#include "fboss/agent/hw/sai/api/HwWriteBehavior.h"
 #include "fboss/agent/hw/sai/api/LoggingUtil.h"
 #include "fboss/agent/hw/sai/api/SaiApiError.h"
 #include "fboss/agent/hw/sai/api/SaiApiLock.h"
@@ -17,6 +16,7 @@
 #include "fboss/agent/hw/sai/api/SaiAttributeDataTypes.h"
 #include "fboss/agent/hw/sai/api/Traits.h"
 #include "fboss/lib/FunctionCallTimeReporter.h"
+#include "fboss/lib/HwWriteBehavior.h"
 #include "fboss/lib/TupleUtils.h"
 
 #include <folly/Format.h>
@@ -79,6 +79,12 @@ class SaiApi {
           "Attempting create SAI obj with {}, while hw writes are blocked",
           createAttributes);
     }
+    if (UNLIKELY(logFailHwWrites())) {
+      XLOGF(
+          WARNING,
+          "Attempting create SAI obj with {}, while hw writes are not expected",
+          createAttributes);
+    }
     auto g{SaiApiLock::getInstance()->lock()};
     sai_status_t status;
     {
@@ -115,6 +121,12 @@ class SaiApi {
           "Attempting create SAI obj with {}, while hw writes are blocked",
           createAttributes);
     }
+    if (UNLIKELY(logFailHwWrites())) {
+      XLOGF(
+          WARNING,
+          "Attempting create SAI obj with {}, while hw writes are not expected",
+          createAttributes);
+    }
     auto g{SaiApiLock::getInstance()->lock()};
     sai_status_t status;
     {
@@ -139,6 +151,12 @@ class SaiApi {
       XLOGF(
           FATAL,
           "Attempting to remove SAI obj {} while hw writes are blocked",
+          key);
+    }
+    if (UNLIKELY(logFailHwWrites())) {
+      XLOGF(
+          WARNING,
+          "Attempting to remove SAI obj {} while hw writes are not expected",
           key);
     }
     auto g{SaiApiLock::getInstance()->lock()};
@@ -271,12 +289,103 @@ class SaiApi {
             SAI_STATUS_IS_ATTR_NOT_IMPLEMENTED(status) ||
             SAI_STATUS_IS_ATTR_NOT_SUPPORTED(status);
         if (fallbackToDefault) {
+          if constexpr (IsVector<decltype(attr.defaultValue())>::value) {
+            // if the object is not supported and is type list/vector
+            // default getter will try to set it to empty list
+            // which is incorrect. We need to treat it like nullopt, so
+            // during warm boot object can be claimed by NOS
+            if (attr.defaultValue().empty()) {
+              return std::optional<typename AttrT::ValueType>();
+            }
+          }
           return std::optional<typename AttrT::ValueType>{attr.defaultValue()};
         }
       }
       throw;
     }
   }
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 13, 0)
+  template <typename AdapterKeyT, typename AttrT>
+  std::vector<typename std::remove_reference_t<AttrT>::ValueType>
+  bulkGetAttributes(
+      std::vector<AdapterKeyT>& adapterKeys,
+      std::vector<AttrT>& attributes) const {
+    // SAI specifiction for get API supports:
+    //  - querying a list of atrtributes on a given object.
+    //  SAI specification for bulk get API supports:
+    //  - querying a list of attributes on a list of objects, where,
+    //  - each object may be queried with a different list of attributes.
+    //
+    // Thus,
+    // SAI get API takes sai_attribute_t *attr_list as argument, while,
+    // SAI bulk get API takes sai_attribute_t **attr_list i.e. list of lists.
+    //
+    // However, the current FBOSS SAI wrapper for get viz. getAttribute()
+    // queries one attribute at a time.
+    // The FBOSS SAI wrapper for bulk get viz. bulkgetAttributes() will only
+    // support:
+    //   - querying only one attribute on a list of objects,
+    //   - attribute of type signed integer.
+    // This is adequate for the immediate use case i.e. use bulk get on Ports
+    // to retrieve txReadyStatusChange. However, this can be enhanced in the
+    // future.
+
+    auto g{SaiApiLock::getInstance()->lock()};
+
+    // We only support querying 1 attr per SAI Object today
+    constexpr auto kMaxNumAttrsPerObject = 1;
+    size_t objectCount = attributes.size();
+
+    uint32_t attrCount[objectCount];
+    for (auto idx = 0; idx < objectCount; idx++) {
+      attrCount[idx] = kMaxNumAttrsPerObject;
+    }
+
+    std::vector<std::vector<sai_attribute_t>> attrVecs;
+    std::vector<sai_attribute_t*> attrs;
+    for (auto i = 0; i < objectCount; i++) {
+      attrVecs.push_back(
+          std::vector<sai_attribute_t>({*saiAttr(attributes[i])}));
+      attrs.push_back(attrVecs.back().data());
+    }
+
+    sai_status_t status;
+    sai_status_t retStatus[adapterKeys.size()];
+    {
+      TIME_CALL;
+      status = impl()._bulkGetAttribute(
+          adapterKeys.data(), attrCount, attrs.data(), retStatus, objectCount);
+    }
+
+    saiApiCheckError(
+        status, apiType(), fmt::format("Failed to bulk get attribute"));
+    for (auto idx = 0; idx < adapterKeys.size(); idx++) {
+      saiApiCheckError(
+          retStatus[idx],
+          apiType(),
+          fmt::format(
+              "Failed to get attribute {} to {}",
+              adapterKeys[idx],
+              attributes[idx]));
+      XLOGF(
+          DBG5,
+          "bulk get SAI attribute of {} to {}",
+          adapterKeys[idx],
+          attributes[idx]);
+    }
+
+    std::vector<typename std::remove_reference_t<AttrT>::ValueType> retVal;
+    static_assert(
+        std::is_same_v<typename AttrT::ValueType, int32_t>,
+        "Only int value types are supported today");
+    for (auto i = 0; i < objectCount; i++) {
+      retVal.push_back(attrs[i][0].value.s32);
+    }
+
+    return retVal;
+  }
+#endif
 
   template <typename AdapterKeyT, typename AttrT>
   void setAttributeUnlocked(const AdapterKeyT& key, const AttrT& attr) const {
@@ -287,6 +396,13 @@ class SaiApi {
       XLOGF(
           FATAL,
           "Attempting set SAI attribute of {} to {}, while hw writes are blocked",
+          key,
+          attr);
+    }
+    if (UNLIKELY(logFailHwWrites())) {
+      XLOGF(
+          WARNING,
+          "Attempting set SAI attribute of {} to {}, while hw writes are not expected",
           key,
           attr);
     }
@@ -329,6 +445,11 @@ class SaiApi {
       XLOG(
           FATAL,
           "Attempting bulk set SAI attributes while hw writes are blocked");
+    }
+    if (UNLIKELY(logFailHwWrites())) {
+      XLOG(
+          WARNING,
+          "Attempting bulk set SAI attributes while hw writes are not expected");
     }
     if constexpr (IsSaiExtensionAttribute<AttrT>::value) {
       auto id = typename AttrT::AttributeId()();
@@ -446,6 +567,9 @@ class SaiApi {
   bool skipHwWrites() const {
     return getHwWriteBehavior() == HwWriteBehavior::SKIP;
   }
+  bool logFailHwWrites() const {
+    return getHwWriteBehavior() == HwWriteBehavior::LOG_FAIL;
+  }
   template <typename SaiObjectTraits>
   std::vector<uint64_t> getStatsImpl(
       const typename SaiObjectTraits::AdapterKey& key,
@@ -480,6 +604,12 @@ class SaiApi {
         XLOGF(
             FATAL,
             "Attempting clear stats {} , while hw writes are blocked",
+            saiApiTypeToString(apiType()));
+      }
+      if (UNLIKELY(logFailHwWrites())) {
+        XLOGF(
+            WARNING,
+            "Attempting clear stats {} , while hw writes are not expected",
             saiApiTypeToString(apiType()));
       }
       sai_status_t status;

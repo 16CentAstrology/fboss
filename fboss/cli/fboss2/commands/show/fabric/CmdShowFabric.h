@@ -14,6 +14,7 @@
 #include <string>
 #include <unordered_set>
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
+#include "fboss/agent/if/gen-cpp2/hw_ctrl_types.h"
 #include "fboss/cli/fboss2/CmdHandler.h"
 #include "fboss/cli/fboss2/commands/show/fabric/gen-cpp2/model_types.h"
 #include "fboss/cli/fboss2/utils/CmdUtils.h"
@@ -38,65 +39,115 @@ class CmdShowFabric : public CmdHandler<CmdShowFabric, CmdShowFabricTraits> {
   using RetType = CmdShowFabricTraits::RetType;
 
   RetType queryClient(const HostInfo& hostInfo) {
-    std::map<std::string, FabricEndpoint> entries;
-    auto client =
-        utils::createClient<apache::thrift::Client<FbossCtrl>>(hostInfo);
+    return createModel(utils::getFabricEndpoints(hostInfo));
+  }
 
-    client->sync_getFabricReachability(entries);
-
-    return createModel(entries);
+  inline void udpateNametoIdString(std::string& name, int64_t value) {
+    auto idToString =
+        value == -1 ? "(-)" : folly::to<std::string>("(", value, ")");
+    name += idToString;
   }
 
   void printOutput(const RetType& model, std::ostream& out = std::cout) {
     Table table;
     table.setHeader({
         "Local Port",
-        "Peer switch",
-        "Peer switchId",
-        "Peer Port",
-        "Peer PortId",
+        "Peer Switch (Id)",
+        "Exp Peer Switch (Id)",
+        "Peer Port (Id)",
+        "Exp Peer Port (Id)",
+        "Match",
     });
 
     for (auto const& entry : model.get_fabricEntries()) {
-      std::string remoteSwitchId = *entry.remoteSwitchId() == -1
-          ? "--"
-          : folly::to<std::string>(*entry.remoteSwitchId());
+      std::string remoteSwitchNameId =
+          utils::removeFbDomains(*entry.remoteSwitchName());
+      udpateNametoIdString(remoteSwitchNameId, *entry.remoteSwitchId());
+
+      std::string expectedRemoteSwitchNameId =
+          utils::removeFbDomains(*entry.expectedRemoteSwitchName());
+      udpateNametoIdString(
+          expectedRemoteSwitchNameId, *entry.expectedRemoteSwitchId());
+
+      std::string remotePortNameId = *entry.remotePortName();
+      udpateNametoIdString(remotePortNameId, *entry.remotePortId());
+
+      std::string expectedRemotePortNameId = *entry.expectedRemotePortName();
+      udpateNametoIdString(
+          expectedRemotePortNameId, *entry.expectedRemotePortId());
+
+      bool match =
+          (remoteSwitchNameId == expectedRemoteSwitchNameId &&
+           remotePortNameId == expectedRemotePortNameId);
+
       table.addRow({
           *entry.localPort(),
-          removeFbDomains(*entry.remoteSwitchName()),
-          remoteSwitchId,
-          *entry.remotePortName(),
-          folly::to<std::string>(*entry.remotePortId()),
+          Table::StyledCell(
+              remoteSwitchNameId,
+              get_NeighborStyle(
+                  remoteSwitchNameId, expectedRemoteSwitchNameId)),
+          expectedRemoteSwitchNameId,
+          Table::StyledCell(
+              remotePortNameId,
+              get_NeighborStyle(remotePortNameId, expectedRemotePortNameId)),
+          expectedRemotePortNameId,
+          match ? "Yes" : "No",
       });
     }
 
     out << table << std::endl;
   }
 
-  const std::string removeFbDomains(const std::string& hostname) {
-    // Simple helper function to remove FQDN
-    std::string host_copy = hostname;
-    const RE2 fb_domains(".facebook.com$|.tfbnw.net$");
-    RE2::Replace(&host_copy, fb_domains, "");
-    return host_copy;
+  Table::Style get_NeighborStyle(
+      const std::string& actualId,
+      const std::string& expectedId) {
+    if (actualId == expectedId) {
+      return Table::Style::GOOD;
+    }
+    return Table::Style::ERROR;
   }
 
   RetType createModel(std::map<std::string, FabricEndpoint> fabricEntries) {
     RetType model;
     const std::string kUnavail;
+    const std::string kUnattached = "NOT_ATTACHED";
     for (const auto& entry : fabricEntries) {
       cli::FabricEntry fabricDetails;
       fabricDetails.localPort() = entry.first;
       auto endpoint = entry.second;
-      if (!*endpoint.isAttached()) {
+      // if endpoint is not attached and no expected neighbor configured, skip
+      // the endpoint
+      if (!*endpoint.isAttached() &&
+          (!endpoint.expectedSwitchName().has_value())) {
         continue;
+      }
+      // hw endpoint
+      if (!*endpoint.isAttached()) {
+        fabricDetails.remotePortName() = kUnattached;
+        fabricDetails.remoteSwitchName() = kUnattached;
+      } else {
+        fabricDetails.remotePortName() =
+            endpoint.portName() ? *endpoint.portName() : kUnavail;
+        fabricDetails.remoteSwitchName() =
+            endpoint.switchName() ? *endpoint.switchName() : kUnavail;
       }
       fabricDetails.remoteSwitchId() = *endpoint.switchId();
       fabricDetails.remotePortId() = *endpoint.portId();
-      fabricDetails.remotePortName() =
-          endpoint.portName() ? *endpoint.portName() : kUnavail;
-      fabricDetails.remoteSwitchName() =
-          endpoint.switchName() ? *endpoint.switchName() : kUnavail;
+
+      // expected endpoint per cfg
+      fabricDetails.expectedRemoteSwitchId() =
+          endpoint.expectedSwitchId().has_value() ? *endpoint.expectedSwitchId()
+                                                  : -1;
+      fabricDetails.expectedRemotePortId() =
+          endpoint.expectedPortId().has_value() ? *endpoint.expectedPortId()
+                                                : -1;
+      fabricDetails.expectedRemotePortName() =
+          endpoint.expectedPortName().has_value() ? *endpoint.expectedPortName()
+                                                  : kUnavail;
+      fabricDetails.expectedRemoteSwitchName() =
+          endpoint.expectedSwitchName().has_value()
+          ? *endpoint.expectedSwitchName()
+          : kUnavail;
       model.fabricEntries()->push_back(fabricDetails);
     }
 

@@ -293,6 +293,7 @@ class Route : public ThriftStructNode<Route<AddrT>, ThriftFieldsT<AddrT>> {
   using Action = RouteForwardAction;
   using Addr = AddrT;
   using LegacyFields = RouteFields<AddrT>;
+  using RouteBase::modify;
 
   // Constructor for a route
   explicit Route(const Prefix& prefix) {
@@ -326,11 +327,6 @@ class Route : public ThriftStructNode<Route<AddrT>, ThriftFieldsT<AddrT>> {
     auto fields = LegacyFields(std::forward<Args>(args)...);
     return fields.toThrift();
   }
-
-  static std::shared_ptr<Route<AddrT>> fromFollyDynamic(
-      const folly::dynamic& json);
-
-  folly::dynamic toFollyDynamic() const override;
 
   // THRIFT_COPY
   RouteDetails toRouteDetails(bool normalizedNhopWeights = false) const {

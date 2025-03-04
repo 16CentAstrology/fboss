@@ -2,12 +2,7 @@
 
 #include "fboss/lib/i2c/I2cSmbusIo.h"
 #include <errno.h>
-#include <fcntl.h>
 #include <folly/Format.h>
-#include <folly/Range.h>
-#include <folly/lang/Bits.h>
-#include <folly/logging/xlog.h>
-#include <gflags/gflags.h>
 #include <linux/i2c-dev.h>
 #include <linux/i2c.h>
 #include <stdint.h>
@@ -48,8 +43,6 @@ void I2cSmbusIo::write(
           std::to_string(errno));
     }
   }
-  // Add a 50ms sleep after writes like other implementations do
-  /* sleep override */ usleep(50 * 1000);
 }
 
 void I2cSmbusIo::read(uint8_t addr, uint8_t offset, uint8_t* buf, int len) {
@@ -81,8 +74,6 @@ void I2cSmbusIo::read(uint8_t addr, uint8_t offset, uint8_t* buf, int len) {
       buf[i + byteIdx] = smbus_data.block[1 + byteIdx];
     }
   }
-  // Add a 1ms sleep after reads like other implementations do
-  /* sleep override */ usleep(1 * 1000);
 }
 
 } // namespace facebook::fboss

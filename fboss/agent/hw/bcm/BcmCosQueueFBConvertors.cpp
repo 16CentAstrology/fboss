@@ -16,17 +16,6 @@
 #include <boost/container/flat_map.hpp>
 
 namespace {
-// Discard probability at queue size == max_thresh
-//            ______  | 100
-//                    |
-//           .        | kWredDiscardProbability
-//          /         |
-//         /          | (probability of drop)
-//        /           |
-// ______/            |
-//      min  max
-//   (queue length)
-constexpr int kWredDiscardProbability = 100;
 
 using facebook::fboss::cfg::QueueCongestionBehavior;
 static const boost::container::flat_map<QueueCongestionBehavior, int>
@@ -187,6 +176,8 @@ BcmSchedulingAndWeight cfgSchedulingAndWeightToBcm(
   if (pair.first == cfg::QueueScheduling::STRICT_PRIORITY) {
     weight = BCM_COSQ_WEIGHT_STRICT; // 0
   } else if (pair.first == cfg::QueueScheduling::WEIGHTED_ROUND_ROBIN) {
+    weight = pair.second;
+  } else if (pair.first == cfg::QueueScheduling::DEFICIT_ROUND_ROBIN) {
     weight = pair.second;
   } else {
     throw FbossError("Unsupported cosQ scheduling mode: ", pair.first);

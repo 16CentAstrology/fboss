@@ -18,25 +18,6 @@
 #include <tuple>
 #include <utility>
 
-namespace {
-constexpr auto kId = "id";
-constexpr auto kName = "name";
-constexpr auto kDescription = "description";
-constexpr auto kMinimumLinkCount = "minimumLinkCount";
-constexpr auto kSubports = "subports";
-constexpr auto kSystemID = "systemID";
-constexpr auto kSystemPriority = "systemPriority";
-constexpr auto kPortID = "portId";
-constexpr auto kRate = "rate";
-constexpr auto kActivity = "activity";
-constexpr auto kPriority = "priority";
-constexpr auto kForwarding = "forwarding";
-constexpr auto kForwardingStates = "forwardingStates";
-constexpr auto kPartnerInfo = "partnerInfo";
-constexpr auto kPartnerInfos = "partnerInfos";
-constexpr auto kHoldTimerMultiplier = "holdTimerMultiplier";
-} // namespace
-
 namespace facebook::fboss {
 
 AggregatePort::AggregatePort(
@@ -47,6 +28,7 @@ AggregatePort::AggregatePort(
     folly::MacAddress systemID,
     uint8_t minimumLinkCount,
     Subports&& ports,
+    const std::vector<int32_t>& interfaceIDs,
     LegacyAggregatePortFields::Forwarding fwd,
     ParticipantInfo pState) {
   set<switch_state_tags::id>(id);
@@ -70,6 +52,7 @@ AggregatePort::AggregatePort(
     portToPartnerState.emplace(subport.portID, pState.toThrift());
   }
   set<switch_state_tags::portToPartnerState>(std::move(portToPartnerState));
+  set<switch_state_tags::interfaceIDs>(interfaceIDs);
 }
 
 AggregatePort::AggregatePort(
@@ -135,10 +118,11 @@ AggregatePort* AggregatePort::modify(std::shared_ptr<SwitchState>* state) {
     return this;
   }
 
-  AggregatePortMap* aggPorts = (*state)->getAggregatePorts()->modify(state);
+  auto* aggPorts = (*state)->getAggregatePorts()->modify(state);
+  auto [_, scope] = aggPorts->getNodeAndScope(getID());
   auto newAggPort = clone();
   auto* ptr = newAggPort.get();
-  aggPorts->updateAggregatePort(std::move(newAggPort));
+  aggPorts->updateNode(newAggPort, scope);
   return ptr;
 }
 
@@ -152,10 +136,11 @@ AggregatePort* AggregatePort::modify(std::shared_ptr<SwitchState>* state) {
 // case C: is not CONFIGURED as a member of any AggregatePort
 bool AggregatePort::isIngressValid(
     const std::shared_ptr<SwitchState>& state,
-    const std::unique_ptr<RxPacket>& packet) {
+    const std::unique_ptr<RxPacket>& packet,
+    const bool needAggPortUp) {
   auto physicalIngressPort = packet->getSrcPort();
   auto owningAggregatePort =
-      state->getAggregatePorts()->getAggregatePortIf(physicalIngressPort);
+      state->getAggregatePorts()->getAggregatePortForPort(physicalIngressPort);
 
   if (!owningAggregatePort) {
     // case C
@@ -163,6 +148,9 @@ bool AggregatePort::isIngressValid(
   }
 
   CHECK(owningAggregatePort);
+  if (needAggPortUp) {
+    return owningAggregatePort->isUp();
+  }
   auto physicalIngressForwardingState =
       owningAggregatePort->getForwardingState(physicalIngressPort);
 
@@ -185,6 +173,6 @@ bool AggregatePort::isUp() const {
   return forwardingSubportCount() >= getMinimumLinkCount();
 }
 
-template class ThriftStructNode<AggregatePort, state::AggregatePortFields>;
+template struct ThriftStructNode<AggregatePort, state::AggregatePortFields>;
 
 } // namespace facebook::fboss

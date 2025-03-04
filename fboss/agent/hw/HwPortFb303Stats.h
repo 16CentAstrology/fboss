@@ -17,6 +17,7 @@
 #include "folly/container/F14Map.h"
 
 #include <optional>
+#include <ostream>
 #include <string>
 
 namespace facebook::fboss {
@@ -25,8 +26,9 @@ class HwPortFb303Stats : public HwBasePortFb303Stats {
  public:
   explicit HwPortFb303Stats(
       const std::string& portName,
-      QueueId2Name queueId2Name = {})
-      : HwBasePortFb303Stats(portName, queueId2Name) {
+      QueueId2Name queueId2Name = {},
+      const std::vector<PfcPriority>& enabledPfcPriorities = {})
+      : HwBasePortFb303Stats(portName, queueId2Name, enabledPfcPriorities) {
     portStats_.portName_() = portName;
     reinitStats(std::nullopt);
   }
@@ -49,10 +51,21 @@ class HwPortFb303Stats : public HwBasePortFb303Stats {
     return timeRetrieved_;
   }
 
-  const std::vector<folly::StringPiece>& kPortStatKeys() const override;
-  const std::vector<folly::StringPiece>& kQueueStatKeys() const override;
-  const std::vector<folly::StringPiece>& kInMacsecPortStatKeys() const override;
-  const std::vector<folly::StringPiece>& kOutMacsecPortStatKeys()
+  const std::vector<folly::StringPiece>& kPortMonotonicCounterStatKeys()
+      const override;
+  const std::vector<folly::StringPiece>& kPortFb303CounterStatKeys()
+      const override;
+  const std::vector<folly::StringPiece>& kQueueMonotonicCounterStatKeys()
+      const override;
+  const std::vector<folly::StringPiece>& kQueueFb303CounterStatKeys()
+      const override;
+  const std::vector<folly::StringPiece>& kInMacsecPortMonotonicCounterStatKeys()
+      const override;
+  const std::vector<folly::StringPiece>&
+  kOutMacsecPortMonotonicCounterStatKeys() const override;
+  const std::vector<folly::StringPiece>& kPfcMonotonicCounterStatKeys()
+      const override;
+  const std::vector<folly::StringPiece>& kPriorityGroupCounterStatKeys()
       const override;
 
  private:

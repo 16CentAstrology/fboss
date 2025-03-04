@@ -17,10 +17,8 @@
 #include "fboss/agent/hw/test/HwTestCoppUtils.h"
 #include "fboss/agent/hw/test/HwTestMplsUtils.h"
 #include "fboss/agent/hw/test/HwTestPacketSnooper.h"
-#include "fboss/agent/hw/test/HwTestPacketTrapEntry.h"
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
 #include "fboss/agent/hw/test/HwTestRouteUtils.h"
-#include "fboss/agent/hw/test/TrafficPolicyUtils.h"
 #include "fboss/agent/packet/PktFactory.h"
 #include "fboss/agent/packet/PktUtil.h"
 #include "fboss/agent/state/LabelForwardingEntry.h"
@@ -61,7 +59,7 @@ class HwRouteStatTest : public HwLinkStateDependentTest {
     auto config = utility::onePortPerInterfaceConfig(
         getHwSwitch(),
         std::move(ports),
-        getAsic()->desiredLoopbackMode(),
+        getAsic()->desiredLoopbackModes(),
         true);
     config.switchSettings()->maxRouteCounterIDs() = 3;
     return config;
@@ -130,7 +128,9 @@ class HwRouteStatTest : public HwLinkStateDependentTest {
     // get tx packet
     auto ethFrame = utility::EthFrame(
         eth, utility::IPPacket<folly::IPAddressV6>(ip6, datagram));
-    auto pkt = ethFrame.getTxPacket(getHwSwitch());
+    auto pkt = ethFrame.getTxPacket([hw = getHwSwitch()](uint32_t size) {
+      return hw->allocatePacket(size);
+    });
     // send pkt on src port, let it loop back in switch and be l3 switched
     getHwSwitchEnsemble()->ensureSendPacketOutOfPort(std::move(pkt), from);
     return ethFrame.length();
@@ -146,9 +146,12 @@ class HwRouteStatTest : public HwLinkStateDependentTest {
 
 TEST_F(HwRouteStatTest, RouteEntryTest) {
   if (skipTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     addRoute(
         kAddr1, 120, PortDescriptor(masterLogicalPortIds()[0]), kCounterID1);
     addRoute(
@@ -158,7 +161,7 @@ TEST_F(HwRouteStatTest, RouteEntryTest) {
     addRoute(
         kAddr4, 24, PortDescriptor(masterLogicalPortIds()[0]), kCounterID2);
   };
-  auto verify = [=]() {
+  auto verify = [=, this]() {
     // verify unique counters
     auto count1Before = utility::getRouteStat(getHwSwitch(), kCounterID1);
     auto count2Before = utility::getRouteStat(getHwSwitch(), kCounterID2);
@@ -186,15 +189,18 @@ TEST_F(HwRouteStatTest, RouteEntryTest) {
 // modify counter id
 TEST_F(HwRouteStatTest, CounterModify) {
   if (skipTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     addRoute(
         kAddr1, 120, PortDescriptor(masterLogicalPortIds()[0]), kCounterID1);
     addRoute(
         kAddr2, 120, PortDescriptor(masterLogicalPortIds()[0]), kCounterID2);
   };
-  auto verify = [=]() {
+  auto verify = [=, this]() {
     auto countBefore = utility::getRouteStat(getHwSwitch(), kCounterID1);
     auto counter1Expected = sendL3Packet(kAddr1, masterLogicalPortIds()[1]);
     auto countAfter = utility::getRouteStat(getHwSwitch(), kCounterID1);

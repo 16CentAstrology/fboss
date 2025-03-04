@@ -15,7 +15,6 @@
 #include "fboss/agent/hw/bcm/BcmFieldProcessorUtils.h"
 #include "fboss/agent/hw/bcm/BcmPlatform.h"
 #include "fboss/agent/hw/bcm/BcmPortTable.h"
-#include "fboss/agent/state/SwitchState.h"
 
 extern "C" {
 #include <bcm/switch.h>
@@ -213,7 +212,7 @@ void BcmPtpTcMgr::disablePtpTc() {
     }
 
     BCM_CHECK_ERROR(
-        bcm_port_timesync_config_set(unit, port, 0 /* config_count */, NULL),
+        bcm_port_timesync_config_set(unit, port, 0 /* config_count */, nullptr),
         "Error in disabling TC correction for port ",
         port);
 

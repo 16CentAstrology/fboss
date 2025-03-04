@@ -9,13 +9,13 @@
  */
 
 #include "fboss/agent/platforms/sai/SaiWedge400CPlatform.h"
+#include "fboss/agent/hw/sai/api/ArsApi.h"
+#include "fboss/agent/hw/sai/api/ArsProfileApi.h"
+#include "fboss/agent/hw/sai/api/UdfApi.h"
 #include "fboss/agent/hw/switch_asics/EbroAsic.h"
-#include "fboss/agent/platforms/common/ebb_lab/Wedge400CEbbLabPlatformMapping.h"
-#include "fboss/agent/platforms/common/wedge400c/Wedge400CFabricPlatformMapping.h"
 #include "fboss/agent/platforms/common/wedge400c/Wedge400CGrandTetonPlatformMapping.h"
 #include "fboss/agent/platforms/common/wedge400c/Wedge400CPlatformMapping.h"
 #include "fboss/agent/platforms/common/wedge400c/Wedge400CPlatformUtil.h"
-#include "fboss/agent/platforms/common/wedge400c/Wedge400CVoqPlatformMapping.h"
 #include "fboss/agent/platforms/sai/SaiWedge400CPlatformPort.h"
 
 #include <algorithm>
@@ -31,40 +31,32 @@ SaiWedge400CPlatform::SaiWedge400CPlatform(
           createWedge400CPlatformMapping(platformMappingStr),
           localMac) {}
 
-SaiWedge400CPlatform::SaiWedge400CPlatform(
-    std::unique_ptr<PlatformProductInfo> productInfo,
-    std::unique_ptr<Wedge400CEbbLabPlatformMapping> mapping,
-    folly::MacAddress localMac)
-    : SaiTajoPlatform(std::move(productInfo), std::move(mapping), localMac) {}
-
-SaiWedge400CPlatform::SaiWedge400CPlatform(
-    std::unique_ptr<PlatformProductInfo> productInfo,
-    std::unique_ptr<Wedge400CVoqPlatformMapping> mapping,
-    folly::MacAddress localMac)
-    : SaiTajoPlatform(std::move(productInfo), std::move(mapping), localMac) {}
-
-SaiWedge400CPlatform::SaiWedge400CPlatform(
-    std::unique_ptr<PlatformProductInfo> productInfo,
-    std::unique_ptr<Wedge400CFabricPlatformMapping> mapping,
-    folly::MacAddress localMac)
-    : SaiTajoPlatform(std::move(productInfo), std::move(mapping), localMac) {}
-
 void SaiWedge400CPlatform::setupAsic(
-    cfg::SwitchType switchType,
     std::optional<int64_t> switchId,
-    std::optional<cfg::Range64> systemPortRange) {
-  asic_ = std::make_unique<EbroAsic>(switchType, switchId, systemPortRange);
-#if defined(TAJO_SDK_VERSION_1_58_0) || defined(TAJO_SDK_VERSION_1_60_0)
-  asic_->setDefaultStreamType(cfg::StreamType::UNICAST);
+    const cfg::SwitchInfo& switchInfo,
+    std::optional<HwAsic::FabricNodeRole> fabricNodeRole) {
+  CHECK(!fabricNodeRole.has_value());
+  std::optional<cfg::SdkVersion> sdkVersion;
+#if defined(TAJO_SDK_GTE_24_4_90)
+  /*
+   * HwAsic table instance in the sw switch reads the SDK version
+   * from the agent config for prod and from sai switch ensemble
+   * for hw test. However, hw asic instance owned by the sai switch
+   * do not carry the SDK version. Hence, populating the SDK version
+   */
+  auto agentConfig = config();
+  if (agentConfig->thrift.sw()->sdkVersion().has_value()) {
+    sdkVersion = agentConfig->thrift.sw()->sdkVersion().value();
+  } else {
+    sdkVersion = cfg::SdkVersion{};
+    sdkVersion->asicSdk() = "24.4.90";
+  }
 #endif
+  asic_ = std::make_unique<EbroAsic>(switchId, switchInfo, sdkVersion);
 }
 
 HwAsic* SaiWedge400CPlatform::getAsic() const {
   return asic_.get();
-}
-
-std::string SaiWedge400CPlatform::getHwConfig() {
-  return *config()->thrift.platform()->get_chip().get_asic().config();
 }
 
 std::vector<sai_system_port_config_t>
@@ -93,22 +85,10 @@ SaiWedge400CPlatform::getInternalSystemPortConfig() const {
 
 SaiWedge400CPlatform::~SaiWedge400CPlatform() {}
 
-SaiWedge400CEbbLabPlatform::SaiWedge400CEbbLabPlatform(
-    std::unique_ptr<PlatformProductInfo> productInfo,
-    folly::MacAddress localMac,
-    const std::string& platformMappingStr)
-    : SaiWedge400CPlatform(
-          std::move(productInfo),
-          platformMappingStr.empty()
-              ? std::make_unique<Wedge400CEbbLabPlatformMapping>()
-              : std::make_unique<Wedge400CEbbLabPlatformMapping>(
-                    platformMappingStr),
-          localMac) {}
-
 std::unique_ptr<PlatformMapping>
 SaiWedge400CPlatform::createWedge400CPlatformMapping(
     const std::string& platformMappingStr) {
-  if (utility::isWedge400CPlatformRackTypeGrandTeton()) {
+  if (utility::isWedge400CPlatformRackTypeInference()) {
     return platformMappingStr.empty()
         ? std::make_unique<Wedge400CGrandTetonPlatformMapping>()
         : std::make_unique<Wedge400CGrandTetonPlatformMapping>(
@@ -119,28 +99,14 @@ SaiWedge400CPlatform::createWedge400CPlatformMapping(
       : std::make_unique<Wedge400CPlatformMapping>(platformMappingStr);
 }
 
-SaiWedge400CVoqPlatform::SaiWedge400CVoqPlatform(
-    std::unique_ptr<PlatformProductInfo> productInfo,
-    folly::MacAddress localMac,
-    const std::string& platformMappingStr)
-    : SaiWedge400CPlatform(
-          std::move(productInfo),
-          platformMappingStr.empty()
-              ? std::make_unique<Wedge400CVoqPlatformMapping>()
-              : std::make_unique<Wedge400CVoqPlatformMapping>(
-                    platformMappingStr),
-          localMac) {}
-
-SaiWedge400CFabricPlatform::SaiWedge400CFabricPlatform(
-    std::unique_ptr<PlatformProductInfo> productInfo,
-    folly::MacAddress localMac,
-    const std::string& platformMappingStr)
-    : SaiWedge400CPlatform(
-          std::move(productInfo),
-          platformMappingStr.empty()
-              ? std::make_unique<Wedge400CFabricPlatformMapping>()
-              : std::make_unique<Wedge400CFabricPlatformMapping>(
-                    platformMappingStr),
-          localMac) {}
+const std::set<sai_api_t>& SaiWedge400CPlatform::getSupportedApiList() const {
+  static auto apis = getDefaultSwitchAsicSupportedApis();
+  apis.erase(facebook::fboss::UdfApi::ApiType);
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+  apis.erase(facebook::fboss::ArsApi::ApiType);
+  apis.erase(facebook::fboss::ArsProfileApi::ApiType);
+#endif
+  return apis;
+}
 
 } // namespace facebook::fboss

@@ -13,7 +13,7 @@
 namespace facebook::fboss {
 
 class Mirror;
-class MirrorTunnel;
+struct MirrorTunnel;
 class SwSwitch;
 
 template <typename AddrT>
@@ -48,6 +48,8 @@ class MirrorManagerImpl {
       const NextHop& nextHop,
       const std::shared_ptr<NeighborEntryT>& neighbor,
       const std::optional<TunnelUdpPorts>& udpPorts);
+
+  PortID getEventorPortForSflowMirror(SwitchID switchId);
 
   template <typename ADDRT = AddrT>
   typename std::

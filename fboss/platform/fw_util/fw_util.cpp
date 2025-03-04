@@ -1,45 +1,79 @@
 //  Copyright 2021-present Facebook. All Rights Reserved.
 
-#include <string.h>
-#include <sysexits.h>
-#include <iostream>
-#include <memory>
+#include <folly/logging/xlog.h>
 
-#include <folly/init/Init.h>
-#include <glog/logging.h>
-
-#include "fboss/platform/fw_util/FirmwareUpgradeInterface.h"
-#include "fboss/platform/fw_util/darwinFwUtil/FirmwareUpgradeDarwin.h"
-#include "fboss/platform/helpers/Utils.h"
+#include <filesystem>
+#include "fboss/platform/fw_util/Flags.h"
+#include "fboss/platform/fw_util/FwUtilImpl.h"
+#include "fboss/platform/fw_util/fw_util_helpers.h"
+#include "fboss/platform/helpers/InitCli.h"
 
 using namespace facebook::fboss::platform::fw_util;
 using namespace facebook::fboss::platform;
 
-std::unique_ptr<FirmwareUpgradeInterface> get_plat_type(
-    std::string& upgradable_components) {
-  // TODO: will check platform information (maybe fboss whoami) to
-  // to figure out which platform we are dealing with
-  upgradable_components =
-      "cpu_cpld, sc_scd, sc_cpld, sc_sat_cpld0, sc_sat_cpld1, fan_cpld, bios";
-  return std::make_unique<FirmwareUpgradeDarwin>();
-
-  // TODO: add else logic for other platforms
-}
 /*
  * This utility will perform firmware upgrade for
- * TOR BMC Lite platform. Firmware upgrade will
+ * all BMC Lite platform. Firmware upgrade will
  * include cpld, fpga, and bios.
  */
 int main(int argc, char* argv[]) {
-  // TODO: Add file lock to prevent multiple instance of fw-util from running
+  // TODO: Add file lock to prevent multiple instance of fw_util from running
   // simultaneously.
-  std::string upgradable_components = "";
-  std::unique_ptr<FirmwareUpgradeInterface> firmwareUpgradeInstance =
-      get_plat_type(upgradable_components);
-  if (firmwareUpgradeInstance) {
-    firmwareUpgradeInstance->upgradeFirmware(argc, argv, upgradable_components);
-  } else {
-    helpers::showDeviceInfo();
+
+  helpers::initCli(&argc, &argv, "fw_util");
+
+  FwUtilImpl fwUtilImpl;
+
+  // TODO: To be removed once XFN change the commands in their codes
+  if (FLAGS_fw_action.empty()) {
+    if (argc > 1) {
+      FLAGS_fw_target_name = argv[1];
+    }
+    if (argc > 2) {
+      FLAGS_fw_action = argv[2];
+    }
+    if (argc > 3) {
+      FLAGS_fw_binary_file = argv[3];
+    }
+    XLOG(WARNING)
+        << "Deprecation Warning: This current command line format will soon be deprecated.Please consider using fw_util --fw_target_name='binaryName' --fw_action='action' --fw_binary_file='path_to_file_to_be_upraded'";
   }
-  return EX_OK;
+
+  if (FLAGS_fw_action == "version" && !FLAGS_fw_binary_file.empty()) {
+    XLOG(ERR) << "--fw_binary_file cannot be part of version command";
+    exit(1);
+  }
+
+  if (FLAGS_fw_action == "program" &&
+      (FLAGS_fw_target_name.empty() || FLAGS_fw_binary_file.empty())) {
+    XLOG(ERR)
+        << "--fw_binary_file and --fw_target_name need to be specified for firmware programming";
+    exit(1);
+  }
+
+  // Check for file existence only for actions that require a binary file
+  if (!FLAGS_fw_binary_file.empty() && FLAGS_fw_action != "read" &&
+      !std::filesystem::exists(FLAGS_fw_binary_file)) {
+    XLOG(ERR) << "--fw_binary_file cannot be found in the specified path";
+    exit(1);
+  }
+
+  if (FLAGS_fw_action == "version" && !FLAGS_fw_target_name.empty()) {
+    fwUtilImpl.printVersion(toLower(FLAGS_fw_target_name));
+  } else if (
+      FLAGS_fw_action == "program" || FLAGS_fw_action == "verify" ||
+      FLAGS_fw_action == "read") {
+    fwUtilImpl.doFirmwareAction(
+        toLower(FLAGS_fw_target_name), toLower(FLAGS_fw_action));
+  } else if (FLAGS_fw_action == "list") {
+    XLOG(INFO) << "supported Binary names are: " << fwUtilImpl.printFpdList();
+  } else if (FLAGS_fw_action == "audit") {
+    fwUtilImpl.doVersionAudit();
+  } else {
+    XLOG(ERR)
+        << "Wrong usage. please run fw_util --helpon=Flags for the flags needed for proper usage";
+    exit(1);
+  }
+
+  return 0;
 }

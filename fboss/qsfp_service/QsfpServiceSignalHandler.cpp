@@ -11,7 +11,7 @@
 
 #include "fboss/qsfp_service/QsfpServiceHandler.h"
 
-#include <folly/experimental/FunctionScheduler.h>
+#include <folly/executors/FunctionScheduler.h>
 #include <thrift/lib/cpp2/server/ThriftServer.h>
 #include <chrono>
 #include <csignal>
@@ -41,6 +41,9 @@ void QsfpServiceSignalHandler::signalReceived(int signum) noexcept {
   XLOG(INFO)
       << "[Exit] Stopped thrift server listening. Stop time: "
       << duration_cast<duration<float>>(thriftServerStopped - begin).count();
+
+  // Set graceful eiting flag to true so that refreshStateMachine can break
+  qsfpServiceHandler_->getTransceiverManager()->setGracefulExitingFlag();
 
   // stop stats collection and state machine refresh
   functionScheduler_->shutdown();

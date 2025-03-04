@@ -25,6 +25,13 @@
 
 extern "C" {
 #include <sai.h>
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+#ifndef IS_OSS_BRCM_SAI
+#include <experimental/saiexperimentalvendorswitch.h>
+#else
+#include <saiexperimentalvendorswitch.h>
+#endif
+#endif
 }
 
 namespace facebook::fboss {
@@ -158,6 +165,11 @@ struct SaiSwitchTraits {
         SAI_SWITCH_ATTR_RESTART_WARM,
         bool,
         SaiBoolDefaultFalse>;
+    using SwitchPreShutdown = SaiAttribute<
+        EnumType,
+        SAI_SWITCH_ATTR_PRE_SHUTDOWN,
+        bool,
+        SaiBoolDefaultFalse>;
     using QosDscpToTcMap = SaiAttribute<
         EnumType,
         SAI_SWITCH_ATTR_QOS_DSCP_TO_TC_MAP,
@@ -273,10 +285,24 @@ struct SaiSwitchTraits {
         SAI_SWITCH_ATTR_ECN_ECT_THRESHOLD_ENABLE,
         bool,
         SaiBoolDefaultFalse>;
+    struct AttributeFirmwareCoreTouse {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using FirmwareCoreToUse = SaiExtensionAttribute<
+        sai_uint8_t,
+        AttributeFirmwareCoreTouse,
+        SaiIntDefault<sai_uint8_t>>;
     using FirmwarePathName = SaiAttribute<
         EnumType,
         SAI_SWITCH_ATTR_FIRMWARE_PATH_NAME,
         std::vector<sai_int8_t>,
+        SaiS8ListDefault>;
+    struct AttributeFirmwareLogFile {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using FirmwareLogFile = SaiExtensionAttribute<
+        std::vector<sai_int8_t>,
+        AttributeFirmwareLogFile,
         SaiS8ListDefault>;
     using FirmwareLoadMethod = SaiAttribute<
         EnumType,
@@ -374,7 +400,6 @@ struct SaiSwitchTraits {
         sai_uint32_t,
         SaiIntDefault<sai_uint32_t>>;
 #endif
-
     /* extension attributes */
     struct AttributeLedIdWrapper {
       std::optional<sai_attr_id_t> operator()();
@@ -416,11 +441,266 @@ struct SaiSwitchTraits {
     };
     using RestartIssu =
         SaiExtensionAttribute<bool, AttributeRestartIssuWrapper>;
+    struct AttributeDelayDropCongThreshold {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using DelayDropCongThreshold =
+        SaiExtensionAttribute<sai_uint8_t, AttributeDelayDropCongThreshold>;
     struct AttributeForceTrafficOverFabricWrapper {
       std::optional<sai_attr_id_t> operator()();
     };
     using ForceTrafficOverFabric =
         SaiExtensionAttribute<bool, AttributeForceTrafficOverFabricWrapper>;
+    struct AttributeWarmBootTargetVersionWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using WarmBootTargetVersion = SaiExtensionAttribute<
+        std::vector<sai_int8_t>,
+        AttributeWarmBootTargetVersionWrapper>;
+
+    struct AttributeSwitchIsolateWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using SwitchIsolate =
+        SaiExtensionAttribute<bool, AttributeSwitchIsolateWrapper>;
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+    using CreditWd = SaiAttribute<
+        EnumType,
+        SAI_SWITCH_ATTR_CREDIT_WD,
+        bool,
+        SaiBoolDefaultTrue>;
+    using CreditWdTimer = SaiAttribute<
+        EnumType,
+        SAI_SWITCH_ATTR_CREDIT_WD_TIMER,
+        sai_uint32_t,
+        SaiIntValueDefault<sai_uint32_t, 500>>;
+#endif
+    struct AttributeMaxCoresWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using MaxCores = SaiExtensionAttribute<
+        sai_uint32_t,
+        AttributeMaxCoresWrapper,
+        SaiIntDefault<uint32_t>>;
+    struct AttributeSdkBootTimeWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using SdkBootTime = SaiExtensionAttribute<
+        sai_uint32_t,
+        AttributeSdkBootTimeWrapper,
+        SaiIntDefault<uint32_t>>;
+    using PfcDlrPacketAction = SaiAttribute<
+        EnumType,
+        SAI_SWITCH_ATTR_PFC_DLR_PACKET_ACTION,
+        sai_int32_t,
+        SaiPacketActionDefaultDrop>;
+    struct AttributeFabricRemoteReachablePortList {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using FabricRemoteReachablePortList = SaiExtensionAttribute<
+        std::vector<sai_object_id_t>,
+        AttributeFabricRemoteReachablePortList>;
+    struct AttributeRouteNoImplicitMetaDataWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using RouteNoImplicitMetaData =
+        SaiExtensionAttribute<bool, AttributeRouteNoImplicitMetaDataWrapper>;
+    struct AttributeRouteAllowImplicitMetaDataWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using RouteAllowImplicitMetaData =
+        SaiExtensionAttribute<bool, AttributeRouteAllowImplicitMetaDataWrapper>;
+    struct AttributeMultiStageLocalSwitchIdsWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using MultiStageLocalSwitchIds = SaiExtensionAttribute<
+        std::vector<sai_uint32_t>,
+        AttributeMultiStageLocalSwitchIdsWrapper,
+        SaiU32ListDefault>;
+    struct AttributeVoqLatencyMinLocalNs {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using VoqLatencyMinLocalNs = SaiExtensionAttribute<
+        sai_int32_t,
+        AttributeVoqLatencyMinLocalNs,
+        SaiIntDefault<sai_int32_t>>;
+    struct AttributeVoqLatencyMaxLocalNs {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using VoqLatencyMaxLocalNs = SaiExtensionAttribute<
+        sai_int32_t,
+        AttributeVoqLatencyMaxLocalNs,
+        SaiIntDefault<sai_int32_t>>;
+    struct AttributeVoqLatencyMinLevel1Ns {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using VoqLatencyMinLevel1Ns = SaiExtensionAttribute<
+        sai_int32_t,
+        AttributeVoqLatencyMinLevel1Ns,
+        SaiIntDefault<sai_int32_t>>;
+    struct AttributeVoqLatencyMaxLevel1Ns {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using VoqLatencyMaxLevel1Ns = SaiExtensionAttribute<
+        sai_int32_t,
+        AttributeVoqLatencyMaxLevel1Ns,
+        SaiIntDefault<sai_int32_t>>;
+    struct AttributeVoqLatencyMinLevel2Ns {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using VoqLatencyMinLevel2Ns = SaiExtensionAttribute<
+        sai_int32_t,
+        AttributeVoqLatencyMinLevel2Ns,
+        SaiIntDefault<sai_int32_t>>;
+    struct AttributeVoqLatencyMaxLevel2Ns {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using VoqLatencyMaxLevel2Ns = SaiExtensionAttribute<
+        sai_int32_t,
+        AttributeVoqLatencyMaxLevel2Ns,
+        SaiIntDefault<sai_int32_t>>;
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+    using ArsProfile = SaiAttribute<
+        EnumType,
+        SAI_SWITCH_ATTR_ARS_PROFILE,
+        SaiObjectIdT,
+        SaiObjectIdDefault>;
+#endif
+    struct AttributeReachabilityGroupList {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using ReachabilityGroupList = SaiExtensionAttribute<
+        std::vector<sai_uint32_t>,
+        AttributeReachabilityGroupList,
+        SaiU32ListDefault>;
+    struct AttributeFabricLinkLayerFlowControlThreshold {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using FabricLinkLayerFlowControlThreshold = SaiExtensionAttribute<
+        std::vector<sai_uint32_t>,
+        AttributeFabricLinkLayerFlowControlThreshold,
+        SaiU32ListDefault>;
+    struct AttributeSramFreePercentXoffThWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using SramFreePercentXoffTh = SaiExtensionAttribute<
+        sai_uint8_t,
+        AttributeSramFreePercentXoffThWrapper,
+        SaiIntDefault<sai_uint8_t>>;
+    struct AttributeSramFreePercentXonThWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using SramFreePercentXonTh = SaiExtensionAttribute<
+        sai_uint8_t,
+        AttributeSramFreePercentXonThWrapper,
+        SaiIntDefault<sai_uint8_t>>;
+    struct AttributeNoAclsForTrapsWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using NoAclsForTraps = SaiExtensionAttribute<
+        bool,
+        AttributeNoAclsForTrapsWrapper,
+        SaiBoolDefaultFalse>;
+    struct AttributeMaxSystemPortId {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using MaxSystemPortId = SaiExtensionAttribute<
+        sai_int32_t,
+        AttributeMaxSystemPortId,
+        SaiIntDefault<sai_int32_t>>;
+    struct AttributeMaxLocalSystemPortId {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using MaxLocalSystemPortId = SaiExtensionAttribute<
+        sai_int32_t,
+        AttributeMaxLocalSystemPortId,
+        SaiIntDefault<sai_int32_t>>;
+    struct AttributeMaxSystemPorts {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using MaxSystemPorts = SaiExtensionAttribute<
+        sai_int32_t,
+        AttributeMaxSystemPorts,
+        SaiIntDefault<sai_int32_t>>;
+    struct AttributeMaxVoqs {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using MaxVoqs = SaiExtensionAttribute<
+        sai_int32_t,
+        AttributeMaxVoqs,
+        SaiIntDefault<sai_int32_t>>;
+    struct AttributeFabricCllfcTxCreditThWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using FabricCllfcTxCreditTh = SaiExtensionAttribute<
+        sai_uint16_t,
+        AttributeFabricCllfcTxCreditThWrapper,
+        SaiIntDefault<sai_uint16_t>>;
+    struct AttributeVoqDramBoundThWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using VoqDramBoundTh = SaiExtensionAttribute<
+        std::vector<sai_uint32_t>,
+        AttributeVoqDramBoundThWrapper,
+        SaiU32ListDefault>;
+    struct AttributeCondEntropyRehashPeriodUS {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using CondEntropyRehashPeriodUS = SaiExtensionAttribute<
+        sai_uint32_t,
+        AttributeCondEntropyRehashPeriodUS,
+        SaiIntDefault<sai_uint32_t>>;
+    struct AttributeShelSrcIp {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using ShelSrcIp = SaiExtensionAttribute<
+        folly::IPAddress,
+        AttributeShelSrcIp,
+        SaiIpAddressDefault>;
+    struct AttributeShelDstIp {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using ShelDstIp = SaiExtensionAttribute<
+        folly::IPAddress,
+        AttributeShelDstIp,
+        SaiIpAddressDefault>;
+    struct AttributeShelSrcMac {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using ShelSrcMac = SaiExtensionAttribute<
+        folly::MacAddress,
+        AttributeShelSrcMac,
+        SaiMacAddressDefault>;
+    struct AttributeShelPeriodicInterval {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using ShelPeriodicInterval = SaiExtensionAttribute<
+        sai_uint32_t,
+        AttributeShelPeriodicInterval,
+        SaiIntDefault<sai_uint32_t>>;
+    struct AttributeMaxSwitchId {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using MaxSwitchId = SaiExtensionAttribute<
+        sai_uint32_t,
+        AttributeMaxSwitchId,
+        SaiIntDefault<sai_uint32_t>>;
+    struct AttributeArsAvailableFlows {
+      std::optional<sai_attr_id_t> operator()();
+    };
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+    using ArsAvailableFlows = SaiExtensionAttribute<
+        sai_uint32_t,
+        AttributeArsAvailableFlows,
+        SaiIntDefault<sai_uint32_t>>;
+#endif
+    struct AttributeSflowAggrNofSamplesWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using SflowAggrNofSamples = SaiExtensionAttribute<
+        sai_uint8_t,
+        AttributeSflowAggrNofSamplesWrapper,
+        SaiIntDefault<sai_uint8_t>>;
   };
   using AdapterKey = SwitchSaiId;
   using AdapterHostKey = std::monostate;
@@ -448,7 +728,9 @@ struct SaiSwitchTraits {
       std::optional<Attributes::TamObject>,
       std::optional<Attributes::UseEcnThresholds>,
       std::optional<Attributes::CounterRefreshInterval>,
+      std::optional<Attributes::FirmwareCoreToUse>,
       std::optional<Attributes::FirmwarePathName>,
+      std::optional<Attributes::FirmwareLogFile>,
       std::optional<Attributes::FirmwareLoadMethod>,
       std::optional<Attributes::FirmwareLoadType>,
       std::optional<Attributes::HardwareAccessBus>,
@@ -467,7 +749,71 @@ struct SaiSwitchTraits {
 #endif
       ,
       std::optional<Attributes::DllPath>,
-      std::optional<Attributes::RestartIssu>>;
+      std::optional<Attributes::RestartIssu>,
+      std::optional<Attributes::SwitchIsolate>,
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+      std::optional<Attributes::CreditWd>,
+      std::optional<Attributes::CreditWdTimer>,
+#endif
+      std::optional<Attributes::MaxCores>,
+      std::optional<Attributes::PfcDlrPacketAction>,
+      std::optional<Attributes::RouteNoImplicitMetaData>,
+      std::optional<Attributes::RouteAllowImplicitMetaData>,
+      std::optional<Attributes::MultiStageLocalSwitchIds>,
+      std::optional<Attributes::VoqLatencyMinLocalNs>,
+      std::optional<Attributes::VoqLatencyMaxLocalNs>,
+      std::optional<Attributes::VoqLatencyMinLevel1Ns>,
+      std::optional<Attributes::VoqLatencyMaxLevel1Ns>,
+      std::optional<Attributes::VoqLatencyMinLevel2Ns>,
+      std::optional<Attributes::VoqLatencyMaxLevel2Ns>,
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+      std::optional<Attributes::ArsProfile>,
+#endif
+      std::optional<Attributes::ReachabilityGroupList>,
+      std::optional<Attributes::DelayDropCongThreshold>,
+      std::optional<Attributes::FabricLinkLayerFlowControlThreshold>,
+      std::optional<Attributes::SramFreePercentXoffTh>,
+      std::optional<Attributes::SramFreePercentXonTh>,
+      std::optional<Attributes::NoAclsForTraps>,
+      std::optional<Attributes::MaxSystemPortId>,
+      std::optional<Attributes::MaxLocalSystemPortId>,
+      std::optional<Attributes::MaxSystemPorts>,
+      std::optional<Attributes::MaxVoqs>,
+      std::optional<Attributes::FabricCllfcTxCreditTh>,
+      std::optional<Attributes::VoqDramBoundTh>,
+      std::optional<Attributes::CondEntropyRehashPeriodUS>,
+      std::optional<Attributes::ShelSrcIp>,
+      std::optional<Attributes::ShelDstIp>,
+      std::optional<Attributes::ShelSrcMac>,
+      std::optional<Attributes::ShelPeriodicInterval>,
+      std::optional<Attributes::MaxSwitchId>,
+      std::optional<Attributes::SflowAggrNofSamples>>;
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+  static constexpr std::array<sai_stat_id_t, 3> CounterIdsToRead = {
+      SAI_SWITCH_STAT_REACHABILITY_DROP,
+      SAI_SWITCH_STAT_GLOBAL_DROP,
+      SAI_SWITCH_STAT_PACKET_INTEGRITY_DROP,
+  };
+#else
+  static constexpr std::array<sai_stat_id_t, 2> CounterIdsToRead = {
+      SAI_SWITCH_STAT_REACHABILITY_DROP,
+      SAI_SWITCH_STAT_GLOBAL_DROP,
+  };
+#endif
+  static constexpr std::array<sai_stat_id_t, 0> CounterIdsToReadAndClear = {};
+  static const std::vector<sai_stat_id_t>& dramStats();
+  static const std::vector<sai_stat_id_t>& rciWatermarkStats();
+  static const std::vector<sai_stat_id_t>& dtlWatermarkStats();
+  static const std::vector<sai_stat_id_t>& dramBlockTime();
+  static const std::vector<sai_stat_id_t>& egressCoreBufferWatermarkBytes();
+  static const std::vector<sai_stat_id_t>& deletedCredits();
+  static const std::vector<sai_stat_id_t>& sramMinBufferWatermarkBytes();
+  static const std::vector<sai_stat_id_t>& fdrFifoWatermarkBytes();
+  static const std::vector<sai_stat_id_t>& egressFabricCellError();
+  static const std::vector<sai_stat_id_t>& egressNonFabricCellError();
+  static const std::vector<sai_stat_id_t>& egressNonFabricCellUnpackError();
+  static const std::vector<sai_stat_id_t>& egressParityCellError();
 };
 
 SAI_ATTRIBUTE_NAME(Switch, InitSwitch)
@@ -483,6 +829,7 @@ SAI_ATTRIBUTE_NAME(Switch, LagDefaultHashSeed)
 SAI_ATTRIBUTE_NAME(Switch, EcmpDefaultHashAlgorithm)
 SAI_ATTRIBUTE_NAME(Switch, LagDefaultHashAlgorithm)
 SAI_ATTRIBUTE_NAME(Switch, SwitchRestartWarm)
+SAI_ATTRIBUTE_NAME(Switch, SwitchPreShutdown)
 
 SAI_ATTRIBUTE_NAME(Switch, CpuPort)
 SAI_ATTRIBUTE_NAME(Switch, DefaultVlanId)
@@ -529,7 +876,9 @@ SAI_ATTRIBUTE_NAME(Switch, UseEcnThresholds)
 SAI_ATTRIBUTE_NAME(Switch, EgressPoolAvaialableSize)
 SAI_ATTRIBUTE_NAME(Switch, CounterRefreshInterval)
 
+SAI_ATTRIBUTE_NAME(Switch, FirmwareCoreToUse)
 SAI_ATTRIBUTE_NAME(Switch, FirmwarePathName)
+SAI_ATTRIBUTE_NAME(Switch, FirmwareLogFile)
 SAI_ATTRIBUTE_NAME(Switch, FirmwareLoadMethod)
 SAI_ATTRIBUTE_NAME(Switch, FirmwareLoadType)
 SAI_ATTRIBUTE_NAME(Switch, HardwareAccessBus)
@@ -545,6 +894,7 @@ SAI_ATTRIBUTE_NAME(Switch, SysPortConfigList)
 SAI_ATTRIBUTE_NAME(Switch, SwitchType)
 SAI_ATTRIBUTE_NAME(Switch, RegisterReadFn)
 SAI_ATTRIBUTE_NAME(Switch, RegisterWriteFn)
+SAI_ATTRIBUTE_NAME(Switch, MaxSwitchId)
 
 SAI_ATTRIBUTE_NAME(Switch, HwEccErrorInitiate)
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
@@ -553,7 +903,53 @@ SAI_ATTRIBUTE_NAME(Switch, EcmpMemberCount)
 #endif
 SAI_ATTRIBUTE_NAME(Switch, DllPath)
 SAI_ATTRIBUTE_NAME(Switch, RestartIssu)
+SAI_ATTRIBUTE_NAME(Switch, DelayDropCongThreshold)
 SAI_ATTRIBUTE_NAME(Switch, ForceTrafficOverFabric)
+SAI_ATTRIBUTE_NAME(Switch, WarmBootTargetVersion)
+SAI_ATTRIBUTE_NAME(Switch, SwitchIsolate)
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+SAI_ATTRIBUTE_NAME(Switch, CreditWd)
+SAI_ATTRIBUTE_NAME(Switch, CreditWdTimer)
+#endif
+SAI_ATTRIBUTE_NAME(Switch, MaxCores)
+SAI_ATTRIBUTE_NAME(Switch, PfcDlrPacketAction)
+SAI_ATTRIBUTE_NAME(Switch, SdkBootTime)
+SAI_ATTRIBUTE_NAME(Switch, FabricRemoteReachablePortList)
+SAI_ATTRIBUTE_NAME(Switch, RouteNoImplicitMetaData)
+SAI_ATTRIBUTE_NAME(Switch, RouteAllowImplicitMetaData)
+SAI_ATTRIBUTE_NAME(Switch, MultiStageLocalSwitchIds)
+SAI_ATTRIBUTE_NAME(Switch, VoqLatencyMinLocalNs)
+SAI_ATTRIBUTE_NAME(Switch, VoqLatencyMaxLocalNs)
+SAI_ATTRIBUTE_NAME(Switch, VoqLatencyMinLevel1Ns)
+SAI_ATTRIBUTE_NAME(Switch, VoqLatencyMaxLevel1Ns)
+SAI_ATTRIBUTE_NAME(Switch, VoqLatencyMinLevel2Ns)
+SAI_ATTRIBUTE_NAME(Switch, VoqLatencyMaxLevel2Ns)
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+SAI_ATTRIBUTE_NAME(Switch, ArsProfile)
+#endif
+SAI_ATTRIBUTE_NAME(Switch, ReachabilityGroupList);
+SAI_ATTRIBUTE_NAME(Switch, FabricLinkLayerFlowControlThreshold);
+SAI_ATTRIBUTE_NAME(Switch, SramFreePercentXoffTh);
+SAI_ATTRIBUTE_NAME(Switch, SramFreePercentXonTh);
+SAI_ATTRIBUTE_NAME(Switch, NoAclsForTraps);
+SAI_ATTRIBUTE_NAME(Switch, MaxSystemPortId);
+SAI_ATTRIBUTE_NAME(Switch, MaxLocalSystemPortId);
+SAI_ATTRIBUTE_NAME(Switch, MaxSystemPorts);
+SAI_ATTRIBUTE_NAME(Switch, MaxVoqs);
+SAI_ATTRIBUTE_NAME(Switch, FabricCllfcTxCreditTh);
+SAI_ATTRIBUTE_NAME(Switch, VoqDramBoundTh);
+SAI_ATTRIBUTE_NAME(Switch, CondEntropyRehashPeriodUS)
+SAI_ATTRIBUTE_NAME(Switch, ShelSrcIp)
+SAI_ATTRIBUTE_NAME(Switch, ShelDstIp)
+SAI_ATTRIBUTE_NAME(Switch, ShelSrcMac)
+SAI_ATTRIBUTE_NAME(Switch, ShelPeriodicInterval)
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+SAI_ATTRIBUTE_NAME(Switch, ArsAvailableFlows)
+#endif
+SAI_ATTRIBUTE_NAME(Switch, SflowAggrNofSamples)
+
+template <>
+struct SaiObjectHasStats<SaiSwitchTraits> : public std::true_type {};
 
 class SwitchApi : public SaiApi<SwitchApi> {
  public:
@@ -579,9 +975,23 @@ class SwitchApi : public SaiApi<SwitchApi> {
   void registerTamEventCallback(
       SwitchSaiId id,
       sai_tam_event_notification_fn tam_event_cb) const;
-  void registerParityErrorSwitchEventCallback(
+  void registerSwitchEventCallback(SwitchSaiId id, void* switch_event_cb) const;
+  void registerQueuePfcDeadlockNotificationCallback(
       SwitchSaiId id,
-      void* switch_event_cb) const;
+      sai_queue_pfc_deadlock_notification_fn queue_pfc_deadlock_notification_cb)
+      const;
+#if SAI_API_VERSION >= SAI_VERSION(1, 13, 0)
+  void registerTxReadyStatusChangeCallback(
+      SwitchSaiId id,
+      sai_port_host_tx_ready_notification_fn port_state_change_cb) const;
+#endif
+
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+  void registerVendorSwitchEventNotifyCallback(
+      const SwitchSaiId& id,
+      sai_vendor_switch_event_notification_fn event_notify_cb) const;
+#endif
+
   void unregisterRxCallback(SwitchSaiId switch_id) const {
     registerRxCallback(switch_id, nullptr);
   }
@@ -594,9 +1004,23 @@ class SwitchApi : public SaiApi<SwitchApi> {
   void unregisterTamEventCallback(SwitchSaiId id) const {
     registerTamEventCallback(id, nullptr);
   }
-  void unregisterParityErrorSwitchEventCallback(SwitchSaiId id) const {
-    registerParityErrorSwitchEventCallback(id, nullptr);
+  void unregisterSwitchEventCallback(SwitchSaiId id) const {
+    registerSwitchEventCallback(id, nullptr);
   }
+  void unregisterQueuePfcDeadlockNotificationCallback(SwitchSaiId id) const {
+    registerQueuePfcDeadlockNotificationCallback(id, nullptr);
+  }
+#if SAI_API_VERSION >= SAI_VERSION(1, 13, 0)
+  void unregisterTxReadyStatusChangeCallback(SwitchSaiId id) const {
+    registerTxReadyStatusChangeCallback(id, nullptr);
+  }
+#endif
+
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+  void unregisterVendorSwitchEventNotifyCallback(const SwitchSaiId& id) const {
+    registerVendorSwitchEventNotifyCallback(id, nullptr);
+  }
+#endif
 
  private:
   sai_status_t _create(
@@ -615,6 +1039,30 @@ class SwitchApi : public SaiApi<SwitchApi> {
   sai_status_t _setAttribute(SwitchSaiId id, const sai_attribute_t* attr)
       const {
     return api_->set_switch_attribute(id, attr);
+  }
+  sai_status_t _getStats(
+      SwitchSaiId key,
+      uint32_t num_of_counters,
+      const sai_stat_id_t* counter_ids,
+      sai_stats_mode_t mode,
+      uint64_t* counters) const {
+    /*
+     * Unfortunately not all vendors implement the ext stats api.
+     * ext stats api matter only for modes other than the (default)
+     * SAI_STATS_MODE_READ. So play defensive and call ext mode only
+     * when called with something other than default
+     */
+    return mode == SAI_STATS_MODE_READ
+        ? api_->get_switch_stats(key, num_of_counters, counter_ids, counters)
+        : api_->get_switch_stats_ext(
+              key, num_of_counters, counter_ids, mode, counters);
+  }
+
+  sai_status_t _clearStats(
+      SwitchSaiId key,
+      uint32_t num_of_counters,
+      const sai_stat_id_t* counter_ids) const {
+    return api_->clear_switch_stats(key, num_of_counters, counter_ids);
   }
 
   sai_switch_api_t* api_;

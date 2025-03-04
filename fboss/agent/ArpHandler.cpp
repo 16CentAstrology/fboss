@@ -14,7 +14,6 @@
 #include <folly/io/Cursor.h>
 #include <folly/logging/xlog.h>
 #include "fboss/agent/FbossError.h"
-#include "fboss/agent/HwSwitch.h"
 #include "fboss/agent/NeighborUpdater.h"
 #include "fboss/agent/PacketLogger.h"
 #include "fboss/agent/PortStats.h"
@@ -56,15 +55,22 @@ namespace facebook::fboss {
 
 ArpHandler::ArpHandler(SwSwitch* sw) : sw_(sw) {}
 
+template <typename VlanOrIntfT>
 void ArpHandler::handlePacket(
     unique_ptr<RxPacket> pkt,
     MacAddress /*dst*/,
     MacAddress /*src*/,
-    Cursor cursor) {
+    Cursor cursor,
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf) {
   auto stats = sw_->stats();
   CHECK(stats);
   PortID port = pkt->getSrcPort();
   CHECK(stats->port(port));
+
+  auto vlanID = getVlanIDFromVlanOrIntf(vlanOrIntf);
+  auto vlanIDStr = vlanID.has_value()
+      ? folly::to<std::string>(static_cast<int>(vlanID.value()))
+      : "None";
 
   stats->port(port)->arpPkt();
   // Read htype, ptype, hlen, and plen
@@ -89,10 +95,7 @@ void ArpHandler::handlePacket(
     return;
   }
 
-  // Look up the Vlan state.
-  auto state = sw_->getState();
-  auto vlan = state->getVlans()->getVlanIf(pkt->getSrcVlan());
-  if (!vlan) {
+  if (!vlanOrIntf) {
     // Hmm, we don't actually have this VLAN configured.
     // Perhaps the state has changed since we received the packet.
     stats->port(port)->pktDropped();
@@ -113,17 +116,16 @@ void ArpHandler::handlePacket(
 
   auto op = ArpOpCode(readOp);
 
-  auto updater = sw_->getNeighborUpdater();
   // Check to see if this IP address is in our ARP response table.
-  auto entry = vlan->getArpResponseTable()->getEntry(targetIP);
+  auto entry = vlanOrIntf->getArpResponseTable()->getEntry(targetIP);
   if (!entry) {
     // The target IP does not refer to us.
     XLOG(DBG5) << "ignoring ARP message for " << targetIP.str() << " on vlan "
-               << pkt->getSrcVlan();
+               << vlanIDStr;
     stats->port(port)->arpNotMine();
 
-    updater->receivedArpNotMine(
-        vlan->getID(),
+    receivedArpNotMine(
+        vlanOrIntf,
         senderIP,
         senderMac,
         PortDescriptor::fromRxPacket(*pkt.get()),
@@ -138,17 +140,28 @@ void ArpHandler::handlePacket(
     stats->port(port)->arpReplyRx();
   }
 
-  if (op == ARP_OP_REQUEST && !AggregatePort::isIngressValid(state, pkt)) {
+  if (op == ARP_OP_REQUEST &&
+      !AggregatePort::isIngressValid(sw_->getState(), pkt)) {
     XLOG(DBG2) << "Dropping invalid ARP request ingressing on port "
-               << pkt->getSrcPort() << " on vlan " << pkt->getSrcVlan()
-               << " for " << targetIP;
+               << pkt->getSrcPort() << " on vlan " << vlanIDStr << " for "
+               << targetIP;
+    return;
+  }
+  if (op == ARP_OP_REPLY &&
+      !AggregatePort::isIngressValid(sw_->getState(), pkt, true)) {
+    // drop ARP reply packets when LAG port is not up yet,
+    // otherwise, ARP entry would be created for this down port,
+    // and confuse later neighbor/next hop resolution logics
+    XLOG(DBG2) << "Dropping invalid ARP reply ingressing on port "
+               << pkt->getSrcPort() << " on vlan " << vlanIDStr << " for "
+               << targetIP;
     return;
   }
 
   // This ARP packet is destined to us.
   // Update the sender IP --> sender MAC entry in the ARP table.
-  updater->receivedArpMine(
-      vlan->getID(),
+  receivedArpMine(
+      vlanOrIntf,
       senderIP,
       senderMac,
       PortDescriptor::fromRxPacket(*pkt.get()),
@@ -157,7 +170,7 @@ void ArpHandler::handlePacket(
   // Send a reply if this is an ARP request.
   if (op == ARP_OP_REQUEST) {
     sendArpReply(
-        pkt->getSrcVlan(),
+        vlanID,
         pkt->getSrcPort(),
         entry->getMac(),
         targetIP,
@@ -168,6 +181,22 @@ void ArpHandler::handlePacket(
   (void)targetMac; // unused
 }
 
+// Explicit instantiation to avoid linker errors
+// https://isocpp.org/wiki/faq/templates#separate-template-fn-defn-from-decl
+template void ArpHandler::handlePacket<Vlan>(
+    unique_ptr<RxPacket> pkt,
+    MacAddress /*dst*/,
+    MacAddress /*src*/,
+    Cursor cursor,
+    const std::shared_ptr<Vlan>& vlanOrIntf);
+
+template void ArpHandler::handlePacket<Interface>(
+    unique_ptr<RxPacket> pkt,
+    MacAddress /*dst*/,
+    MacAddress /*src*/,
+    Cursor cursor,
+    const std::shared_ptr<Interface>& vlanOrIntf);
+
 static void sendArp(
     SwSwitch* sw,
     std::optional<VlanID> vlan,
@@ -177,6 +206,11 @@ static void sendArp(
     MacAddress targetMac,
     IPAddressV4 targetIP,
     const std::optional<PortDescriptor>& portDesc = std::nullopt) {
+  if (FLAGS_disable_neighbor_updates) {
+    XLOG(DBG4)
+        << "skipping sending ARP packet since neighbor updates are disabled";
+    return;
+  }
   auto vlanStr = vlan.has_value()
       ? folly::to<std::string>(static_cast<int>(vlan.value()))
       : "None";
@@ -215,31 +249,48 @@ static void sendArp(
 }
 
 void ArpHandler::floodGratuituousArp() {
-  for (auto iter : std::as_const(*sw_->getState()->getInterfaces())) {
-    const auto& intf = iter.second;
-    // mostly for agent tests where we dont want to flood arp
-    // causing loop, when ports are in loopback
-    if (isAnyInterfacePortInLoopbackMode(sw_->getState(), intf)) {
-      XLOG(DBG2) << "Do not flood gratuituous arp on interface: "
-                 << intf->getName();
-      continue;
-    }
-    for (auto iter : std::as_const(*intf->getAddresses())) {
-      auto addrEntry = folly::IPAddress(iter.first);
-      if (!addrEntry.isV4()) {
+  for (const auto& [_, intfMap] :
+       std::as_const(*sw_->getState()->getInterfaces())) {
+    for (auto iiter : std::as_const(*intfMap)) {
+      const auto& intf = iiter.second;
+      // mostly for agent tests where we dont want to flood arp
+      // causing loop, when ports are in loopback
+      if (isAnyInterfacePortInLoopbackMode(sw_->getState(), intf)) {
+        XLOG(DBG2) << "Do not flood gratuitous arp on interface: "
+                   << intf->getName();
         continue;
       }
-      auto v4Addr = addrEntry.asV4();
-      // Gratuitous arps have both source and destination IPs set to
-      // originator's address
-      sendArp(
-          sw_,
-          intf->getVlanIDIf(),
-          ARP_OP_REQUEST,
-          intf->getMac(),
-          v4Addr,
-          MacAddress::BROADCAST,
-          v4Addr);
+      for (auto iter : std::as_const(*intf->getAddresses())) {
+        auto addrEntry = folly::IPAddress(iter.first);
+        if (!addrEntry.isV4()) {
+          continue;
+        }
+
+        std::optional<PortDescriptor> portDescriptor{std::nullopt};
+        auto switchType = sw_->getSwitchInfoTable().l3SwitchType();
+        if (switchType == cfg::SwitchType::VOQ) {
+          // VOQ switches don't use VLANs (no broadcast domain).
+          // Find the port to send out the pkt with pipeline bypass on.
+          CHECK(intf->getSystemPortID().has_value());
+          portDescriptor = PortDescriptor(
+              getPortID(*intf->getSystemPortID(), sw_->getState()));
+          XLOG(DBG4) << "Sending gratuitous ARP for " << addrEntry.str()
+                     << " Using port: " << portDescriptor.value().str();
+        }
+
+        auto v4Addr = addrEntry.asV4();
+        // Gratuitous arps have both source and destination IPs set to
+        // originator's address
+        sendArp(
+            sw_,
+            intf->getVlanIDIf(),
+            ARP_OP_REQUEST,
+            intf->getMac(),
+            v4Addr,
+            MacAddress::BROADCAST,
+            v4Addr,
+            portDescriptor);
+      }
     }
   }
 }
@@ -269,13 +320,27 @@ void ArpHandler::sendArpReply(
 
 void ArpHandler::sendArpRequest(
     SwSwitch* sw,
-    VlanID vlanID,
+    std::optional<VlanID> vlanID,
     const MacAddress& srcMac,
     const IPAddressV4& senderIP,
     const IPAddressV4& targetIP) {
   sw->getPacketLogger()->log(
       "ARP", "TX", vlanID, srcMac.toString(), senderIP.str(), targetIP.str());
   sw->stats()->arpRequestTx();
+
+  std::optional<PortDescriptor> portDescriptor{std::nullopt};
+  auto switchType = sw->getSwitchInfoTable().l3SwitchType();
+  if (switchType == cfg::SwitchType::VOQ) {
+    // VOQ switches don't use VLANs (no broadcast domain).
+    // Find the port to send out the pkt with pipeline bypass on.
+    auto portID = getInterfacePortToReach(sw->getState(), targetIP);
+    if (portID.has_value()) {
+      portDescriptor = PortDescriptor(portID.value());
+      XLOG(DBG4) << "Sending ARP request for " << targetIP.str()
+                 << " Using port: " << portDescriptor.value().str();
+    }
+  }
+
   sendArp(
       sw,
       vlanID,
@@ -283,30 +348,59 @@ void ArpHandler::sendArpRequest(
       srcMac,
       senderIP,
       MacAddress::BROADCAST,
-      targetIP);
+      targetIP,
+      portDescriptor);
 }
 
 void ArpHandler::sendArpRequest(
     SwSwitch* sw,
-    const shared_ptr<Vlan>& vlan,
-    const IPAddressV4& targetIP) {
-  auto state = sw->getState();
-  auto intfID = vlan->getInterfaceID();
+    const folly::IPAddressV4& targetIP) {
+  auto intf =
+      sw->getState()->getInterfaces()->getIntfToReach(RouterID(0), targetIP);
 
-  if (!Interface::isIpAttached(targetIP, intfID, state)) {
-    XLOG(DBG0) << "Cannot reach " << targetIP << " on interface " << intfID;
-    return;
-  }
-
-  auto intf = state->getInterfaces()->getInterfaceIf(intfID);
   if (!intf) {
-    XLOG(DBG0) << "Cannot find interface " << intfID;
+    XLOG(DBG0) << "Cannot find interface for " << targetIP;
     return;
   }
+
   auto addrToReach = intf->getAddressToReach(targetIP);
 
   sendArpRequest(
-      sw, vlan->getID(), intf->getMac(), addrToReach->first.asV4(), targetIP);
+      sw,
+      intf->getVlanIDIf(),
+      intf->getMac(),
+      addrToReach->first.asV4(),
+      targetIP);
+}
+
+template <typename VlanOrIntfT>
+void ArpHandler::receivedArpNotMine(
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf,
+    IPAddressV4 ip,
+    MacAddress mac,
+    PortDescriptor port,
+    ArpOpCode op) {
+  auto updater = sw_->getNeighborUpdater();
+  if constexpr (std::is_same_v<VlanOrIntfT, Vlan>) {
+    updater->receivedArpNotMine(vlanOrIntf->getID(), ip, mac, port, op);
+  } else {
+    updater->receivedArpNotMineForIntf(vlanOrIntf->getID(), ip, mac, port, op);
+  }
+}
+
+template <typename VlanOrIntfT>
+void ArpHandler::receivedArpMine(
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf,
+    IPAddressV4 ip,
+    MacAddress mac,
+    PortDescriptor port,
+    ArpOpCode op) {
+  auto updater = sw_->getNeighborUpdater();
+  if constexpr (std::is_same_v<VlanOrIntfT, Vlan>) {
+    updater->receivedArpMine(vlanOrIntf->getID(), ip, mac, port, op);
+  } else {
+    updater->receivedArpMineForIntf(vlanOrIntf->getID(), ip, mac, port, op);
+  }
 }
 
 } // namespace facebook::fboss

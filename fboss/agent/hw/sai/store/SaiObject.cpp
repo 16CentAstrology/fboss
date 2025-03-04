@@ -61,7 +61,7 @@ SaiObject<SaiNextHopGroupTraits>::adapterHostKeyToFollyDynamic() {
 template <>
 typename SaiNextHopGroupTraits::AdapterHostKey
 SaiObject<SaiNextHopGroupTraits>::follyDynamicToAdapterHostKey(
-    folly::dynamic json) {
+    const folly::dynamic& json) {
   SaiNextHopGroupTraits::AdapterHostKey key;
   for (auto object : json) {
     auto type =
@@ -138,19 +138,16 @@ folly::dynamic SaiObject<SaiLagTraits>::adapterHostKeyToFollyDynamic() {
 
 template <>
 typename SaiLagTraits::AdapterHostKey
-SaiObject<SaiLagTraits>::follyDynamicToAdapterHostKey(folly::dynamic json) {
+SaiObject<SaiLagTraits>::follyDynamicToAdapterHostKey(
+    const folly::dynamic& json) {
   std::string label = json.asString();
   SaiLagTraits::AdapterHostKey::ValueType key{};
   std::copy(std::begin(label), std::end(label), std::begin(key));
   return key;
 }
 
-#if defined(SAI_VERSION_8_2_0_0_ODP) ||                                        \
-    defined(SAI_VERSION_8_2_0_0_DNX_ODP) || defined(SAI_VERSION_9_0_EA_ODP) || \
-    defined(SAI_VERSION_8_2_0_0_SIM_ODP) ||                                    \
-    defined(SAI_VERSION_9_0_EA_SIM_ODP) || defined(SAI_VERSION_9_0_EA_DNX_ODP)
+#if defined(BRCM_SAI_SDK_XGS_AND_DNX)
 
-// Store Wred adapter keys into hw switch state starting 8.2
 template <typename attrT>
 void addOptionalAttrToArray(
     folly::dynamic& array,
@@ -186,7 +183,7 @@ folly::dynamic SaiObject<SaiWredTraits>::adapterHostKeyToFollyDynamic() {
 
 template <typename attrT>
 void pupulateOptionalAttrtToKey(
-    folly::dynamic& array,
+    const folly::dynamic& array,
     SaiWredTraits::AdapterHostKey& adapterHostKey,
     int index) {
   if (!array[index].isString()) {
@@ -196,7 +193,8 @@ void pupulateOptionalAttrtToKey(
 
 template <>
 typename SaiWredTraits::AdapterHostKey
-SaiObject<SaiWredTraits>::follyDynamicToAdapterHostKey(folly::dynamic json) {
+SaiObject<SaiWredTraits>::follyDynamicToAdapterHostKey(
+    const folly::dynamic& json) {
   SaiWredTraits::AdapterHostKey key;
   std::get<SaiWredTraits::Attributes::GreenEnable>(key) = json[0].asBool();
   pupulateOptionalAttrtToKey<SaiWredTraits::Attributes::GreenMinThreshold>(
@@ -223,8 +221,36 @@ folly::dynamic SaiObject<SaiAclTableTraits>::adapterHostKeyToFollyDynamic() {
 template <>
 typename SaiAclTableTraits::AdapterHostKey
 SaiObject<SaiAclTableTraits>::follyDynamicToAdapterHostKey(
-    folly::dynamic json) {
+    const folly::dynamic& json) {
   return json.asString();
 }
+
+template <>
+folly::dynamic SaiObject<SaiUdfGroupTraits>::adapterHostKeyToFollyDynamic() {
+  return adapterHostKey_;
+}
+
+template <>
+typename SaiUdfGroupTraits::AdapterHostKey
+SaiObject<SaiUdfGroupTraits>::follyDynamicToAdapterHostKey(
+    const folly::dynamic& json) {
+  return json.asString();
+}
+
+#if defined(CHENAB_SAI_SDK)
+template <>
+folly::dynamic SaiObject<SaiAclCounterTraits>::adapterHostKeyToFollyDynamic() {
+  // TODO: implement this
+  return folly::dynamic::object;
+}
+
+template <>
+typename SaiAclCounterTraits::AdapterHostKey
+SaiObject<SaiAclCounterTraits>::follyDynamicToAdapterHostKey(
+    const folly::dynamic& json) {
+  // TODO: implement this
+  return SaiAclCounterTraits::AdapterHostKey{};
+}
+#endif
 } // namespace fboss
 } // namespace facebook

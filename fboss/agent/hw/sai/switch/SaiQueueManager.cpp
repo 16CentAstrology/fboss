@@ -51,6 +51,9 @@ void fillHwQueueStats(
       case SAI_QUEUE_STAT_WATERMARK_BYTES:
         hwPortStats.queueWatermarkBytes_()[queueId] = value;
         break;
+      case SAI_QUEUE_STAT_WATERMARK_LEVEL:
+        hwPortStats.queueWatermarkLevel_()[queueId] = value;
+        break;
       case SAI_QUEUE_STAT_WRED_DROPPED_PACKETS:
         hwPortStats.queueWredDroppedPackets_()[queueId] = value;
         break;
@@ -58,7 +61,11 @@ void fillHwQueueStats(
         hwPortStats.queueEcnMarkedPackets_()[queueId] = value;
         break;
       default:
-        throw FbossError("Got unexpected queue counter id: ", counterId);
+        // Raise exception if this is not handled by implementation
+        // specific extension stats
+        if (!fillQueueExtensionStats(queueId, counterId, value, hwPortStats)) {
+          throw FbossError("Got unexpected queue counter id: ", counterId);
+        }
     }
   }
 }
@@ -78,6 +85,21 @@ void fillHwQueueStats(
       case SAI_QUEUE_STAT_WATERMARK_BYTES:
         hwSysPortStats.queueWatermarkBytes_()[queueId] = value;
         break;
+      case SAI_QUEUE_STAT_WRED_DROPPED_PACKETS:
+        hwSysPortStats.queueWredDroppedPackets_()[queueId] = value;
+        break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+      case SAI_QUEUE_STAT_CREDIT_WD_DELETED_PACKETS:
+        // Watchdog delete counter is clear on read. While for queue
+        // counters we report a monotonically increasing value
+        hwSysPortStats.queueCreditWatchdogDeletedPackets_()[queueId] += value;
+        break;
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+      case SAI_QUEUE_STAT_DELAY_WATERMARK_NS:
+        hwSysPortStats.queueLatencyWatermarkNsec_()[queueId] = value;
+        break;
+#endif
       default:
         throw FbossError("Got unexpected queue counter id: ", counterId);
     }
@@ -173,57 +195,166 @@ SaiQueueManager::SaiQueueManager(
     const SaiPlatform* platform)
     : saiStore_(saiStore), managerTable_(managerTable), platform_(platform) {}
 
-void SaiQueueManager::changeQueue(
+bool SaiQueueManager::isVoqSwitchAndQueueHandleNotForVoq(
+    SaiQueueHandle* queueHandle) {
+  auto qType = SaiApiTable::getInstance()->queueApi().getAttribute(
+      queueHandle->queue->adapterKey(), SaiQueueTraits::Attributes::Type{});
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::VOQ) &&
+      (SAI_QUEUE_TYPE_UNICAST_VOQ != qType) &&
+      (SAI_QUEUE_TYPE_MULTICAST_VOQ != qType)) {
+    return true;
+  }
+  return false;
+}
+
+void SaiQueueManager::changeQueueEcnWred(
     SaiQueueHandle* queueHandle,
     const PortQueue& newPortQueue) {
-  CHECK(queueHandle);
+  if (isVoqSwitchAndQueueHandleNotForVoq(queueHandle)) {
+    // VOQ switches support WRED/ECN configs on voqs only
+    return;
+  }
+  auto newWredProfile =
+      managerTable_->wredManager().getOrCreateProfile(newPortQueue);
+  if (newWredProfile != queueHandle->wredProfile) {
+    queueHandle->queue->setOptionalAttribute(
+        SaiQueueTraits::Attributes::WredProfileId(
+            newWredProfile ? newWredProfile->adapterKey()
+                           : SAI_NULL_OBJECT_ID));
+    queueHandle->wredProfile = newWredProfile;
+  }
+}
+
+void SaiQueueManager::changeQueueBufferProfile(
+    SaiQueueHandle* queueHandle,
+    const PortQueue& newPortQueue) {
+  if (isVoqSwitchAndQueueHandleNotForVoq(queueHandle)) {
+    // VOQ switches support buffer profiles on voqs only
+    return;
+  }
+  auto newBufferProfile =
+      managerTable_->bufferManager().getOrCreateProfile(newPortQueue);
+  if (newBufferProfile != queueHandle->bufferProfile) {
+    queueHandle->queue->setOptionalAttribute(
+        SaiQueueTraits::Attributes::BufferProfileId(
+            newBufferProfile ? newBufferProfile->adapterKey()
+                             : SAI_NULL_OBJECT_ID));
+    queueHandle->bufferProfile = newBufferProfile;
+  }
+}
+
+void SaiQueueManager::changeQueueScheduler(
+    SaiQueueHandle* queueHandle,
+    const PortQueue& newPortQueue,
+    const Port* swPort) {
   std::shared_ptr<SaiScheduler> newScheduler;
   if (newPortQueue.getScheduling() != cfg::QueueScheduling::INTERNAL) {
     newScheduler =
         managerTable_->schedulerManager().createScheduler(newPortQueue);
   }
+
   if (newScheduler != queueHandle->scheduler) {
     queueHandle->queue->setOptionalAttribute(
         SaiQueueTraits::Attributes::SchedulerProfileId(
             newScheduler ? newScheduler->adapterKey() : SAI_NULL_OBJECT_ID));
+    if (platform_->getAsic()->getAsicType() ==
+        cfg::AsicType::ASIC_TYPE_CHENAB) {
+      // Signal to SAI to use non-hierarchial QoS by setting the parent
+      // scheduler node to the port.
+      auto portHandle =
+          managerTable_->portManager().getPortHandle(swPort->getID());
+      queueHandle->queue->setOptionalAttribute(
+          SaiQueueTraits::Attributes::ParentSchedulerNode(
+              portHandle->port->adapterKey()));
+    }
     // Update scheduler reference after we have set the queue
     // scheduler attribute, else if this is the last queue
     // referring to this scheduler, we will try to delete it
     // before we have updated the SAI reference.
     queueHandle->scheduler = newScheduler;
   }
-  if (platform_->getAsic()->isSupported(HwAsic::Feature::SAI_ECN_WRED)) {
-    auto newWredProfile =
-        managerTable_->wredManager().getOrCreateProfile(newPortQueue);
-    if (newWredProfile != queueHandle->wredProfile) {
-      queueHandle->queue->setOptionalAttribute(
-          SaiQueueTraits::Attributes::WredProfileId(
-              newWredProfile ? newWredProfile->adapterKey()
-                             : SAI_NULL_OBJECT_ID));
-      queueHandle->wredProfile = newWredProfile;
+}
+
+void SaiQueueManager::queuePfcDeadlockDetectionRecoveryEnable(
+    SaiQueueHandle* queueHandle,
+    const bool portPfcWdEnabled) {
+  // FIXME: Move to GET_ATTR() once EnablePfcDldr is part of createAttr
+  bool enabled = SaiApiTable::getInstance()->queueApi().getAttribute(
+      queueHandle->queue->adapterKey(),
+      SaiQueueTraits::Attributes::EnablePfcDldr{});
+  if (enabled != portPfcWdEnabled) {
+    SaiApiTable::getInstance()->queueApi().setAttribute(
+        queueHandle->queue->adapterKey(),
+        SaiQueueTraits::Attributes::EnablePfcDldr{portPfcWdEnabled});
+  }
+}
+
+void SaiQueueManager::changeQueueDeadlockEnable(
+    SaiQueueHandle* queueHandle,
+    const Port* swPort) {
+  if (swPort && swPort->getPfc().has_value()) {
+    // Enabled PFC priorities cannot be changed without a cold boot
+    // and hence in this flow, just take care of a case where PFC
+    // WD is being enabled or disabled for queues.
+    auto pfcPris = swPort->getPfcPriorities();
+    auto queueId = GET_ATTR(Queue, Index, queueHandle->queue->attributes());
+    if (pfcPris.size() &&
+        (std::find(pfcPris.begin(), pfcPris.end(), queueId) != pfcPris.end())) {
+      // Assume 1:1 mapping between queue ID and PFC priorities
+      bool portPfcWdEnabled = swPort->getPfc()->watchdog().has_value();
+      queuePfcDeadlockDetectionRecoveryEnable(queueHandle, portPfcWdEnabled);
+      auto pfcWdEnabledStatus = portPfcWdEnabled ? "enabled" : "disabled";
+      XLOG(DBG3) << "PFC WD " << pfcWdEnabledStatus << " on queue" << queueId
+                 << " of " << swPort->getName();
     }
   }
-  if ((platform_->getAsic()->isSupported(HwAsic::Feature::BUFFER_POOL)) &&
-      (SAI_QUEUE_TYPE_FABRIC_TX !=
-       SaiApiTable::getInstance()->queueApi().getAttribute(
-           queueHandle->queue->adapterKey(),
-           SaiQueueTraits::Attributes::Type{}))) {
-    auto newBufferProfile =
-        managerTable_->bufferManager().getOrCreateProfile(newPortQueue);
-    if (newBufferProfile != queueHandle->bufferProfile) {
-      queueHandle->queue->setOptionalAttribute(
-          SaiQueueTraits::Attributes::BufferProfileId(
-              newBufferProfile ? newBufferProfile->adapterKey()
-                               : SAI_NULL_OBJECT_ID));
-      queueHandle->bufferProfile = newBufferProfile;
+}
+
+void SaiQueueManager::changeQueue(
+    SaiQueueHandle* queueHandle,
+    const PortQueue& newPortQueue,
+    const Port* swPort,
+    const std::optional<cfg::PortType> portType) {
+  CHECK(queueHandle);
+  auto queueType = GET_ATTR(Queue, Type, queueHandle->queue->attributes());
+  if ((queueType != SAI_QUEUE_TYPE_UNICAST_VOQ) &&
+      (queueType != SAI_QUEUE_TYPE_MULTICAST_VOQ)) {
+    if (platform_->getAsic()->isSupported(HwAsic::Feature::L3_QOS)) {
+      changeQueueScheduler(queueHandle, newPortQueue, swPort);
     }
+  }
+  changeQueueEcnWred(queueHandle, newPortQueue);
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::BUFFER_POOL) &&
+      (queueType != SAI_QUEUE_TYPE_FABRIC_TX)) {
+    if (portType && (*portType == cfg::PortType::CPU_PORT) &&
+        platform_->getAsic()->isSupported(
+            HwAsic::Feature::DEDICATED_CPU_BUFFER_POOL)) {
+      // Skip configuring a buffer pool on CPU queues for platforms like
+      // YUBA where a dedicated buffer pool is used for CPU traffic. As
+      // of now, the same buffer pool used for data traffic on all ports
+      // gets attached to CPU queues via the default queue config. Hence
+      // this block is a no-op for now.
+      //
+      // TODO: If there is a need to use any other buffer profile attrs
+      // or configs on CPU queues for such platforms, need to provide an
+      // option to use a dedicated CPU queue config with buffer pool
+      // specified explicitly as the reserved buffer pool.
+    } else if (
+        !swPort || (swPort->getPortType() != cfg::PortType::MANAGEMENT_PORT)) {
+      // Unsupported for MANAGEMENT_PORT
+      changeQueueBufferProfile(queueHandle, newPortQueue);
+    }
+  }
+  if (queueType == SAI_QUEUE_TYPE_UNICAST) {
+    changeQueueDeadlockEnable(queueHandle, swPort);
   }
 }
 
 void SaiQueueManager::ensurePortQueueConfig(
     PortSaiId portSaiId,
     const SaiQueueHandles& queueHandles,
-    const QueueConfig& queues) {
+    const QueueConfig& queues,
+    const Port* swPort) {
   for (const auto& portQueue : queues) {
     SaiQueueTraits::CreateAttributes attributes =
         detail::makeQueueAttributes(portSaiId, *portQueue);
@@ -243,7 +374,7 @@ void SaiQueueManager::ensurePortQueueConfig(
       throw FbossError(
           "failed to find queue handle for queue id: ", (*portQueue).getID());
     }
-    changeQueue(queueHandleEntry->second.get(), *portQueue);
+    changeQueue(queueHandleEntry->second.get(), *portQueue, swPort);
   }
 }
 
@@ -263,19 +394,54 @@ SaiQueueHandles SaiQueueManager::loadQueues(
 }
 
 const std::vector<sai_stat_id_t>&
-SaiQueueManager::supportedNonWatermarkCounterIdsRead(int queueType) const {
+SaiQueueManager::supportedNonWatermarkCounterIdsRead(
+    int queueType,
+    SaiQueueHandle* queueHandle) const {
   if (queueType == SAI_QUEUE_TYPE_MULTICAST_VOQ ||
       queueType == SAI_QUEUE_TYPE_UNICAST_VOQ) {
-    return voqNonWatermarkCounterIdsRead(queueType);
+    return voqNonWatermarkCounterIdsRead(queueType, queueHandle);
+  } else if (queueType == SAI_QUEUE_TYPE_FABRIC_TX) {
+    static const std::vector<sai_stat_id_t> kFabricQueueNonWatermarksStats;
+    return kFabricQueueNonWatermarksStats;
   }
   return egressQueueNonWatermarkCounterIdsRead(queueType);
 }
 
 const std::vector<sai_stat_id_t>&
-SaiQueueManager::voqNonWatermarkCounterIdsRead(int /*queueType*/) const {
+SaiQueueManager::voqNonWatermarkCounterIdsRead(
+    int /*queueType*/,
+    SaiQueueHandle* queueHandle) const {
+  assert(queueHandle);
   static std::vector<sai_stat_id_t> baseCounterIds(
       SaiQueueTraits::VoqNonWatermarkCounterIdsToRead.begin(),
       SaiQueueTraits::VoqNonWatermarkCounterIdsToRead.end());
+  static std::vector<sai_stat_id_t> basePlusWredCounterIds;
+  if (!basePlusWredCounterIds.size()) {
+    // Any counter that needs to be added to base counter
+    // should be added first before base counter IDs are
+    // copied over to basePlusWredCounterIds.
+    if (platform_->getAsic()->isSupported(
+            HwAsic::Feature::VOQ_DELETE_COUNTER)) {
+      baseCounterIds.insert(
+          baseCounterIds.end(),
+          SaiQueueTraits::VoqWatchDogDeleteCounterIdsToRead.begin(),
+          SaiQueueTraits::VoqWatchDogDeleteCounterIdsToRead.end());
+    }
+    basePlusWredCounterIds.resize(
+        baseCounterIds.size() + SaiQueueTraits::WredCounterIdsToRead.size());
+    std::set_union(
+        baseCounterIds.begin(),
+        baseCounterIds.end(),
+        SaiQueueTraits::WredCounterIdsToRead.begin(),
+        SaiQueueTraits::WredCounterIdsToRead.end(),
+        basePlusWredCounterIds.begin());
+  }
+
+  // If WRED is enabled on queue, return basePlusWredCounterIds
+  if (queueHandle && queueHandle->wredProfile &&
+      GET_ATTR(Wred, GreenEnable, queueHandle->wredProfile->attributes())) {
+    return basePlusWredCounterIds;
+  }
   return baseCounterIds;
 }
 
@@ -311,22 +477,62 @@ SaiQueueManager::egressQueueNonWatermarkCounterIdsRead(int queueType) const {
         SaiQueueTraits::NonWatermarkWredCounterIdsToRead.begin(),
         SaiQueueTraits::NonWatermarkWredCounterIdsToRead.end());
 
-    if (platform_->getAsic()->getAsicVendor() ==
-        HwAsic::AsicVendor::ASIC_VENDOR_TAJO) {
-      /*
-       * Per-queue ECN counters are supported on TAJO with SDK
-       * version 1.42.4 onwards.
-       */
-#if !defined(TAJO_SDK_VERSION_1_42_1)
+    if (platform_->getAsic()->isSupported(HwAsic::Feature::QUEUE_ECN_COUNTER)) {
       extendedCounterIds.insert(
           extendedCounterIds.end(),
           SaiQueueTraits::NonWatermarkEcnCounterIdsToRead.begin(),
           SaiQueueTraits::NonWatermarkEcnCounterIdsToRead.end());
-#endif
     }
   }
 
   return extendedCounterIds;
+}
+
+const std::vector<sai_stat_id_t>&
+SaiQueueManager::supportedVoqWatermarkCounterIdsReadAndClear() const {
+  static std::vector<sai_stat_id_t> voqWatermarkStats{};
+  if (voqWatermarkStats.empty()) {
+    voqWatermarkStats.insert(
+        voqWatermarkStats.end(),
+        SaiQueueTraits::WatermarkByteCounterIdsToReadAndClear.begin(),
+        SaiQueueTraits::WatermarkByteCounterIdsToReadAndClear.end());
+    if (platform_->getAsic()->isSupported(
+            HwAsic::Feature::VOQ_LATENCY_WATERMARK_BIN)) {
+      voqWatermarkStats.insert(
+          voqWatermarkStats.end(),
+          SaiQueueTraits::VoqLatencyWatermarkCounterIdsToRead.begin(),
+          SaiQueueTraits::VoqLatencyWatermarkCounterIdsToRead.end());
+    }
+  }
+  return voqWatermarkStats;
+}
+
+const std::vector<sai_stat_id_t>&
+SaiQueueManager::supportedWatermarkCounterIdsReadAndClear(int queueType) const {
+  if (queueType == SAI_QUEUE_TYPE_FABRIC_TX) {
+    static const std::vector<sai_stat_id_t> kFabricQueueWatermarksStats{
+        SaiQueueTraits::WatermarkLevelCounterIdsToReadAndClear.begin(),
+        SaiQueueTraits::WatermarkLevelCounterIdsToReadAndClear.end()};
+    return kFabricQueueWatermarksStats;
+  }
+
+  static std::vector<sai_stat_id_t> watermarkStats{};
+  if (watermarkStats.empty()) {
+    watermarkStats.insert(
+        watermarkStats.end(),
+        SaiQueueTraits::WatermarkByteCounterIdsToReadAndClear.begin(),
+        SaiQueueTraits::WatermarkByteCounterIdsToReadAndClear.end());
+    if (queueType == SAI_QUEUE_TYPE_UNICAST &&
+        platform_->getAsic()->isSupported(
+            HwAsic::Feature::EGRESS_GVOQ_WATERMARK_BYTES)) {
+      // GVOQ watermark is supported only on egress queues
+      watermarkStats.insert(
+          watermarkStats.end(),
+          SaiQueueTraits::egressGvoqWatermarkBytes().begin(),
+          SaiQueueTraits::egressGvoqWatermarkBytes().end());
+    }
+  }
+  return watermarkStats;
 }
 
 void SaiQueueManager::updateStats(
@@ -337,9 +543,6 @@ void SaiQueueManager::updateStats(
   static std::vector<sai_stat_id_t> nonWatermarkStatsReadAndClear(
       SaiQueueTraits::NonWatermarkCounterIdsToReadAndClear.begin(),
       SaiQueueTraits::NonWatermarkCounterIdsToReadAndClear.end());
-  static std::vector<sai_stat_id_t> watermarkStatsReadAndClear(
-      SaiQueueTraits::WatermarkCounterIdsToReadAndClear.begin(),
-      SaiQueueTraits::WatermarkCounterIdsToReadAndClear.end());
   for (auto queueHandle : queueHandles) {
     /*
      * The WRED_DROPPED_PACKETS counter is needed only for non-CPU
@@ -350,33 +553,37 @@ void SaiQueueManager::updateStats(
     auto queueType = SaiApiTable::getInstance()->queueApi().getAttribute(
         queueHandle->queue->adapterKey(), SaiQueueTraits::Attributes::Type{});
 
-    if (queueType == SAI_QUEUE_TYPE_FABRIC_TX) {
-      /*
-       * FABRIC_TX queues don't support any queue stats queried by FBOSS.
-       * Some SAI implements support querying following:
-       *     SAI_QUEUE_STAT_WATERMARK_LEVEL
-       *     SAI_QUEUE_STAT_CURR_OCCUPANCY_BYTES,
-       *     SAI_QUEUE_STAT_CURR_OCCUPANCY_LEVEL.
-       * TODO(skhare) Add FBOSS support to query above.
-       *
-       * Note: We create only one FABRIC_TX queue per FABRIC_PORT. Thus, Port
-       * counters corresponds 1:1 to FABRIC_TX queue counters.
-       */
-      continue;
-    }
-
     queueHandle->queue->updateStats(
-        supportedNonWatermarkCounterIdsRead(queueType), SAI_STATS_MODE_READ);
+        supportedNonWatermarkCounterIdsRead(queueType, queueHandle),
+        SAI_STATS_MODE_READ);
     queueHandle->queue->updateStats(
         nonWatermarkStatsReadAndClear, SAI_STATS_MODE_READ_AND_CLEAR);
     if (updateWatermarks) {
       queueHandle->queue->updateStats(
-          watermarkStatsReadAndClear, SAI_STATS_MODE_READ_AND_CLEAR);
+          supportedWatermarkCounterIdsReadAndClear(queueType),
+          SAI_STATS_MODE_READ_AND_CLEAR);
     }
     const auto& counters = queueHandle->queue->getStats();
     auto queueId = SaiApiTable::getInstance()->queueApi().getAttribute(
         queueHandle->queue->adapterKey(), SaiQueueTraits::Attributes::Index{});
     fillHwQueueStats(queueId, counters, hwPortStats);
+  }
+}
+
+void SaiQueueManager::clearStats(
+    const std::vector<SaiQueueHandle*>& queueHandles) {
+  for (auto& queueHandle : queueHandles) {
+    auto& queue = queueHandle->queue;
+    auto queueType = GET_ATTR(Queue, Type, queue->attributes());
+    std::vector<sai_stat_id_t> toClear =
+        supportedNonWatermarkCounterIdsRead(queueType, queueHandle);
+    auto watermarkCounters =
+        supportedWatermarkCounterIdsReadAndClear(queueType);
+    toClear.insert(
+        toClear.end(),
+        std::make_move_iterator(watermarkCounters.begin()),
+        std::make_move_iterator(watermarkCounters.end()));
+    queue->clearStats(toClear);
   }
 }
 
@@ -392,22 +599,24 @@ void SaiQueueManager::getStats(
 void SaiQueueManager::updateStats(
     const std::vector<SaiQueueHandle*>& queueHandles,
     HwSysPortStats& hwSysPortStats,
-    bool updateWatermarks) {
+    bool updateWatermarks,
+    bool updateVoqStats) {
   static std::vector<sai_stat_id_t> nonWatermarkStatsReadAndClear(
       SaiQueueTraits::VoqNonWatermarkCounterIdsToReadAndClear.begin(),
       SaiQueueTraits::VoqNonWatermarkCounterIdsToReadAndClear.end());
-  static std::vector<sai_stat_id_t> watermarkStatsReadAndClear(
-      SaiQueueTraits::WatermarkCounterIdsToReadAndClear.begin(),
-      SaiQueueTraits::WatermarkCounterIdsToReadAndClear.end());
   for (auto queueHandle : queueHandles) {
     auto queueType = GET_ATTR(Queue, Type, queueHandle->queue->attributes());
-    queueHandle->queue->updateStats(
-        supportedNonWatermarkCounterIdsRead(queueType), SAI_STATS_MODE_READ);
-    queueHandle->queue->updateStats(
-        nonWatermarkStatsReadAndClear, SAI_STATS_MODE_READ_AND_CLEAR);
+    if (updateVoqStats) {
+      queueHandle->queue->updateStats(
+          supportedNonWatermarkCounterIdsRead(queueType, queueHandle),
+          SAI_STATS_MODE_READ);
+      queueHandle->queue->updateStats(
+          nonWatermarkStatsReadAndClear, SAI_STATS_MODE_READ_AND_CLEAR);
+    }
     if (updateWatermarks) {
       queueHandle->queue->updateStats(
-          watermarkStatsReadAndClear, SAI_STATS_MODE_READ_AND_CLEAR);
+          supportedVoqWatermarkCounterIdsReadAndClear(),
+          SAI_STATS_MODE_READ_AND_CLEAR);
     }
     const auto& counters = queueHandle->queue->getStats();
     auto queueId = SaiApiTable::getInstance()->queueApi().getAttribute(
@@ -421,11 +630,35 @@ QueueConfig SaiQueueManager::getQueueSettings(
   for (auto& queueHandle : queueHandles) {
     auto portQueue = std::make_shared<PortQueue>(queueHandle.first.first);
     portQueue->setStreamType(queueHandle.first.second);
-    managerTable_->schedulerManager().fillSchedulerSettings(
-        queueHandle.second->scheduler.get(), portQueue.get());
+    if (auto scheduler = queueHandle.second->scheduler.get()) {
+      managerTable_->schedulerManager().fillSchedulerSettings(
+          scheduler, portQueue.get());
+    } else if (
+        platform_->getAsic()->getAsicType() ==
+        cfg::AsicType::ASIC_TYPE_CHENAB) {
+      //  TODO(Chenab): For now, set scheduler as internal for chenab,
+      //  however identify settings which may be used to construct cold boot
+      //  state and use them in config
+      portQueue->setScheduling(cfg::QueueScheduling::INTERNAL);
+    }
     queueConfig.push_back(std::move(portQueue));
   }
   return queueConfig;
+}
+
+std::optional<std::tuple<uint8_t, PortSaiId>>
+SaiQueueManager::getQueueIndexAndPortSaiId(const QueueSaiId& queueSaiId) {
+  auto& store = saiStore_->get<SaiQueueTraits>();
+  auto queue = store.find(queueSaiId);
+  if (!queue) {
+    XLOG(ERR) << "Unable to find queueSaiId 0x" << std::hex << queueSaiId
+              << " in sai store!";
+    return std::nullopt;
+  }
+  uint8_t queueId = GET_ATTR(Queue, Index, queue->attributes());
+  PortSaiId portSaiId =
+      static_cast<PortSaiId>(GET_ATTR(Queue, Port, queue->attributes()));
+  return std::make_tuple(queueId, portSaiId);
 }
 
 } // namespace facebook::fboss

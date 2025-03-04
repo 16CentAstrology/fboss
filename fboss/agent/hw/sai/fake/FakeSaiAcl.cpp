@@ -71,6 +71,16 @@ bool FakeAclTable::entryFieldSupported(const sai_attribute_t& attr) const {
       return fieldEthertype;
     case SAI_ACL_TABLE_ATTR_FIELD_OUTER_VLAN_ID:
       return fieldOuterVlanId;
+    case SAI_ACL_TABLE_ATTR_FIELD_BTH_OPCODE:
+      return fieldBthOpcode;
+    case SAI_ACL_TABLE_ATTR_FIELD_IPV6_NEXT_HEADER:
+      return fieldIpv6NextHeader;
+    case SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN:
+    case (SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 1):
+    case (SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 2):
+    case (SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 3):
+    case (SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 4):
+      return true;
     // Actions
     case SAI_ACL_ENTRY_ATTR_ACTION_PACKET_ACTION:
     case SAI_ACL_ENTRY_ATTR_ACTION_COUNTER:
@@ -79,6 +89,8 @@ bool FakeAclTable::entryFieldSupported(const sai_attribute_t& attr) const {
     case SAI_ACL_ENTRY_ATTR_ACTION_MIRROR_INGRESS:
     case SAI_ACL_ENTRY_ATTR_ACTION_MIRROR_EGRESS:
     case SAI_ACL_ENTRY_ATTR_ACTION_MACSEC_FLOW:
+    case SAI_ACL_ENTRY_ATTR_ACTION_SET_USER_TRAP_ID:
+    case SAI_ACL_ENTRY_ATTR_ACTION_DISABLE_ARS_FORWARDING:
       return true;
     default:
       return false;
@@ -121,6 +133,13 @@ sai_status_t create_acl_table_fn(
   bool fieldNeighborDstUserMeta = 0;
   bool fieldEthertype = 0;
   bool fieldOuterVlanId = 0;
+  bool fieldBthOpcode = 0;
+  bool fieldIpv6NextHeader = 0;
+  sai_object_id_t userDefinedFieldGroupMin = SAI_NULL_OBJECT_ID;
+  sai_object_id_t userDefinedFieldGroupMin1 = SAI_NULL_OBJECT_ID;
+  sai_object_id_t userDefinedFieldGroupMin2 = SAI_NULL_OBJECT_ID;
+  sai_object_id_t userDefinedFieldGroupMin3 = SAI_NULL_OBJECT_ID;
+  sai_object_id_t userDefinedFieldGroupMin4 = SAI_NULL_OBJECT_ID;
 
   for (int i = 0; i < attr_count; ++i) {
     switch (attr_list[i].id) {
@@ -211,6 +230,27 @@ sai_status_t create_acl_table_fn(
       case SAI_ACL_TABLE_ATTR_FIELD_OUTER_VLAN_ID:
         fieldOuterVlanId = attr_list[i].value.booldata;
         break;
+      case SAI_ACL_TABLE_ATTR_FIELD_BTH_OPCODE:
+        fieldBthOpcode = attr_list[i].value.booldata;
+        break;
+      case SAI_ACL_TABLE_ATTR_FIELD_IPV6_NEXT_HEADER:
+        fieldIpv6NextHeader = attr_list[i].value.booldata;
+        break;
+      case SAI_ACL_TABLE_ATTR_USER_DEFINED_FIELD_GROUP_MIN:
+        userDefinedFieldGroupMin = attr_list[i].value.oid;
+        break;
+      case (SAI_ACL_TABLE_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 1):
+        userDefinedFieldGroupMin1 = attr_list[i].value.oid;
+        break;
+      case (SAI_ACL_TABLE_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 2):
+        userDefinedFieldGroupMin2 = attr_list[i].value.oid;
+        break;
+      case (SAI_ACL_TABLE_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 3):
+        userDefinedFieldGroupMin3 = attr_list[i].value.oid;
+        break;
+      case (SAI_ACL_TABLE_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 4):
+        userDefinedFieldGroupMin4 = attr_list[i].value.oid;
+        break;
       default:
         return SAI_STATUS_INVALID_PARAMETER;
         break;
@@ -248,7 +288,14 @@ sai_status_t create_acl_table_fn(
       fieldRouteDstUserMeta,
       fieldNeighborDstUserMeta,
       fieldEthertype,
-      fieldOuterVlanId);
+      fieldOuterVlanId,
+      fieldBthOpcode,
+      fieldIpv6NextHeader,
+      userDefinedFieldGroupMin,
+      userDefinedFieldGroupMin1,
+      userDefinedFieldGroupMin2,
+      userDefinedFieldGroupMin3,
+      userDefinedFieldGroupMin4);
 
   return SAI_STATUS_SUCCESS;
 }
@@ -427,6 +474,34 @@ sai_status_t get_acl_table_attribute_fn(
         const auto& aclTable = fs->aclTableManager.get(acl_table_id);
         attr[i].value.booldata = aclTable.fieldOuterVlanId;
       } break;
+      case SAI_ACL_TABLE_ATTR_FIELD_BTH_OPCODE: {
+        const auto& aclTable = fs->aclTableManager.get(acl_table_id);
+        attr[i].value.booldata = aclTable.fieldBthOpcode;
+      } break;
+      case SAI_ACL_TABLE_ATTR_FIELD_IPV6_NEXT_HEADER: {
+        const auto& aclTable = fs->aclTableManager.get(acl_table_id);
+        attr[i].value.booldata = aclTable.fieldIpv6NextHeader;
+      } break;
+      case SAI_ACL_TABLE_ATTR_USER_DEFINED_FIELD_GROUP_MIN: {
+        const auto& aclTable = fs->aclTableManager.get(acl_table_id);
+        attr[i].value.oid = aclTable.userDefinedFieldGroupMin;
+      } break;
+      case (SAI_ACL_TABLE_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 1): {
+        const auto& aclTable = fs->aclTableManager.get(acl_table_id);
+        attr[i].value.oid = aclTable.userDefinedFieldGroupMin1;
+      } break;
+      case (SAI_ACL_TABLE_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 2): {
+        const auto& aclTable = fs->aclTableManager.get(acl_table_id);
+        attr[i].value.oid = aclTable.userDefinedFieldGroupMin2;
+      } break;
+      case (SAI_ACL_TABLE_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 3): {
+        const auto& aclTable = fs->aclTableManager.get(acl_table_id);
+        attr[i].value.oid = aclTable.userDefinedFieldGroupMin3;
+      } break;
+      case (SAI_ACL_TABLE_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 4): {
+        const auto& aclTable = fs->aclTableManager.get(acl_table_id);
+        attr[i].value.oid = aclTable.userDefinedFieldGroupMin4;
+      } break;
       case SAI_ACL_TABLE_ATTR_AVAILABLE_ACL_ENTRY:
       case SAI_ACL_TABLE_ATTR_AVAILABLE_ACL_COUNTER:
         attr[i].value.u32 = 1000;
@@ -437,6 +512,25 @@ sai_status_t get_acl_table_attribute_fn(
   }
 
   return SAI_STATUS_SUCCESS;
+}
+
+void acl_entry_copy_u8list_from_attr(
+    std::vector<sai_uint8_t>& data,
+    std::vector<sai_uint8_t>& mask,
+    const sai_attribute_t* attr) {
+  data.resize(attr->value.aclfield.data.u8list.count);
+  std::copy(
+      attr->value.aclfield.data.u8list.list,
+      attr->value.aclfield.data.u8list.list +
+          attr->value.aclfield.data.u8list.count,
+      std::begin(data));
+  mask.resize(attr->value.aclfield.mask.u8list.count);
+  std::copy(
+      attr->value.aclfield.mask.u8list.list,
+      attr->value.aclfield.mask.u8list.list +
+          attr->value.aclfield.mask.u8list.count,
+      std::begin(mask));
+  return;
 }
 
 sai_status_t set_acl_entry_attribute_fn(
@@ -614,16 +708,68 @@ sai_status_t set_acl_entry_attribute_fn(
       aclEntry.fieldNeighborDstUserMetaMask = attr->value.aclfield.mask.u32;
       res = SAI_STATUS_SUCCESS;
       break;
-    case SAI_ACL_TABLE_ATTR_FIELD_ETHER_TYPE:
+    case SAI_ACL_ENTRY_ATTR_FIELD_ETHER_TYPE:
       aclEntry.fieldEtherTypeEnable = attr->value.aclfield.enable;
       aclEntry.fieldEtherTypeData = attr->value.aclfield.data.u16;
       aclEntry.fieldEtherTypeMask = attr->value.aclfield.mask.u16;
       res = SAI_STATUS_SUCCESS;
       break;
-    case SAI_ACL_TABLE_ATTR_FIELD_OUTER_VLAN_ID:
+    case SAI_ACL_ENTRY_ATTR_FIELD_OUTER_VLAN_ID:
       aclEntry.fieldOuterVlanIdEnable = attr->value.aclfield.enable;
       aclEntry.fieldOuterVlanIdData = attr->value.aclfield.data.u16;
       aclEntry.fieldOuterVlanIdMask = attr->value.aclfield.mask.u16;
+      res = SAI_STATUS_SUCCESS;
+      break;
+    case SAI_ACL_ENTRY_ATTR_FIELD_BTH_OPCODE:
+      aclEntry.fieldBthOpcodeEnable = attr->value.aclfield.enable;
+      aclEntry.fieldBthOpcodeData = attr->value.aclfield.data.u8;
+      aclEntry.fieldBthOpcodeMask = attr->value.aclfield.mask.u8;
+      res = SAI_STATUS_SUCCESS;
+      break;
+    case SAI_ACL_ENTRY_ATTR_FIELD_IPV6_NEXT_HEADER:
+      aclEntry.fieldIpv6NextHeaderEnable = attr->value.aclfield.enable;
+      aclEntry.fieldIpv6NextHeaderData = attr->value.aclfield.data.u8;
+      aclEntry.fieldIpv6NextHeaderMask = attr->value.aclfield.mask.u8;
+      res = SAI_STATUS_SUCCESS;
+      break;
+    case SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN:
+      aclEntry.userDefinedFieldGroupMinEnable = attr->value.aclfield.enable;
+      acl_entry_copy_u8list_from_attr(
+          aclEntry.userDefinedFieldGroupMinData,
+          aclEntry.userDefinedFieldGroupMinMask,
+          attr);
+      res = SAI_STATUS_SUCCESS;
+      break;
+    case (SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 1):
+      aclEntry.userDefinedFieldGroupMin1Enable = attr->value.aclfield.enable;
+      acl_entry_copy_u8list_from_attr(
+          aclEntry.userDefinedFieldGroupMin1Data,
+          aclEntry.userDefinedFieldGroupMin1Mask,
+          attr);
+      res = SAI_STATUS_SUCCESS;
+      break;
+    case (SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 2):
+      aclEntry.userDefinedFieldGroupMin2Enable = attr->value.aclfield.enable;
+      acl_entry_copy_u8list_from_attr(
+          aclEntry.userDefinedFieldGroupMin2Data,
+          aclEntry.userDefinedFieldGroupMin2Mask,
+          attr);
+      res = SAI_STATUS_SUCCESS;
+      break;
+    case (SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 3):
+      aclEntry.userDefinedFieldGroupMin3Enable = attr->value.aclfield.enable;
+      acl_entry_copy_u8list_from_attr(
+          aclEntry.userDefinedFieldGroupMin3Data,
+          aclEntry.userDefinedFieldGroupMin3Mask,
+          attr);
+      res = SAI_STATUS_SUCCESS;
+      break;
+    case (SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 4):
+      aclEntry.userDefinedFieldGroupMin4Enable = attr->value.aclfield.enable;
+      acl_entry_copy_u8list_from_attr(
+          aclEntry.userDefinedFieldGroupMin4Data,
+          aclEntry.userDefinedFieldGroupMin4Mask,
+          attr);
       res = SAI_STATUS_SUCCESS;
       break;
 
@@ -674,11 +820,39 @@ sai_status_t set_acl_entry_attribute_fn(
       aclEntry.actionMacsecFlowData = attr->value.aclaction.parameter.oid;
       res = SAI_STATUS_SUCCESS;
       break;
+    case SAI_ACL_ENTRY_ATTR_ACTION_SET_USER_TRAP_ID:
+      aclEntry.actionSetUserTrapEnable = attr->value.aclaction.enable;
+      aclEntry.actionSetUserTrapData = attr->value.aclaction.parameter.oid;
+      res = SAI_STATUS_SUCCESS;
+      break;
+    case SAI_ACL_ENTRY_ATTR_ACTION_DISABLE_ARS_FORWARDING:
+      aclEntry.actionDisableArsForwarding =
+          attr->value.aclaction.parameter.booldata;
+      res = SAI_STATUS_SUCCESS;
+      break;
     default:
       res = SAI_STATUS_NOT_SUPPORTED;
       break;
   }
   return res;
+}
+
+sai_status_t acl_entry_copy_attr_to_u8list(
+    std::vector<sai_uint8_t>& data,
+    std::vector<sai_uint8_t>& mask,
+    sai_acl_field_data_t* aclfield) {
+  if (aclfield->data.u8list.count < data.size() ||
+      aclfield->mask.u8list.count < mask.size()) {
+    aclfield->data.u8list.count = data.size();
+    aclfield->mask.u8list.count = mask.size();
+    return SAI_STATUS_BUFFER_OVERFLOW;
+  }
+  aclfield->enable = true;
+  aclfield->data.u8list.count = data.size();
+  aclfield->mask.u8list.count = mask.size();
+  aclfield->data.u8list.list = data.data();
+  aclfield->mask.u8list.list = mask.data();
+  return SAI_STATUS_SUCCESS;
 }
 
 sai_status_t get_acl_entry_attribute_fn(
@@ -834,16 +1008,51 @@ sai_status_t get_acl_entry_attribute_fn(
         attr_list[i].value.aclfield.mask.u32 =
             aclEntry.fieldNeighborDstUserMetaMask;
         break;
-      case SAI_ACL_TABLE_ATTR_FIELD_ETHER_TYPE:
+      case SAI_ACL_ENTRY_ATTR_FIELD_ETHER_TYPE:
         attr_list[i].value.aclfield.enable = aclEntry.fieldEtherTypeEnable;
         attr_list[i].value.aclfield.data.u16 = aclEntry.fieldEtherTypeData;
         attr_list[i].value.aclfield.mask.u16 = aclEntry.fieldEtherTypeMask;
         break;
-      case SAI_ACL_TABLE_ATTR_FIELD_OUTER_VLAN_ID:
+      case SAI_ACL_ENTRY_ATTR_FIELD_OUTER_VLAN_ID:
         attr_list[i].value.aclfield.enable = aclEntry.fieldOuterVlanIdEnable;
         attr_list[i].value.aclfield.data.u16 = aclEntry.fieldOuterVlanIdData;
         attr_list[i].value.aclfield.mask.u16 = aclEntry.fieldOuterVlanIdMask;
         break;
+      case SAI_ACL_ENTRY_ATTR_FIELD_BTH_OPCODE:
+        attr_list[i].value.aclfield.enable = aclEntry.fieldBthOpcodeEnable;
+        attr_list[i].value.aclfield.data.u8 = aclEntry.fieldBthOpcodeData;
+        attr_list[i].value.aclfield.mask.u8 = aclEntry.fieldBthOpcodeMask;
+        break;
+      case SAI_ACL_ENTRY_ATTR_FIELD_IPV6_NEXT_HEADER:
+        attr_list[i].value.aclfield.enable = aclEntry.fieldIpv6NextHeaderEnable;
+        attr_list[i].value.aclfield.data.u8 = aclEntry.fieldIpv6NextHeaderData;
+        attr_list[i].value.aclfield.mask.u8 = aclEntry.fieldIpv6NextHeaderMask;
+        break;
+      case SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN:
+        return acl_entry_copy_attr_to_u8list(
+            aclEntry.userDefinedFieldGroupMinData,
+            aclEntry.userDefinedFieldGroupMinMask,
+            &attr_list[i].value.aclfield);
+      case (SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 1):
+        return acl_entry_copy_attr_to_u8list(
+            aclEntry.userDefinedFieldGroupMin1Data,
+            aclEntry.userDefinedFieldGroupMin1Mask,
+            &attr_list[i].value.aclfield);
+      case (SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 2):
+        return acl_entry_copy_attr_to_u8list(
+            aclEntry.userDefinedFieldGroupMin2Data,
+            aclEntry.userDefinedFieldGroupMin2Mask,
+            &attr_list[i].value.aclfield);
+      case (SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 3):
+        return acl_entry_copy_attr_to_u8list(
+            aclEntry.userDefinedFieldGroupMin3Data,
+            aclEntry.userDefinedFieldGroupMin3Mask,
+            &attr_list[i].value.aclfield);
+      case (SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 4):
+        return acl_entry_copy_attr_to_u8list(
+            aclEntry.userDefinedFieldGroupMin4Data,
+            aclEntry.userDefinedFieldGroupMin4Mask,
+            &attr_list[i].value.aclfield);
 
       case SAI_ACL_ENTRY_ATTR_ACTION_PACKET_ACTION:
         attr_list[i].value.aclaction.enable = aclEntry.actionPacketActionEnable;
@@ -881,6 +1090,15 @@ sai_status_t get_acl_entry_attribute_fn(
         attr_list[i].value.aclaction.enable = aclEntry.actionMacsecFlowEnable;
         attr_list[i].value.aclaction.parameter.oid =
             aclEntry.actionMacsecFlowData;
+        break;
+      case SAI_ACL_ENTRY_ATTR_ACTION_SET_USER_TRAP_ID:
+        attr_list[i].value.aclaction.enable = aclEntry.actionSetUserTrapEnable;
+        attr_list[i].value.aclaction.parameter.oid =
+            aclEntry.actionSetUserTrapData;
+        break;
+      case SAI_ACL_ENTRY_ATTR_ACTION_DISABLE_ARS_FORWARDING:
+        attr_list[i].value.aclaction.parameter.booldata =
+            aclEntry.actionDisableArsForwarding;
         break;
       default:
         return SAI_STATUS_NOT_SUPPORTED;

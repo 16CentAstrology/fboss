@@ -5,12 +5,32 @@
 #include <optional>
 #include <string>
 
-namespace facebook::fboss::platform::config_lib {
+#include <gflags/gflags.h>
 
-std::string getSensorServiceConfig(
-    const std::optional<std::string>& platformName = std::nullopt);
+DECLARE_string(config_file);
 
-std::string getFbdevdConfig(
-    const std::optional<std::string>& platformName = std::nullopt);
+namespace facebook::fboss::platform {
 
-} // namespace facebook::fboss::platform::config_lib
+class ConfigLib {
+ public:
+  virtual ~ConfigLib() = default;
+  virtual std::string getSensorServiceConfig(
+      const std::optional<std::string>& platformName = std::nullopt) const;
+
+  virtual std::string getFanServiceConfig(
+      const std::optional<std::string>& platformName = std::nullopt) const;
+
+  virtual std::string getPlatformManagerConfig(
+      const std::optional<std::string>& platformName = std::nullopt) const;
+
+  virtual std::string getWeutilConfig(
+      const std::optional<std::string>& platformName = std::nullopt) const;
+
+  virtual std::string getFwUtilConfig(
+      const std::optional<std::string>& platformName = std::nullopt) const;
+
+  virtual std::string getLedManagerConfig(
+      const std::optional<std::string>& platformName = std::nullopt) const;
+};
+
+} // namespace facebook::fboss::platform

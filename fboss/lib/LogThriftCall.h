@@ -11,10 +11,10 @@
 #pragma once
 
 #include <folly/Conv.h>
-#include <folly/DynamicConverter.h>
 #include <folly/Range.h>
 #include <folly/futures/Future.h>
-#include <folly/json.h>
+#include <folly/json/DynamicConverter.h>
+#include <folly/json/json.h>
 #include <folly/logging/LogLevel.h>
 #include <folly/logging/Logger.h>
 #include <folly/logging/xlog.h>
@@ -122,6 +122,7 @@ class LogThriftCall {
   uint32_t line_;
   std::chrono::time_point<std::chrono::steady_clock> start_;
   bool failed_{false};
+  std::string paramsStr_;
 };
 
 // inspiration for this is INSTRUMENT_THRIFT_CALL in EdenServiceHandler.

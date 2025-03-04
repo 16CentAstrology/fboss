@@ -15,8 +15,12 @@
 #include <cstdint>
 #include "fboss/cli/fboss2/CmdHandler.h"
 #include "fboss/cli/fboss2/commands/show/ndp/gen-cpp2/model_types.h"
+#include "fboss/cli/fboss2/utils/CmdClientUtils.h"
+#include "fboss/cli/fboss2/utils/Table.h"
 
 namespace facebook::fboss {
+
+using utils::Table;
 
 struct CmdShowNdpTraits : public BaseCommandTraits {
   static constexpr utils::ObjectArgTypeId ObjectArgTypeId =
@@ -53,38 +57,35 @@ class CmdShowNdp : public CmdHandler<CmdShowNdp, CmdShowNdpTraits> {
   }
 
   void printOutput(const RetType& model, std::ostream& out = std::cout) {
-    constexpr auto fmtString =
-        "{:<45}{:<19}{:<12}{:<19}{:<14}{:<9}{:<12}{:<45}\n";
-
-    out << fmt::format(
-        fmtString,
-        "IP Address",
-        "MAC Address",
-        "Interface",
-        "VLAN",
-        "State",
-        "TTL",
-        "CLASSID",
-        "Voq Switch");
+    Table table;
+    table.setHeader(
+        {"IP Address",
+         "MAC Address",
+         "Interface",
+         "VLAN/InterfaceID",
+         "State",
+         "TTL",
+         "CLASSID",
+         "Voq Switch",
+         "Resolved Since"});
 
     for (const auto& entry : model.get_ndpEntries()) {
       auto vlan = entry.get_vlanName();
       if (entry.get_vlanID() != ctrl_constants::NO_VLAN()) {
         vlan += folly::to<std::string>(" (", entry.get_vlanID(), ")");
       }
-
-      out << fmt::format(
-          fmtString,
-          entry.get_ip(),
-          entry.get_mac(),
-          entry.get_port(),
-          vlan,
-          entry.get_state(),
-          entry.get_ttl(),
-          entry.get_classID(),
-          entry.get_switchName());
+      table.addRow(
+          {entry.get_ip(),
+           entry.get_mac(),
+           entry.get_port(),
+           vlan,
+           entry.get_state(),
+           std::to_string(entry.get_ttl()),
+           std::to_string(entry.get_classID()),
+           entry.get_switchName(),
+           entry.get_resolvedSince()});
     }
-    out << std::endl;
+    out << table << std::endl;
   }
 
   RetType createModel(
@@ -110,7 +111,13 @@ class CmdShowNdp : public CmdHandler<CmdShowNdp, CmdShowNdpTraits> {
           ndpDetails.port() = folly::to<std::string>(entry.get_port());
         }
         ndpDetails.vlanName() = entry.get_vlanName();
-        ndpDetails.vlanID() = entry.get_vlanID();
+        // TODO(skhare)
+        // Once FLAGS_intf_nbr_tables is enabled globally, interfaceID will be
+        // always populated to a valid value, and at that time, we could assign
+        // entry.get_interfaceID() without check for non-0.
+        ndpDetails.vlanID() = entry.get_interfaceID() != 0
+            ? entry.get_interfaceID()
+            : entry.get_vlanID();
         ndpDetails.state() = entry.get_state();
         ndpDetails.ttl() = entry.get_ttl();
         ndpDetails.classID() = entry.get_classID();
@@ -121,6 +128,15 @@ class CmdShowNdp : public CmdHandler<CmdShowNdp, CmdShowNdpTraits> {
               ? folly::to<std::string>(
                     *ditr->second.name(), " (", *entry.switchId(), ")")
               : folly::to<std::string>(*entry.switchId());
+        }
+        ndpDetails.resolvedSince() = "--";
+        if (entry.resolvedSince().has_value()) {
+          time_t timestamp = static_cast<time_t>(entry.resolvedSince().value());
+          std::tm tm;
+          localtime_r(&timestamp, &tm);
+          std::ostringstream oss;
+          oss << std::put_time(&tm, "%Y-%m-%d %T");
+          ndpDetails.resolvedSince() = oss.str();
         }
 
         model.ndpEntries()->push_back(ndpDetails);

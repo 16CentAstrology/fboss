@@ -15,13 +15,12 @@
 #include "fboss/agent/hw/test/HwTestCoppUtils.h"
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
 #include "fboss/agent/hw/test/LoadBalancerUtils.h"
-#include "fboss/agent/hw/test/dataplane_tests/HwEcmpDataPlaneTestUtil.h"
-#include "fboss/agent/hw/test/dataplane_tests/HwTestDscpMarkingUtils.h"
-#include "fboss/agent/hw/test/dataplane_tests/HwTestOlympicUtils.h"
 #include "fboss/agent/hw/test/dataplane_tests/HwTestQosUtils.h"
-#include "fboss/agent/hw/test/dataplane_tests/HwTestQueuePerHostUtils.h"
 #include "fboss/agent/state/Interface.h"
 #include "fboss/agent/test/EcmpSetupHelper.h"
+#include "fboss/agent/test/utils/DscpMarkingUtils.h"
+#include "fboss/agent/test/utils/EcmpDataPlaneTestUtil.h"
+#include "fboss/agent/test/utils/QueuePerHostTestUtils.h"
 
 #include "fboss/agent/gen-cpp2/validated_shell_commands_constants.h"
 
@@ -87,9 +86,9 @@ void HwProdInvariantHelper::sendTrafficOnDownlink() {
 
 void HwProdInvariantHelper::verifyLoadBalacing() {
   CHECK(ecmpHelper_);
-  bool loadBalanced = utility::pumpTrafficAndVerifyLoadBalanced(
-      [=]() { sendTrafficOnDownlink(); },
-      [=]() {
+  utility::pumpTrafficAndVerifyLoadBalanced(
+      [=, this]() { sendTrafficOnDownlink(); },
+      [=, this]() {
         auto ports = std::make_unique<std::vector<int32_t>>();
         auto ecmpPortIds = getEcmpPortIds();
         for (auto ecmpPortId : ecmpPortIds) {
@@ -97,11 +96,10 @@ void HwProdInvariantHelper::verifyLoadBalacing() {
         }
         getHwSwitchEnsemble()->getHwSwitch()->clearPortStats(ports);
       },
-      [=]() {
+      [=, this]() {
         return ecmpHelper_->isLoadBalanced(
             ecmpPorts_, std::vector<NextHopWeight>(kEcmpWidth, 1), 25);
       });
-  EXPECT_TRUE(loadBalanced);
 }
 
 std::shared_ptr<SwitchState> HwProdInvariantHelper::getProgrammedState() const {
@@ -146,7 +144,6 @@ void HwProdInvariantHelper::verifyDscpToQueueMapping() {
   if (!ensemble_->getAsic()->isSupported(HwAsic::Feature::L3_QOS)) {
     return;
   }
-  auto portId = getDownlinkPort();
   // lambda that returns HwPortStats for the given port
   auto getPortStats = [this]() {
     return ensemble_->getLatestPortStats(ensemble_->masterLogicalPortIds());
@@ -158,8 +155,7 @@ void HwProdInvariantHelper::verifyDscpToQueueMapping() {
       ensemble_->getHwSwitch(),
       getProgrammedState(),
       getPortStats,
-      getEcmpPortIds(),
-      portId));
+      getEcmpPortIds()));
 }
 
 void HwProdInvariantHelper::verifySafeDiagCmds() {
@@ -169,10 +165,14 @@ void HwProdInvariantHelper::verifySafeDiagCmds() {
     case cfg::AsicType::ASIC_TYPE_MOCK:
     case cfg::AsicType::ASIC_TYPE_EBRO:
     case cfg::AsicType::ASIC_TYPE_GARONNE:
+    case cfg::AsicType::ASIC_TYPE_YUBA:
+    case cfg::AsicType::ASIC_TYPE_CHENAB:
     case cfg::AsicType::ASIC_TYPE_ELBERT_8DD:
     case cfg::AsicType::ASIC_TYPE_SANDIA_PHY:
-    case cfg::AsicType::ASIC_TYPE_INDUS:
-    case cfg::AsicType::ASIC_TYPE_BEAS:
+    case cfg::AsicType::ASIC_TYPE_JERICHO2:
+    case cfg::AsicType::ASIC_TYPE_JERICHO3:
+    case cfg::AsicType::ASIC_TYPE_RAMON:
+    case cfg::AsicType::ASIC_TYPE_RAMON3:
     case cfg::AsicType::ASIC_TYPE_TOMAHAWK5:
       break;
 
@@ -213,8 +213,7 @@ void HwProdInvariantHelper::disableTtl() {
   for (const auto& nhop : ecmpHelper_->getNextHops()) {
     if (std::find(ecmpPorts_.begin(), ecmpPorts_.end(), nhop.portDesc) !=
         ecmpPorts_.end()) {
-      utility::disableTTLDecrements(
-          ensemble_->getHwSwitch(), RouterID(0), nhop);
+      utility::disableTTLDecrements(ensemble_, RouterID(0), nhop);
     }
   }
 }
@@ -235,7 +234,6 @@ void HwProdInvariantHelper::verifyQueuePerHostMapping(bool dscpMarkingTest) {
   }
 
   utility::verifyQueuePerHostMapping(
-      ensemble_->getHwSwitch(),
       ensemble_,
       vlanId,
       srcMac,
@@ -257,9 +255,7 @@ void HwProdInvariantHelper::verifyMplsEntry(
     int label,
     LabelForwardingAction::LabelForwardingType action) {
   auto state = getProgrammedState();
-  auto entry =
-      state->getLabelForwardingInformationBase()->getLabelForwardingEntryIf(
-          label);
+  auto entry = state->getLabelForwardingInformationBase()->getNodeIf(label);
   EXPECT_NE(entry, nullptr);
   auto nhops = entry->getForwardInfo().getNextHopSet();
   EXPECT_NE(nhops.size(), 0);

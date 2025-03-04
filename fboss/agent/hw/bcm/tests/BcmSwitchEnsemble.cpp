@@ -12,6 +12,7 @@
 #include <folly/logging/xlog.h>
 #include <memory>
 #include "fboss/agent/AgentConfig.h"
+#include "fboss/agent/AgentFeatures.h"
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/Utils.h"
 #include "fboss/agent/hw/bcm/BcmAPI.h"
@@ -23,10 +24,8 @@
 #include "fboss/agent/hw/bcm/BcmTrunkTable.h"
 #include "fboss/agent/hw/bcm/tests/BcmLinkStateToggler.h"
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_types.h"
-#include "fboss/agent/hw/switch_asics/HwAsic.h"
-#include "fboss/agent/hw/test/HwLinkStateToggler.h"
-#include "fboss/agent/hw/test/HwTestStatUtils.h"
 #include "fboss/agent/platforms/tests/utils/CreateTestPlatform.h"
+#include "fboss/agent/test/LinkStateToggler.h"
 
 DECLARE_bool(setup_thrift);
 
@@ -93,12 +92,24 @@ std::unique_ptr<AgentConfig> loadCfgFromLocalFile(
 void modifyCfgForPfcTests(
     BcmTestPlatform* bcmTestPlatform,
     std::string& yamlCfg,
-    BcmConfig::ConfigMap& cfg) {
+    BcmConfig::ConfigMap& cfg,
+    bool skipBufferReservation) {
   if (bcmTestPlatform->usesYamlConfig()) {
     std::string toReplace("LOSSY");
     std::size_t pos = yamlCfg.find(toReplace);
     if (pos != std::string::npos) {
-      yamlCfg.replace(pos, toReplace.length(), "LOSSY_AND_LOSSLESS");
+      // for TH4 we skip buffer reservation in prod
+      // but it doesn't seem to work for pfc tests which
+      // play around with other variables. For unblocking
+      // skip it for now
+      if (skipBufferReservation) {
+        yamlCfg.replace(
+            pos,
+            toReplace.length(),
+            "LOSSY_AND_LOSSLESS\n      SKIP_BUFFER_RESERVATION: 1");
+      } else {
+        yamlCfg.replace(pos, toReplace.length(), "LOSSY_AND_LOSSLESS");
+      }
     }
   } else {
     cfg["mmu_lossless"] = "0x2";
@@ -141,9 +152,8 @@ BcmSwitchEnsemble::BcmSwitchEnsemble(
     const HwSwitchEnsemble::Features& featuresDesired)
     : HwSwitchEnsemble(featuresDesired) {}
 
-std::vector<PortID> BcmSwitchEnsemble::masterLogicalPortIds(
-    const std::set<cfg::PortType>& filter) const {
-  return filterByPortTypes(filter, getPlatform()->masterLogicalPortIds());
+std::vector<PortID> BcmSwitchEnsemble::masterLogicalPortIds() const {
+  return getPlatform()->masterLogicalPortIds();
 }
 
 std::vector<PortID> BcmSwitchEnsemble::getAllPortsInGroup(PortID portID) const {
@@ -183,10 +193,8 @@ bool BcmSwitchEnsemble::isRouteScaleEnabled() const {
   return BcmAPI::isAlpmEnabled();
 }
 
-std::unique_ptr<HwLinkStateToggler> BcmSwitchEnsemble::createLinkToggler(
-    HwSwitch* hwSwitch,
-    cfg::PortLoopbackMode desiredLoopbackMode) {
-  return std::make_unique<BcmLinkStateToggler>(this, desiredLoopbackMode);
+std::unique_ptr<LinkStateToggler> BcmSwitchEnsemble::createLinkToggler() {
+  return std::make_unique<BcmLinkStateToggler>(this);
 }
 
 uint64_t BcmSwitchEnsemble::getSdkSwitchId() const {
@@ -195,7 +203,8 @@ uint64_t BcmSwitchEnsemble::getSdkSwitchId() const {
 
 void BcmSwitchEnsemble::runDiagCommand(
     const std::string& input,
-    std::string& /*output*/) {
+    std::string& /*output*/,
+    std::optional<SwitchID> /*switchId*/) {
   getHwSwitch()->printDiagCmd(input);
 }
 
@@ -208,8 +217,8 @@ void BcmSwitchEnsemble::init(
   std::unique_ptr<AgentConfig> agentConfig;
   BcmConfig::ConfigMap cfg;
   std::string yamlCfg;
-  auto platformMode = getPlatformMode();
-  if (platformMode == PlatformMode::FAKE_WEDGE) {
+  auto platformType = getPlatformType();
+  if (platformType == PlatformType::PLATFORM_FAKE_WEDGE) {
     FLAGS_flexports = true;
     for (int n = 1; n <= 125; n += 4) {
       addFlexPort(cfg, n, 40);
@@ -218,7 +227,18 @@ void BcmSwitchEnsemble::init(
     // Create an empty AgentConfig for now, once we fully roll out the new
     // platform config, we should generate a mock platform config for the fake
     // bcm test
-    agentConfig = createEmptyAgentConfig();
+    auto emptyAgentConfig = createEmptyAgentConfig()->thrift;
+    cfg::SwitchInfo switchInfo{};
+    switchInfo.switchType() = cfg::SwitchType::NPU;
+    switchInfo.asicType() = cfg::AsicType::ASIC_TYPE_FAKE;
+    fboss::cfg::Range64 portIdRange;
+    portIdRange.minimum() = 0;
+    portIdRange.maximum() = 0;
+    switchInfo.portIdRange() = portIdRange;
+    switchInfo.switchIndex() = 0;
+    emptyAgentConfig.sw()->switchSettings()->switchIdToSwitchInfo()->emplace(
+        0, switchInfo);
+    agentConfig = std::make_unique<AgentConfig>(emptyAgentConfig);
   } else {
     // Load from a local file
     agentConfig = loadCfgFromLocalFile(platform, bcmTestPlatform, yamlCfg, cfg);
@@ -233,18 +253,33 @@ void BcmSwitchEnsemble::init(
   // Unfortunately we can't use ASIC for querying this capabilities, since
   // ASIC construction requires inputs from AgentConfig (switchType) during
   // construction.
-  std::unordered_set<PlatformMode> th3AndTh4BcmPlatforms = {
-      PlatformMode::MINIPACK,
-      PlatformMode::YAMP,
-      PlatformMode::WEDGE400,
-      PlatformMode::DARWIN,
-      PlatformMode::FUJI,
-      PlatformMode::ELBERT};
+  std::unordered_set<PlatformType> th3BcmPlatforms = {
+      PlatformType::PLATFORM_MINIPACK,
+      PlatformType::PLATFORM_YAMP,
+      PlatformType::PLATFORM_WEDGE400,
+      PlatformType::PLATFORM_DARWIN,
+      PlatformType::PLATFORM_DARWIN48V};
+  std::unordered_set<PlatformType> th4BcmPlatforms = {
+      PlatformType::PLATFORM_FUJI, PlatformType::PLATFORM_ELBERT};
+  bool th3Platform = false;
+  bool th4Platform = false;
+  if (th3BcmPlatforms.find(platformType) != th3BcmPlatforms.end()) {
+    th3Platform = true;
+  } else if (th4BcmPlatforms.find(platformType) != th4BcmPlatforms.end()) {
+    th4Platform = true;
+  }
+
   // when in lossless mode on support platforms, use a different BCM knob
-  if (FLAGS_mmu_lossless_mode &&
-      th3AndTh4BcmPlatforms.find(platformMode) != th3AndTh4BcmPlatforms.end()) {
-    XLOG(DBG2) << "Modify the bcm cfg as mmu_lossless mode is enabled";
-    modifyCfgForPfcTests(bcmTestPlatform, yamlCfg, cfg);
+  if (FLAGS_mmu_lossless_mode && (th3Platform || th4Platform)) {
+    bool skipBufferReservation = false;
+    if (FLAGS_skip_buffer_reservation && th4Platform) {
+      // onlt skip for TH4 for now
+      skipBufferReservation = true;
+    }
+    XLOG(DBG2)
+        << "Modify the bcm cfg as mmu_lossless mode is enabled and skip buffer reservation is: "
+        << skipBufferReservation;
+    modifyCfgForPfcTests(bcmTestPlatform, yamlCfg, cfg, skipBufferReservation);
   }
   if (FLAGS_enable_exact_match) {
     XLOG(DBG2) << "Modify bcm cfg as enable_exact_match is enabled";
@@ -254,10 +289,12 @@ void BcmSwitchEnsemble::init(
       cfg["fpem_mem_entries"] = "0x10000";
     }
   }
-  std::unordered_set<PlatformMode> thBcmPlatforms = {
-      PlatformMode::WEDGE100, PlatformMode::GALAXY_LC, PlatformMode::GALAXY_FC};
+  std::unordered_set<PlatformType> thBcmPlatforms = {
+      PlatformType::PLATFORM_WEDGE100,
+      PlatformType::PLATFORM_GALAXY_LC,
+      PlatformType::PLATFORM_GALAXY_FC};
   if (FLAGS_load_qcm_fw &&
-      thBcmPlatforms.find(platformMode) != thBcmPlatforms.end()) {
+      thBcmPlatforms.find(platformType) != thBcmPlatforms.end()) {
     XLOG(DBG2) << "Modify bcm cfg as load_qcm_fw is enabled";
     modifyCfgForQcmTests(cfg);
   }
@@ -267,16 +304,14 @@ void BcmSwitchEnsemble::init(
     BcmAPI::init(cfg);
   }
   // TODO pass agent config to platform init
-  platform->init(std::move(agentConfig), getHwSwitchFeatures());
+  platform->init(std::move(agentConfig), getHwSwitchFeatures(), 0);
   if (auto tcvr = info.overrideTransceiverInfo) {
     platform->setOverrideTransceiverInfo(*tcvr);
   }
 
-  std::unique_ptr<HwLinkStateToggler> linkToggler;
+  std::unique_ptr<LinkStateToggler> linkToggler;
   if (haveFeature(HwSwitchEnsemble::LINKSCAN)) {
-    linkToggler = createLinkToggler(
-        static_cast<BcmSwitch*>(platform->getHwSwitch()),
-        bcmTestPlatform->getAsic()->desiredLoopbackMode());
+    linkToggler = createLinkToggler();
   }
   std::unique_ptr<std::thread> thriftThread;
   if (FLAGS_setup_thrift) {
@@ -284,7 +319,7 @@ void BcmSwitchEnsemble::init(
         createThriftThread(static_cast<BcmSwitch*>(platform->getHwSwitch()));
   }
   setupEnsemble(
-      std::move(platform),
+      std::make_unique<HwAgent>(std::move(platform)),
       std::move(linkToggler),
       std::move(thriftThread),
       info);

@@ -11,7 +11,7 @@
 
 #include <boost/container/flat_set.hpp>
 
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
@@ -23,22 +23,6 @@ DECLARE_uint32(ecmp_width);
 DECLARE_bool(optimized_ucmp);
 
 namespace facebook::fboss {
-
-struct LegacyRouteNextHopEntry
-    : ThriftyFields<LegacyRouteNextHopEntry, state::RouteNextHopEntry> {
-  using BaseT =
-      ThriftyFields<LegacyRouteNextHopEntry, state::RouteNextHopEntry>;
-  using BaseT::BaseT;
-  // used only for folly dynamic methods
-  state::RouteNextHopEntry toThrift() const override {
-    return data();
-  }
-
-  static LegacyRouteNextHopEntry fromThrift(
-      const state::RouteNextHopEntry& data) {
-    return LegacyRouteNextHopEntry(data);
-  }
-};
 
 USE_THRIFT_COW(RouteNextHopEntry);
 
@@ -122,17 +106,6 @@ class RouteNextHopEntry
   std::string str_DEPRACATED() const;
 
   std::string str() const;
-
-  static std::shared_ptr<RouteNextHopEntry> fromFollyDynamic(
-      const folly::dynamic& entryJson) {
-    auto legacyFields = LegacyRouteNextHopEntry::fromFollyDynamic(entryJson);
-    return std::make_shared<RouteNextHopEntry>(legacyFields.toThrift());
-  }
-
-  folly::dynamic toFollyDynamic() const override {
-    auto legacyFields = LegacyRouteNextHopEntry(toThrift());
-    return legacyFields.toFollyDynamic();
-  }
 
   // Methods to manipulate this object
   bool isDrop() const {

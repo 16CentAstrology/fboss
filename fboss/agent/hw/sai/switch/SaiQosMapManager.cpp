@@ -13,11 +13,13 @@
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/hw/sai/api/QosMapApi.h"
 #include "fboss/agent/hw/sai/store/SaiStore.h"
+#include "fboss/agent/hw/sai/switch/SaiHostifManager.h"
 #include "fboss/agent/hw/sai/switch/SaiManagerTable.h"
+#include "fboss/agent/hw/sai/switch/SaiPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiSwitchManager.h"
+#include "fboss/agent/hw/sai/switch/SaiSystemPortManager.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/platforms/sai/SaiPlatform.h"
-#include "fboss/agent/state/SwitchState.h"
 
 namespace facebook::fboss {
 
@@ -44,8 +46,8 @@ std::shared_ptr<SaiQosMap> SaiQosMapManager::setDscpToTcQosMap(
   SaiQosMapTraits::Attributes::MapToValueList mapToValueListAttribute{
       mapToValueList};
   auto& store = saiStore_->get<SaiQosMapTraits>();
-  SaiQosMapTraits::AdapterHostKey k{typeAttribute};
-  SaiQosMapTraits::CreateAttributes c{typeAttribute, mapToValueListAttribute};
+  SaiQosMapTraits::AdapterHostKey k{typeAttribute, mapToValueListAttribute};
+  SaiQosMapTraits::CreateAttributes c = k;
   return store.setObject(k, c);
 }
 
@@ -70,8 +72,8 @@ std::shared_ptr<SaiQosMap> SaiQosMapManager::setExpToTcQosMap(
   SaiQosMapTraits::Attributes::MapToValueList mapToValueListAttribute{
       mapToValueList};
   auto& store = saiStore_->get<SaiQosMapTraits>();
-  SaiQosMapTraits::AdapterHostKey k{typeAttribute};
-  SaiQosMapTraits::CreateAttributes c{typeAttribute, mapToValueListAttribute};
+  SaiQosMapTraits::AdapterHostKey k{typeAttribute, mapToValueListAttribute};
+  SaiQosMapTraits::CreateAttributes c = k;
   return store.setObject(k, c);
 }
 
@@ -97,14 +99,16 @@ std::shared_ptr<SaiQosMap> SaiQosMapManager::setTcToExpQosMap(
   SaiQosMapTraits::Attributes::MapToValueList mapToValueListAttribute{
       mapToValueList};
   auto& store = saiStore_->get<SaiQosMapTraits>();
-  SaiQosMapTraits::AdapterHostKey k{typeAttribute};
-  SaiQosMapTraits::CreateAttributes c{typeAttribute, mapToValueListAttribute};
+  SaiQosMapTraits::AdapterHostKey k{typeAttribute, mapToValueListAttribute};
+  SaiQosMapTraits::CreateAttributes c = k;
   return store.setObject(k, c);
 }
 
 std::shared_ptr<SaiQosMap> SaiQosMapManager::setTcToQueueQosMap(
-    const std::shared_ptr<QosPolicy>& qosPolicy) {
-  const auto& newTcToQueueIdMap = qosPolicy->getTrafficClassToQueueId();
+    const std::shared_ptr<QosPolicy>& qosPolicy,
+    bool voq = false) {
+  const auto& newTcToQueueIdMap = voq ? qosPolicy->getTrafficClassToVoqId()
+                                      : qosPolicy->getTrafficClassToQueueId();
   std::vector<sai_qos_map_t> mapToValueList;
   mapToValueList.reserve(newTcToQueueIdMap->size());
   for (const auto& [tc, queue] : std::as_const(*newTcToQueueIdMap)) {
@@ -119,8 +123,8 @@ std::shared_ptr<SaiQosMap> SaiQosMapManager::setTcToQueueQosMap(
   SaiQosMapTraits::Attributes::MapToValueList mapToValueListAttribute{
       mapToValueList};
   auto& store = saiStore_->get<SaiQosMapTraits>();
-  SaiQosMapTraits::AdapterHostKey k{typeAttribute};
-  SaiQosMapTraits::CreateAttributes c{typeAttribute, mapToValueListAttribute};
+  SaiQosMapTraits::AdapterHostKey k{typeAttribute, mapToValueListAttribute};
+  SaiQosMapTraits::CreateAttributes c = k;
   return store.setObject(k, c);
 }
 
@@ -141,8 +145,8 @@ std::shared_ptr<SaiQosMap> SaiQosMapManager::setTcToPgQosMap(
   SaiQosMapTraits::Attributes::MapToValueList mapToValueListAttribute{
       mapToValueList};
   auto& store = saiStore_->get<SaiQosMapTraits>();
-  SaiQosMapTraits::AdapterHostKey k{typeAttribute};
-  SaiQosMapTraits::CreateAttributes c{typeAttribute, mapToValueListAttribute};
+  SaiQosMapTraits::AdapterHostKey k{typeAttribute, mapToValueListAttribute};
+  SaiQosMapTraits::CreateAttributes c = k;
   return store.setObject(k, c);
 }
 
@@ -164,65 +168,109 @@ std::shared_ptr<SaiQosMap> SaiQosMapManager::setPfcPriorityToQueueQosMap(
   SaiQosMapTraits::Attributes::MapToValueList mapToValueListAttribute{
       mapToValueList};
   auto& store = saiStore_->get<SaiQosMapTraits>();
-  SaiQosMapTraits::AdapterHostKey k{typeAttribute};
-  SaiQosMapTraits::CreateAttributes c{typeAttribute, mapToValueListAttribute};
+  SaiQosMapTraits::AdapterHostKey k{typeAttribute, mapToValueListAttribute};
+  SaiQosMapTraits::CreateAttributes c = k;
   return store.setObject(k, c);
 }
 
 void SaiQosMapManager::setQosMaps(
-    const std::shared_ptr<QosPolicy>& newQosPolicy) {
-  XLOG(DBG2) << "Setting global QoS map: " << newQosPolicy->getName();
-  handle_ = std::make_unique<SaiQosMapHandle>();
-  handle_->dscpToTcMap = setDscpToTcQosMap(newQosPolicy);
-  handle_->tcToQueueMap = setTcToQueueQosMap(newQosPolicy);
-  handle_->expToTcMap = setExpToTcQosMap(newQosPolicy);
-  handle_->tcToExpMap = setTcToExpQosMap(newQosPolicy);
+    const std::shared_ptr<QosPolicy>& newQosPolicy,
+    bool isDefault) {
+  std::string qosPolicyName = newQosPolicy->getName();
+  XLOG(DBG2) << "Setting QoS map: " << qosPolicyName;
+  std::unique_ptr<SaiQosMapHandle> handle = std::make_unique<SaiQosMapHandle>();
+  handle->dscpToTcMap = setDscpToTcQosMap(newQosPolicy);
+  handle->tcToQueueMap = setTcToQueueQosMap(newQosPolicy);
+  handle->expToTcMap = setExpToTcQosMap(newQosPolicy);
+  handle->tcToExpMap = setTcToExpQosMap(newQosPolicy);
   if (platform_->getAsic()->isSupported(HwAsic::Feature::PFC)) {
     if (newQosPolicy->getTrafficClassToPgId()) {
-      handle_->tcToPgMap = setTcToPgQosMap(newQosPolicy);
+      handle->tcToPgMap = setTcToPgQosMap(newQosPolicy);
     }
     if (newQosPolicy->getPfcPriorityToQueueId()) {
-      handle_->pfcPriorityToQueueMap =
-          setPfcPriorityToQueueQosMap(newQosPolicy);
+      handle->pfcPriorityToQueueMap = setPfcPriorityToQueueQosMap(newQosPolicy);
     }
   }
+  if (newQosPolicy->getTrafficClassToVoqId() &&
+      !newQosPolicy->getTrafficClassToVoqId()->empty()) {
+    handle->tcToVoqMap = setTcToQueueQosMap(newQosPolicy, true);
+  }
+  handle->isDefault = isDefault;
+  handle->name = qosPolicyName;
+  handles_[qosPolicyName] = std::move(handle);
 }
 
 void SaiQosMapManager::addQosMap(
-    const std::shared_ptr<QosPolicy>& newQosPolicy) {
-  if (handle_) {
-    throw FbossError("Failed to add QoS map: already programmed");
+    const std::shared_ptr<QosPolicy>& newQosPolicy,
+    bool isDefault) {
+  std::string qosPolicyName = newQosPolicy->getName();
+  XLOG(DBG2) << "add QoS policy " << qosPolicyName;
+  if (handles_.find(qosPolicyName) != handles_.end()) {
+    XLOG(DBG2) << "QoS policy " << qosPolicyName
+               << " already programmed, update it";
   }
-  return setQosMaps(newQosPolicy);
+  setQosMaps(newQosPolicy, isDefault);
+  managerTable_->portManager().setQosPolicy(newQosPolicy);
+  managerTable_->systemPortManager().setQosPolicy(newQosPolicy);
 }
 
-void SaiQosMapManager::removeQosMap() {
-  if (!handle_) {
-    throw FbossError("Failed to remove QoS map: none programmed");
+void SaiQosMapManager::removeQosMap(
+    const std::shared_ptr<QosPolicy>& oldQosPolicy,
+    bool /*isDefault*/) {
+  std::string qosPolicyName = oldQosPolicy->getName();
+  if (handles_.find(qosPolicyName) == handles_.end()) {
+    throw FbossError(
+        "Failed to remove QoS map: none programmed ", qosPolicyName);
   }
-  handle_.reset();
+  XLOG(DBG2) << "remove QoS policy " << qosPolicyName;
+  managerTable_->portManager().clearQosPolicy(oldQosPolicy);
+  managerTable_->systemPortManager().clearQosPolicy(oldQosPolicy);
+  handles_.erase(qosPolicyName);
 }
 
 void SaiQosMapManager::changeQosMap(
     const std::shared_ptr<QosPolicy>& oldQosPolicy,
-    const std::shared_ptr<QosPolicy>& newQosPolicy) {
-  if (!handle_) {
+    const std::shared_ptr<QosPolicy>& newQosPolicy,
+    bool newPolicyIsDefault) {
+  std::string oldName = oldQosPolicy->getName();
+  std::string newName = newQosPolicy->getName();
+  XLOG(DBG2) << "change QoS policy old " << oldName << " new " << newName;
+  if (handles_.find(oldName) == handles_.end()) {
     throw FbossError("Failed to change QoS map: none programmed");
   }
-  return setQosMaps(newQosPolicy);
+  // When old name and new name are the same, only call addQosMap() to
+  // update QoS map object and the corresponding port QoS mapping attributes
+  if (oldName != newName) {
+    removeQosMap(oldQosPolicy, newPolicyIsDefault);
+  }
+  addQosMap(newQosPolicy, newPolicyIsDefault);
+  managerTable_->hostifManager().qosPolicyUpdated(newName);
 }
 
-const SaiQosMapHandle* SaiQosMapManager::getQosMap() const {
-  return getQosMapImpl();
+const SaiQosMapHandle* FOLLY_NULLABLE SaiQosMapManager::getQosMap(
+    const std::optional<std::string>& qosPolicyName) const {
+  return getQosMapImpl(qosPolicyName);
 }
-SaiQosMapHandle* SaiQosMapManager::getQosMap() {
-  return getQosMapImpl();
+SaiQosMapHandle* FOLLY_NULLABLE
+SaiQosMapManager::getQosMap(const std::optional<std::string>& qosPolicyName) {
+  return getQosMapImpl(qosPolicyName);
 }
-SaiQosMapHandle* SaiQosMapManager::getQosMapImpl() const {
-  if (!handle_) {
+SaiQosMapHandle* FOLLY_NULLABLE SaiQosMapManager::getQosMapImpl(
+    const std::optional<std::string>& qosPolicyName) const {
+  if (qosPolicyName && handles_.find(qosPolicyName.value()) != handles_.end()) {
+    return handles_.at(qosPolicyName.value()).get();
+  }
+  if (qosPolicyName) {
+    XLOG(DBG2) << "unable to find QoS policy " << qosPolicyName.value();
     return nullptr;
   }
-  return handle_.get();
+  // if name is null, return default QoS policy
+  for (const auto& handle : handles_) {
+    if (handle.second->isDefault) {
+      return handle.second.get();
+    }
+  }
+  XLOG(DBG2) << "unable to find default QoS policy";
+  return nullptr;
 }
-
 } // namespace facebook::fboss

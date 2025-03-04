@@ -66,13 +66,20 @@ class CmdShowLldp : public CmdHandler<CmdShowLldp, CmdShowLldpTraits> {
     });
 
     for (auto const& entry : model.get_lldpEntries()) {
+      std::string expectedPeerDisplay = entry.get_expectedPeer();
+      if (expectedPeerDisplay.empty()) {
+        expectedPeerDisplay = "EMPTY";
+      }
+
       table.addRow({
           entry.get_localPort(),
           Table::StyledCell(
               entry.get_status(), get_StatusStyle(entry.get_status())),
-          Table::StyledCell(entry.get_expectedPeer(), Table::Style::INFO),
           Table::StyledCell(
-              removeFbDomains(entry.get_systemName()),
+              expectedPeerDisplay,
+              get_ExpectedPeerStyle(entry.get_expectedPeer())),
+          Table::StyledCell(
+              utils::removeFbDomains(entry.get_systemName()),
               get_PeerStyle(entry.get_expectedPeer(), entry.get_systemName())),
           entry.get_remotePort(),
           entry.get_remotePlatform(),
@@ -109,14 +116,6 @@ class CmdShowLldp : public CmdHandler<CmdShowLldp, CmdShowLldpTraits> {
     return returnPort;
   }
 
-  const std::string removeFbDomains(const std::string& hostname) {
-    // Simple helper function to remove FQDN
-    std::string host_copy = hostname;
-    const RE2 fb_domains(".facebook.com$|.tfbnw.net$");
-    RE2::Replace(&host_copy, fb_domains, "");
-    return host_copy;
-  }
-
   bool doPeersMatch(
       const std::string& expectedPeer,
       const std::string& actualPeer) {
@@ -136,6 +135,14 @@ class CmdShowLldp : public CmdHandler<CmdShowLldp, CmdShowLldpTraits> {
       return Table::Style::GOOD;
     } else {
       return Table::Style::ERROR;
+    }
+  }
+
+  Table::Style get_ExpectedPeerStyle(const std::string& expectedPeer) {
+    if (expectedPeer.empty()) {
+      return Table::Style::WARN;
+    } else {
+      return Table::Style::INFO;
     }
   }
 
@@ -185,6 +192,29 @@ class CmdShowLldp : public CmdHandler<CmdShowLldp, CmdShowLldpTraits> {
     }
     const RE2 fsw_regex("^fsw.*");
     if (RE2::FullMatch(portDescription, fsw_regex)) {
+      results.clear();
+      folly::split(":", portDescription, results);
+      // Prints as fsw001.p062.f01.vll3
+      return results[0];
+    }
+    const RE2 ctsw_regex("^ctsw.*");
+    if (RE2::FullMatch(portDescription, ctsw_regex)) {
+      return results[0] + "." + results[1];
+    }
+    const RE2 rsw_regex("^rsw.*");
+    if (RE2::FullMatch(portDescription, rsw_regex)) {
+      return results[0] + "." + results[1];
+    }
+    const RE2 rusw_regex("^rusw.*");
+    if (RE2::FullMatch(portDescription, rusw_regex)) {
+      return results[0] + "." + results[1];
+    }
+    const RE2 rtsw_regex("^rtsw.*");
+    if (RE2::FullMatch(portDescription, rtsw_regex)) {
+      return results[0] + "." + results[1];
+    }
+    const RE2 resw_regex("^resw.*");
+    if (RE2::FullMatch(portDescription, resw_regex)) {
       return results[0] + "." + results[1];
     }
 
@@ -207,8 +237,9 @@ class CmdShowLldp : public CmdHandler<CmdShowLldp, CmdShowLldpTraits> {
       const auto portInfo = getPortInfo(entry.get_localPort(), portEntries);
       if (queriedIfs.size() == 0 || queriedSet.count(portInfo.get_name())) {
         const auto operState = portInfo.get_operState();
-        const auto expected_peer =
-            extractExpectedPort(portInfo.get_description());
+        const auto expected_peer = portInfo.expectedLLDPeerName().has_value()
+            ? portInfo.expectedLLDPeerName().value()
+            : extractExpectedPort(portInfo.get_description());
         if (auto localPortName = entry.get_localPortName()) {
           lldpDetails.localPort() = *localPortName;
         }
@@ -216,7 +247,9 @@ class CmdShowLldp : public CmdHandler<CmdShowLldp, CmdShowLldpTraits> {
             ? *entry.get_systemName()
             : entry.get_printableChassisId();
         lldpDetails.remotePort() = entry.get_printablePortId();
-        lldpDetails.remotePlatform() = *entry.get_systemDescription();
+        if (entry.get_systemDescription()) {
+          lldpDetails.remotePlatform() = *entry.get_systemDescription();
+        }
         lldpDetails.remotePortDescription() = portInfo.get_description();
         lldpDetails.status() =
             (operState == facebook::fboss::PortOperState::UP) ? "up" : "down";

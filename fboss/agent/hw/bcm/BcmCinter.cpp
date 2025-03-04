@@ -13,6 +13,7 @@
 #include "fboss/agent/hw/bcm/BcmSdkVer.h"
 
 #include <array>
+#include <iomanip>
 #include <iterator>
 #include <string>
 #include <tuple>
@@ -50,6 +51,8 @@ DEFINE_int32(
     "flush logs even if the buffer is not full");
 
 DEFINE_int32(pbmp_word_max, 8, "Max pbmp width as suggested by Vendor.");
+
+DEFINE_bool(enable_fdr_cinter, false, "Enable logging for fdr set calls.");
 
 using folly::join;
 using folly::to;
@@ -169,12 +172,10 @@ void BcmCinter::setupGlobals() {
   };
   writeCintLines(std::move(pktioGlobals));
 #endif
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_21))
   array<string, 1> fdrGlobals = {
       "bcm_port_fdr_config_t fdr_config",
   };
   writeCintLines(std::move(fdrGlobals));
-#endif
 }
 
 template <typename C>
@@ -191,8 +192,19 @@ void BcmCinter::writeCintLine(const std::string& cint) {
   writeCintLines(array<string, 1>{cint});
 }
 
+inline std::string BcmCinter::getCurrentTimestamp() const {
+  auto now = std::chrono::system_clock::now();
+  auto timer = std::chrono::system_clock::to_time_t(now);
+  std::tm tm;
+  localtime_r(&timer, &tm);
+  std::ostringstream oss;
+  oss << std::put_time(&tm, "%Y-%m-%d %T");
+  return oss.str();
+}
+
 vector<string> BcmCinter::wrapFunc(const string& funcCall) const {
   vector<string> cintLines = {
+      to<string>("// ", getCurrentTimestamp()),
       to<string>("rv = ", funcCall),
       // NOTE this is approximate line number in particular it
       // will point to line number just before the lines written
@@ -556,22 +568,18 @@ vector<string> BcmCinter::cintForMirrorDestination(
   cintLines.push_back(
       to<string>("mirror_dest.psamp_epoch = ", mirror_dest->psamp_epoch));
   cintLines.push_back(to<string>("mirror_dest.cosq = ", mirror_dest->cosq));
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_19))
   cintLines.push_back(to<string>("mirror_dest.cfi = ", mirror_dest->cfi));
   cintLines.push_back(
       to<string>("mirror_dest.drop_group_bmp = ", mirror_dest->drop_group_bmp));
   cintLines.push_back(to<string>(
       "mirror_dest.encap_truncate_profile_id = ",
       mirror_dest->encap_truncate_profile_id));
-#endif
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_21))
   cintLines.push_back(
       to<string>("mirror_dest.duplicate_pri = ", mirror_dest->duplicate_pri));
   cintLines.push_back(
       to<string>("mirror_dest.ip_proto = ", mirror_dest->ip_proto));
   cintLines.push_back(
       to<string>("mirror_dest.switch_id = ", mirror_dest->switch_id));
-#endif
 
   string srcMac, dstMac;
   string srcMacName, dstMacName;
@@ -903,30 +911,28 @@ vector<string> BcmCinter::cintForFlexctrConfig(
 vector<string> BcmCinter::cintForFlexCtrTrigger(
     bcm_flexctr_trigger_t& flexctr_trigger) {
   vector<string> cintLines = {
-    to<string>("flexctr_trigger.trigger_type=", flexctr_trigger.trigger_type),
-    to<string>("flexctr_trigger.period_num=", flexctr_trigger.period_num),
-    to<string>("flexctr_trigger.interval=", flexctr_trigger.interval),
-    to<string>("flexctr_trigger.object=", flexctr_trigger.object),
-    to<string>(
-        "flexctr_trigger.object_value_start=",
-        flexctr_trigger.object_value_start),
-    to<string>(
-        "flexctr_trigger.object_value_stop=",
-        flexctr_trigger.object_value_stop),
-    to<string>(
-        "flexctr_trigger.object_value_mask=",
-        flexctr_trigger.object_value_mask),
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_21))
-    to<string>(
-        "flexctr_trigger.interval_shift=", flexctr_trigger.interval_shift),
-    to<string>("flexctr_trigger.interval_size=", flexctr_trigger.interval_size),
-    to<string>("flexctr_trigger.object_id=", flexctr_trigger.object_id),
-    to<string>(
-        "flexctr_trigger.action_count_stop=",
-        flexctr_trigger.action_count_stop),
-    to<string>("flexctr_trigger.flags=", flexctr_trigger.flags)
-#endif
-  };
+      to<string>("flexctr_trigger.trigger_type=", flexctr_trigger.trigger_type),
+      to<string>("flexctr_trigger.period_num=", flexctr_trigger.period_num),
+      to<string>("flexctr_trigger.interval=", flexctr_trigger.interval),
+      to<string>("flexctr_trigger.object=", flexctr_trigger.object),
+      to<string>(
+          "flexctr_trigger.object_value_start=",
+          flexctr_trigger.object_value_start),
+      to<string>(
+          "flexctr_trigger.object_value_stop=",
+          flexctr_trigger.object_value_stop),
+      to<string>(
+          "flexctr_trigger.object_value_mask=",
+          flexctr_trigger.object_value_mask),
+      to<string>(
+          "flexctr_trigger.interval_shift=", flexctr_trigger.interval_shift),
+      to<string>(
+          "flexctr_trigger.interval_size=", flexctr_trigger.interval_size),
+      to<string>("flexctr_trigger.object_id=", flexctr_trigger.object_id),
+      to<string>(
+          "flexctr_trigger.action_count_stop=",
+          flexctr_trigger.action_count_stop),
+      to<string>("flexctr_trigger.flags=", flexctr_trigger.flags)};
   return cintLines;
 }
 
@@ -939,38 +945,41 @@ vector<string> BcmCinter::cintForFlexCtrValueOperation(
   };
   for (int i = 0; i < BCM_FLEXCTR_OPERATION_OBJECT_SIZE; i++) {
     vector<string> operationCint = {
-      to<string>(
-          "flexctr_action.",
-          varname,
-          ".object[",
-          i,
-          "]=",
-          operation->object[i]),
-      to<string>(
-          "flexctr_action.",
-          varname,
-          ".quant_id[",
-          i,
-          "]=",
-          operation->quant_id[i]),
-      to<string>(
-          "flexctr_action.",
-          varname,
-          ".mask_size[",
-          i,
-          "]=",
-          operation->mask_size[i]),
-      to<string>(
-          "flexctr_action.", varname, ".shift[", i, "]=", operation->shift[i]),
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_21))
-      to<string>(
-          "flexctr_action.",
-          varname,
-          ".object_id[",
-          i,
-          "]=",
-          operation->object_id[i]),
-#endif
+        to<string>(
+            "flexctr_action.",
+            varname,
+            ".object[",
+            i,
+            "]=",
+            operation->object[i]),
+        to<string>(
+            "flexctr_action.",
+            varname,
+            ".quant_id[",
+            i,
+            "]=",
+            operation->quant_id[i]),
+        to<string>(
+            "flexctr_action.",
+            varname,
+            ".mask_size[",
+            i,
+            "]=",
+            operation->mask_size[i]),
+        to<string>(
+            "flexctr_action.",
+            varname,
+            ".shift[",
+            i,
+            "]=",
+            operation->shift[i]),
+        to<string>(
+            "flexctr_action.",
+            varname,
+            ".object_id[",
+            i,
+            "]=",
+            operation->object_id[i]),
     };
     cintLines.insert(
         cintLines.end(),
@@ -991,24 +1000,22 @@ vector<string> BcmCinter::cintForFlexCtrAction(
       make_move_iterator(pbmpCint.begin()),
       make_move_iterator(pbmpCint.end()));
   vector<string> structLines = {
-    "bcm_flexctr_action_t_init(&flexctr_action)",
-    to<string>("flexctr_action.flags=", flexctr_action->flags),
-    to<string>("flexctr_action.source=", flexctr_action->source),
-    to<string>("flexctr_action.ports=", pbmp),
-    to<string>("flexctr_action.hint=", flexctr_action->hint),
-    to<string>(
-        "flexctr_action.drop_count_mode=", flexctr_action->drop_count_mode),
-    to<string>(
-        "flexctr_action.exception_drop_count_enable=",
-        flexctr_action->exception_drop_count_enable),
-    to<string>(
-        "flexctr_action.egress_mirror_count_enable=",
-        flexctr_action->egress_mirror_count_enable),
-    to<string>("flexctr_action.mode=", flexctr_action->mode),
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_21))
-    to<string>("flexctr_action.hint_ext=", flexctr_action->hint_ext),
-    to<string>("flexctr_action.index_num=", flexctr_action->index_num),
-#endif
+      "bcm_flexctr_action_t_init(&flexctr_action)",
+      to<string>("flexctr_action.flags=", flexctr_action->flags),
+      to<string>("flexctr_action.source=", flexctr_action->source),
+      to<string>("flexctr_action.ports=", pbmp),
+      to<string>("flexctr_action.hint=", flexctr_action->hint),
+      to<string>(
+          "flexctr_action.drop_count_mode=", flexctr_action->drop_count_mode),
+      to<string>(
+          "flexctr_action.exception_drop_count_enable=",
+          flexctr_action->exception_drop_count_enable),
+      to<string>(
+          "flexctr_action.egress_mirror_count_enable=",
+          flexctr_action->egress_mirror_count_enable),
+      to<string>("flexctr_action.mode=", flexctr_action->mode),
+      to<string>("flexctr_action.hint_ext=", flexctr_action->hint_ext),
+      to<string>("flexctr_action.index_num=", flexctr_action->index_num),
   };
   cintLines.insert(
       cintLines.end(),
@@ -1017,33 +1024,31 @@ vector<string> BcmCinter::cintForFlexCtrAction(
   // index_operation
   for (int i = 0; i < BCM_FLEXCTR_OPERATION_OBJECT_SIZE; i++) {
     vector<string> indexOperationCint = {
-      to<string>(
-          "flexctr_action.index_operation.object[",
-          i,
-          "]=",
-          flexctr_action->index_operation.object[i]),
-      to<string>(
-          "flexctr_action.index_operation.quant_id[",
-          i,
-          "]=",
-          flexctr_action->index_operation.quant_id[i]),
-      to<string>(
-          "flexctr_action.index_operation.mask_size[",
-          i,
-          "]=",
-          flexctr_action->index_operation.mask_size[i]),
-      to<string>(
-          "flexctr_action.index_operation.shift[",
-          i,
-          "]=",
-          flexctr_action->index_operation.shift[i]),
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_21))
-      to<string>(
-          "flexctr_action.index_operation.object_id[",
-          i,
-          "]=",
-          flexctr_action->index_operation.object_id[i]),
-#endif
+        to<string>(
+            "flexctr_action.index_operation.object[",
+            i,
+            "]=",
+            flexctr_action->index_operation.object[i]),
+        to<string>(
+            "flexctr_action.index_operation.quant_id[",
+            i,
+            "]=",
+            flexctr_action->index_operation.quant_id[i]),
+        to<string>(
+            "flexctr_action.index_operation.mask_size[",
+            i,
+            "]=",
+            flexctr_action->index_operation.mask_size[i]),
+        to<string>(
+            "flexctr_action.index_operation.shift[",
+            i,
+            "]=",
+            flexctr_action->index_operation.shift[i]),
+        to<string>(
+            "flexctr_action.index_operation.object_id[",
+            i,
+            "]=",
+            flexctr_action->index_operation.object_id[i]),
     };
     cintLines.insert(
         cintLines.end(),
@@ -1071,7 +1076,6 @@ vector<string> BcmCinter::cintForFlexCtrAction(
       make_move_iterator(triggerCint.begin()),
       make_move_iterator(triggerCint.end()));
   cintLines.push_back(to<string>("flexctr_action.trigger=flexctr_trigger"));
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_21))
   structLines = {
       to<string>("flexctr_action.hint_type=", flexctr_action->hint_type),
       to<string>("flexctr_action.base_pool_id=", flexctr_action->base_pool_id),
@@ -1081,7 +1085,6 @@ vector<string> BcmCinter::cintForFlexCtrAction(
       cintLines.end(),
       make_move_iterator(structLines.begin()),
       make_move_iterator(structLines.end()));
-#endif
   return cintLines;
 }
 
@@ -2056,52 +2059,52 @@ int BcmCinter::bcm_udf_destroy(int unit, bcm_udf_id_t udf_id) {
 vector<string> BcmCinter::cintForBcmUdfPktFormatInfo(
     const bcm_udf_pkt_format_info_t& pktFormat) {
   vector<string> cintLines = {
-    "bcm_udf_pkt_format_info_t_init(&pktFormat)",
-    to<string>("pktFormat.prio=", pktFormat.prio),
-    to<string>("pktFormat.ethertype=", pktFormat.ethertype),
-    to<string>("pktFormat.ethertype_mask=", pktFormat.ethertype_mask),
-    to<string>("pktFormat.ip_protocol=", pktFormat.ip_protocol),
-    to<string>("pktFormat.ip_protocol_mask=", pktFormat.ip_protocol_mask),
-    to<string>("pktFormat.l2=", pktFormat.l2),
-    to<string>("pktFormat.vlan_tag=", pktFormat.vlan_tag),
-    to<string>("pktFormat.outer_ip=", pktFormat.outer_ip),
-    to<string>("pktFormat.inner_ip=", pktFormat.inner_ip),
-    to<string>("pktFormat.tunnel=", pktFormat.tunnel),
-    to<string>("pktFormat.mpls=", pktFormat.mpls),
-    to<string>("pktFormat.fibre_chan_outer=", pktFormat.fibre_chan_outer),
-    to<string>("pktFormat.fibre_chan_inner=", pktFormat.fibre_chan_inner),
-    to<string>("pktFormat.higig=", pktFormat.higig),
-    to<string>("pktFormat.vntag=", pktFormat.vntag),
-    to<string>("pktFormat.etag=", pktFormat.etag),
-    to<string>("pktFormat.cntag=", pktFormat.cntag),
-    to<string>("pktFormat.icnm=", pktFormat.icnm),
-    to<string>("pktFormat.subport_tag=", pktFormat.subport_tag),
-    to<string>("pktFormat.class_id=", pktFormat.class_id),
-    to<string>("pktFormat.inner_protocol=", pktFormat.inner_protocol),
-    to<string>("pktFormat.inner_protocol_mask=", pktFormat.inner_protocol_mask),
-    to<string>("pktFormat.l4_dst_port=", pktFormat.l4_dst_port),
-    to<string>("pktFormat.l4_dst_port_mask=", pktFormat.l4_dst_port_mask),
-    to<string>("pktFormat.opaque_tag_type=", pktFormat.opaque_tag_type),
-    to<string>(
-        "pktFormat.opaque_tag_type_mask=", pktFormat.opaque_tag_type_mask),
-    to<string>("pktFormat.int_pkt=", pktFormat.int_pkt),
-    to<string>("pktFormat.src_port=", pktFormat.src_port),
-    to<string>("pktFormat.src_port_mask=", pktFormat.src_port_mask),
-    to<string>("pktFormat.lb_pkt_type=", pktFormat.lb_pkt_type),
-    to<string>(
-        "pktFormat.first_2bytes_after_mpls_bos=",
-        pktFormat.first_2bytes_after_mpls_bos),
-    to<string>(
-        "pktFormat.first_2bytes_after_mpls_bos_mask=",
-        pktFormat.first_2bytes_after_mpls_bos_mask),
-    to<string>("pktFormat.outer_ifa=", pktFormat.outer_ifa),
-    to<string>("pktFormat.inner_ifa=", pktFormat.inner_ifa),
-#if (defined(BCM_SDK_VERSION_GTE_6_5_24))
-    to<string>("pktFormat.ip_gre_first_2bytes=", pktFormat.ip_gre_first_2bytes),
-    to<string>(
-        "pktFormat.ip_gre_first_2bytes_mask=",
-        pktFormat.ip_gre_first_2bytes_mask),
-#endif
+      "bcm_udf_pkt_format_info_t_init(&pktFormat)",
+      to<string>("pktFormat.prio=", pktFormat.prio),
+      to<string>("pktFormat.ethertype=", pktFormat.ethertype),
+      to<string>("pktFormat.ethertype_mask=", pktFormat.ethertype_mask),
+      to<string>("pktFormat.ip_protocol=", pktFormat.ip_protocol),
+      to<string>("pktFormat.ip_protocol_mask=", pktFormat.ip_protocol_mask),
+      to<string>("pktFormat.l2=", pktFormat.l2),
+      to<string>("pktFormat.vlan_tag=", pktFormat.vlan_tag),
+      to<string>("pktFormat.outer_ip=", pktFormat.outer_ip),
+      to<string>("pktFormat.inner_ip=", pktFormat.inner_ip),
+      to<string>("pktFormat.tunnel=", pktFormat.tunnel),
+      to<string>("pktFormat.mpls=", pktFormat.mpls),
+      to<string>("pktFormat.fibre_chan_outer=", pktFormat.fibre_chan_outer),
+      to<string>("pktFormat.fibre_chan_inner=", pktFormat.fibre_chan_inner),
+      to<string>("pktFormat.higig=", pktFormat.higig),
+      to<string>("pktFormat.vntag=", pktFormat.vntag),
+      to<string>("pktFormat.etag=", pktFormat.etag),
+      to<string>("pktFormat.cntag=", pktFormat.cntag),
+      to<string>("pktFormat.icnm=", pktFormat.icnm),
+      to<string>("pktFormat.subport_tag=", pktFormat.subport_tag),
+      to<string>("pktFormat.class_id=", pktFormat.class_id),
+      to<string>("pktFormat.inner_protocol=", pktFormat.inner_protocol),
+      to<string>(
+          "pktFormat.inner_protocol_mask=", pktFormat.inner_protocol_mask),
+      to<string>("pktFormat.l4_dst_port=", pktFormat.l4_dst_port),
+      to<string>("pktFormat.l4_dst_port_mask=", pktFormat.l4_dst_port_mask),
+      to<string>("pktFormat.opaque_tag_type=", pktFormat.opaque_tag_type),
+      to<string>(
+          "pktFormat.opaque_tag_type_mask=", pktFormat.opaque_tag_type_mask),
+      to<string>("pktFormat.int_pkt=", pktFormat.int_pkt),
+      to<string>("pktFormat.src_port=", pktFormat.src_port),
+      to<string>("pktFormat.src_port_mask=", pktFormat.src_port_mask),
+      to<string>("pktFormat.lb_pkt_type=", pktFormat.lb_pkt_type),
+      to<string>(
+          "pktFormat.first_2bytes_after_mpls_bos=",
+          pktFormat.first_2bytes_after_mpls_bos),
+      to<string>(
+          "pktFormat.first_2bytes_after_mpls_bos_mask=",
+          pktFormat.first_2bytes_after_mpls_bos_mask),
+      to<string>("pktFormat.outer_ifa=", pktFormat.outer_ifa),
+      to<string>("pktFormat.inner_ifa=", pktFormat.inner_ifa),
+      to<string>(
+          "pktFormat.ip_gre_first_2bytes=", pktFormat.ip_gre_first_2bytes),
+      to<string>(
+          "pktFormat.ip_gre_first_2bytes_mask=",
+          pktFormat.ip_gre_first_2bytes_mask),
 
   };
   return cintLines;
@@ -2204,6 +2207,81 @@ int BcmCinter::bcm_udf_init(int unit) {
   writeCintLines(
       wrapFunc(to<string>("bcm_udf_init(", makeParamStr(unit), ")")));
   return 0;
+}
+
+int BcmCinter::bcm_field_qset_id_multi_set(
+    int unit,
+    bcm_field_qualify_t qualifier,
+    int num_objects,
+    int* object_list,
+    bcm_field_qset_t* qset) {
+  auto cint = cintForQset(*qset);
+  auto cintForFn = wrapFunc(to<string>(
+      "bcm_field_qset_id_multi_set(",
+      makeParamStr(unit, qualifier, num_objects, *object_list, "&qset"),
+      ")"));
+
+  cint.insert(
+      cint.end(),
+      make_move_iterator(cintForFn.begin()),
+      make_move_iterator(cintForFn.end()));
+  writeCintLines(std::move(cint));
+  return 0;
+}
+
+int BcmCinter::bcm_field_qualify_UdfClass(
+    int unit,
+    bcm_field_entry_t entry,
+    uint32 data,
+    uint32 mask) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_field_qualify_UdfClass(",
+      makeParamStr(unit, getCintVar(fieldEntryVars, entry), data, mask),
+      ")")));
+  return 0;
+}
+
+int BcmCinter::bcm_field_qualify_udf(
+    int unit,
+    bcm_field_entry_t eid,
+    bcm_udf_id_t udf_id,
+    int length,
+    uint8* data,
+    uint8* mask) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_field_qualify_udf(",
+      makeParamStr(
+          unit, getCintVar(fieldEntryVars, eid), udf_id, length, *data, *mask),
+      ")")));
+  return 0;
+}
+
+int BcmCinter::bcm_field_qualify_udf_get(
+    int unit,
+    bcm_field_entry_t eid,
+    bcm_udf_id_t udf_id,
+    int max_length,
+    uint8* data,
+    uint8* mask,
+    int* actual_length) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_field_qualify_udf_get(",
+      makeParamStr(
+          unit,
+          getCintVar(fieldEntryVars, eid),
+          udf_id,
+          max_length,
+          *data,
+          *mask,
+          *actual_length),
+      ")")));
+  return 0;
+}
+
+void BcmCinter::bcm_field_group_config_t_init(
+    bcm_field_group_config_t* /*group_config*/) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_field_group_config_t_init(", makeParamStr("group_config"), ")")));
 }
 
 int BcmCinter::bcm_port_phy_modify(
@@ -2962,6 +3040,33 @@ int BcmCinter::bcm_l3_egress_ecmp_ethertype_set(
   return 0;
 }
 
+int BcmCinter::bcm_l3_egress_ecmp_ethertype_get(
+    int unit,
+    uint32* flags,
+    int ethertype_max,
+    int* ethertype_array,
+    int* ethertype_count) {
+  std::vector<string> argValues;
+  string arrayVarName = getNextEthertypeVar();
+  for (int i = 0; i < *ethertype_count; ++i) {
+    argValues.push_back(to<string>(ethertype_array[i]));
+  }
+  string argVarArray = to<string>(
+      "int ", arrayVarName, "[] =", " {", join(", ", argValues), "}");
+  vector<string> cint = {argVarArray};
+
+  auto cintForFn = wrapFunc(to<string>(
+      "bcm_l3_egress_ecmp_ethertype_get(",
+      makeParamStr(unit, *flags, ethertype_max, arrayVarName, *ethertype_count),
+      ")"));
+  cint.insert(
+      cint.end(),
+      make_move_iterator(cintForFn.begin()),
+      make_move_iterator(cintForFn.end()));
+  writeCintLines(std::move(cint));
+  return 0;
+}
+
 int BcmCinter::bcm_l3_egress_ecmp_member_status_set(
     int unit,
     bcm_if_t intf,
@@ -2969,6 +3074,17 @@ int BcmCinter::bcm_l3_egress_ecmp_member_status_set(
   writeCintLines(wrapFunc(to<string>(
       "bcm_l3_egress_ecmp_member_status_set(",
       makeParamStr(unit, intf, status),
+      ")")));
+  return 0;
+}
+
+int BcmCinter::bcm_l3_egress_ecmp_member_status_get(
+    int unit,
+    bcm_if_t intf,
+    int* status) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_l3_egress_ecmp_member_status_get(",
+      makeParamStr(unit, intf, *status),
       ")")));
   return 0;
 }
@@ -3046,6 +3162,41 @@ int BcmCinter::bcm_l3_egress_ecmp_create(
       make_move_iterator(cintForFn.begin()),
       make_move_iterator(cintForFn.end()));
   writeCintLines(std::move(cint));
+  return 0;
+}
+
+std::vector<std::string> BcmCinter::cintForDlbPortQualityAttr(
+    bcm_l3_ecmp_dlb_port_quality_attr_t quality_attr) {
+  return {
+      "bcm_l3_ecmp_dlb_port_quality_attr_t_init(&quality_attr)",
+      to<string>("quality_attr.load_weight = ", quality_attr.load_weight),
+      to<string>(
+          "quality_attr.queue_size_weight = ", quality_attr.queue_size_weight),
+      to<string>(
+          "quality_attr.scaling_factor = ", quality_attr.scaling_factor)};
+}
+
+int BcmCinter::bcm_l3_ecmp_dlb_port_quality_attr_set(
+    int unit,
+    bcm_port_t port,
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr) {
+  writeCintLines(cintForDlbPortQualityAttr(*quality_attr));
+  writeCintLines(wrapFunc(fmt::format(
+      "bcm_l3_ecmp_dlb_port_quality_attr_set({}, {}, &quality_attr)",
+      unit,
+      port)));
+  return 0;
+}
+
+int BcmCinter::bcm_l3_ecmp_dlb_port_quality_attr_get(
+    int unit,
+    bcm_port_t port,
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr) {
+  writeCintLines(cintForDlbPortQualityAttr(*quality_attr));
+  writeCintLines(wrapFunc(fmt::format(
+      "bcm_l3_ecmp_dlb_port_quality_attr_get({}, {}, &quality_attr)",
+      unit,
+      port)));
   return 0;
 }
 
@@ -3129,25 +3280,23 @@ vector<string> BcmCinter::cintForRxCosqMapping(bcm_rx_cosq_mapping_t* cosqMap) {
   tie(reasonsVar, reasonsCint) = cintForReasons(cosqMap->reasons);
   tie(reasonsMaskVar, reasonsMaskCint) = cintForReasons(cosqMap->reasons_mask);
   vector<string> funcCint = {
-    "bcm_rx_cosq_mapping_t_init(&cosqMap)",
-    to<string>("cosqMap.flags = ", cosqMap->flags),
-    to<string>("cosqMap.reasons = ", reasonsVar),
-    to<string>("cosqMap.reasons_mask = ", reasonsMaskVar),
-    to<string>("cosqMap.index = ", cosqMap->index),
-    to<string>("cosqMap.int_prio = ", cosqMap->int_prio),
-    to<string>("cosqMap.int_prio_mask = ", cosqMap->int_prio_mask),
-    to<string>("cosqMap.packet_type = ", cosqMap->packet_type),
-    to<string>("cosqMap.packet_type_mask = ", cosqMap->packet_type_mask),
-    to<string>("cosqMap.cosq = ", cosqMap->cosq),
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_19))
-    to<string>("cosqMap.flex_key1 = ", cosqMap->flex_key1),
-    to<string>("cosqMap.flex_key1_mask = ", cosqMap->flex_key1_mask),
-#endif
-    to<string>("cosqMap.flex_key2 = ", cosqMap->flex_key2),
-    to<string>("cosqMap.flex_key2_mask = ", cosqMap->flex_key2_mask),
-    to<string>("cosqMap.drop_event = ", cosqMap->drop_event),
-    to<string>("cosqMap.drop_event_mask = ", cosqMap->drop_event_mask),
-    to<string>("cosqMap.priority = ", cosqMap->priority),
+      "bcm_rx_cosq_mapping_t_init(&cosqMap)",
+      to<string>("cosqMap.flags = ", cosqMap->flags),
+      to<string>("cosqMap.reasons = ", reasonsVar),
+      to<string>("cosqMap.reasons_mask = ", reasonsMaskVar),
+      to<string>("cosqMap.index = ", cosqMap->index),
+      to<string>("cosqMap.int_prio = ", cosqMap->int_prio),
+      to<string>("cosqMap.int_prio_mask = ", cosqMap->int_prio_mask),
+      to<string>("cosqMap.packet_type = ", cosqMap->packet_type),
+      to<string>("cosqMap.packet_type_mask = ", cosqMap->packet_type_mask),
+      to<string>("cosqMap.cosq = ", cosqMap->cosq),
+      to<string>("cosqMap.flex_key1 = ", cosqMap->flex_key1),
+      to<string>("cosqMap.flex_key1_mask = ", cosqMap->flex_key1_mask),
+      to<string>("cosqMap.flex_key2 = ", cosqMap->flex_key2),
+      to<string>("cosqMap.flex_key2_mask = ", cosqMap->flex_key2_mask),
+      to<string>("cosqMap.drop_event = ", cosqMap->drop_event),
+      to<string>("cosqMap.drop_event_mask = ", cosqMap->drop_event_mask),
+      to<string>("cosqMap.priority = ", cosqMap->priority),
   };
 
   vector<string> cint;
@@ -3366,7 +3515,6 @@ int BcmCinter::bcm_pktio_tx(int unit, bcm_pktio_pkt_t* tx_pkt) {
   return 0;
 }
 
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_22))
 int BcmCinter::bcm_pktio_txpmd_stat_attach(int unit, uint32 counter_id) {
   writeCintLines(wrapFunc(to<string>(
       "bcm_pktio_txpmd_stat_attach(", makeParamStr(unit, counter_id), ")")));
@@ -3378,7 +3526,6 @@ int BcmCinter::bcm_pktio_txpmd_stat_detach(int unit) {
       to<string>("bcm_pktio_txpmd_stat_detach(", makeParamStr(unit), ")")));
   return 0;
 }
-#endif
 
 int BcmCinter::bcm_pkt_free(int /*unit*/, bcm_pkt_t* /*pkt*/) {
   return 0;
@@ -3462,7 +3609,6 @@ int BcmCinter::bcm_field_hints_get(
   return 0;
 }
 
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_21))
 std::vector<std::string> BcmCinter::cintForPortFdrConfig(
     bcm_port_fdr_config_t fdr_config) {
   return {
@@ -3480,12 +3626,13 @@ int BcmCinter::bcm_port_fdr_config_set(
     int unit,
     bcm_port_t port,
     bcm_port_fdr_config_t* fdr_config) {
-  writeCintLines(cintForPortFdrConfig(*fdr_config));
-  writeCintLines(wrapFunc(
-      fmt::format("bcm_port_fdr_config_set({}, {}, &fdr_config)", unit, port)));
+  if (FLAGS_enable_fdr_cinter) {
+    writeCintLines(cintForPortFdrConfig(*fdr_config));
+    writeCintLines(wrapFunc(fmt::format(
+        "bcm_port_fdr_config_set({}, {}, &fdr_config)", unit, port)));
+  }
   return 0;
 }
-#endif
 
 int BcmCinter::bcm_cosq_bst_stat_clear(
     int unit,
@@ -4414,4 +4561,15 @@ int BcmCinter::bcm_port_ifg_set(
   return 0;
 }
 
+int BcmCinter::bcm_port_control_phy_timesync_set(
+    int unit,
+    bcm_port_t port,
+    bcm_port_control_phy_timesync_t type,
+    uint64 value) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_port_control_phy_timesync_set(",
+      makeParamStr(unit, port, type, value),
+      ")")));
+  return 0;
+}
 } // namespace facebook::fboss

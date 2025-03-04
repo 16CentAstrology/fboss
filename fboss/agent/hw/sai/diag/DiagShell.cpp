@@ -22,7 +22,6 @@
 #include <folly/logging/xlog.h>
 
 #include <stdlib.h>
-#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -32,6 +31,11 @@ DEFINE_bool(
     sai_log_to_scribe,
     true,
     "Log SAI shell commands and output to scribe");
+
+namespace {
+// Commands such as 'port status' on DNX take longer than 1.2 seconds.
+constexpr int kReadOutputTimeoutMs = 2000;
+} // namespace
 
 namespace facebook::fboss {
 
@@ -144,34 +148,50 @@ DiagShell::DiagShell(const SaiSwitch* hw) : hw_(hw) {
 }
 
 std::unique_ptr<Repl> DiagShell::makeRepl() const {
-  switch (hw_->getPlatform()->getMode()) {
-    case PlatformMode::WEDGE:
-    case PlatformMode::WEDGE100:
-    case PlatformMode::GALAXY_LC:
-    case PlatformMode::GALAXY_FC:
-    case PlatformMode::MINIPACK:
-    case PlatformMode::YAMP:
-    case PlatformMode::WEDGE400:
-    case PlatformMode::FUJI:
-    case PlatformMode::ELBERT:
-    case PlatformMode::DARWIN:
-    case PlatformMode::MAKALU:
-    case PlatformMode::KAMET:
-    case PlatformMode::MONTBLANC:
+  switch (hw_->getPlatform()->getType()) {
+    case PlatformType::PLATFORM_WEDGE:
+    case PlatformType::PLATFORM_WEDGE100:
+    case PlatformType::PLATFORM_GALAXY_LC:
+    case PlatformType::PLATFORM_GALAXY_FC:
+    case PlatformType::PLATFORM_MINIPACK:
+    case PlatformType::PLATFORM_YAMP:
+    case PlatformType::PLATFORM_WEDGE400:
+    case PlatformType::PLATFORM_WEDGE400_GRANDTETON:
+    case PlatformType::PLATFORM_FUJI:
+    case PlatformType::PLATFORM_ELBERT:
+    case PlatformType::PLATFORM_DARWIN:
+    case PlatformType::PLATFORM_DARWIN48V:
+    case PlatformType::PLATFORM_MERU400BIU:
+    case PlatformType::PLATFORM_MERU800BIA:
+    case PlatformType::PLATFORM_MERU800BIAB:
+    case PlatformType::PLATFORM_MERU800BFA:
+    case PlatformType::PLATFORM_MERU800BFA_P1:
+    case PlatformType::PLATFORM_MERU400BIA:
+    case PlatformType::PLATFORM_MERU400BFU:
+    case PlatformType::PLATFORM_MONTBLANC:
+    case PlatformType::PLATFORM_JANGA800BIC:
+    case PlatformType::PLATFORM_TAHAN800BC:
       return std::make_unique<SaiRepl>(hw_->getSaiSwitchId());
-    case PlatformMode::WEDGE400C:
-    case PlatformMode::WEDGE400C_SIM:
-    case PlatformMode::WEDGE400C_VOQ:
-    case PlatformMode::WEDGE400C_FABRIC:
-    case PlatformMode::CLOUDRIPPER:
-    case PlatformMode::CLOUDRIPPER_VOQ:
-    case PlatformMode::CLOUDRIPPER_FABRIC:
-    case PlatformMode::LASSEN:
-    case PlatformMode::SANDIA:
+    case PlatformType::PLATFORM_WEDGE400C:
+    case PlatformType::PLATFORM_WEDGE400C_SIM:
+    case PlatformType::PLATFORM_WEDGE400C_VOQ:
+    case PlatformType::PLATFORM_WEDGE400C_FABRIC:
+    case PlatformType::PLATFORM_WEDGE400C_GRANDTETON:
+    case PlatformType::PLATFORM_CLOUDRIPPER:
+    case PlatformType::PLATFORM_CLOUDRIPPER_VOQ:
+    case PlatformType::PLATFORM_CLOUDRIPPER_FABRIC:
+    case PlatformType::PLATFORM_SANDIA:
+    case PlatformType::PLATFORM_MORGAN800CC:
       return std::make_unique<PythonRepl>(ptys_->file.fd());
-    case PlatformMode::FAKE_WEDGE:
-    case PlatformMode::FAKE_WEDGE40:
+    case PlatformType::PLATFORM_LASSEN_DEPRECATED:
+      throw FbossError("Shell not supported for lassen platform");
+    case PlatformType::PLATFORM_FAKE_WEDGE:
+    case PlatformType::PLATFORM_FAKE_WEDGE40:
+    case PlatformType::PLATFORM_FAKE_SAI:
       throw FbossError("Shell not supported for fake platforms");
+    case PlatformType::PLATFORM_YANGRA:
+    case PlatformType::PLATFORM_MINIPACK3N:
+      throw FbossError("Shell still not supported for Yangra/MP3N platforms");
   }
   CHECK(0) << " Should never get here";
   return nullptr;
@@ -203,7 +223,7 @@ bool DiagShell::tryConnect() {
       initTerminal();
       return true;
     }
-  } catch (const std::system_error& ex) {
+  } catch (const std::system_error&) {
     LOG(WARNING) << "Another diag shell client already connected";
   }
   throw FbossError(
@@ -220,7 +240,7 @@ void DiagShell::disconnect() {
       ts_.reset();
     }
     diagShellLock_.unlock();
-  } catch (const std::system_error& ex) {
+  } catch (const std::system_error&) {
     XLOG(WARNING) << "Trying to disconnect when it was never connected";
   }
 }
@@ -253,7 +273,7 @@ std::string DiagShell::readOutput(int timeoutMs) {
   fd_set readSet;
   FD_ZERO(&readSet);
   FD_SET(fd, &readSet);
-  /* Set the timeout as 500 ms for each read.
+  /* Set the timeout for each read.
    * This is to check that a client has disconnected in the meantime.
    * If the client is still connected, will continue to wait.
    * If the client has disconnected, will clean up the client states.
@@ -337,12 +357,12 @@ void StreamingDiagShellServer::resetPublisher() {
 // TODO: Log command output to Scuba
 void StreamingDiagShellServer::streamOutput() {
   while (!shouldResetPublisher_) {
-    /* Set the timeout as 500 ms for each read.
+    /* Set the timeout for each read.
      * This is to check that a client has disconnected in the meantime.
      * If the client is still connected, will continue to wait.
      * If the client has disconnected, will clean up the client states.
      */
-    std::string toPublish = readOutput(500);
+    std::string toPublish = readOutput(kReadOutputTimeoutMs);
     if (toPublish.length() > 0) {
       // publish string on stream
       auto locked = publisher_.lock();
@@ -365,34 +385,50 @@ std::string DiagCmdServer::getDelimiterDiagCmd(const std::string& UUID) const {
   /* Returns the command used for separating each diagCmd,
    * which varies between platform.
    */
-  switch (hw_->getPlatform()->getMode()) {
-    case PlatformMode::WEDGE:
-    case PlatformMode::WEDGE100:
-    case PlatformMode::GALAXY_LC:
-    case PlatformMode::GALAXY_FC:
-    case PlatformMode::MINIPACK:
-    case PlatformMode::YAMP:
-    case PlatformMode::WEDGE400:
-    case PlatformMode::FUJI:
-    case PlatformMode::ELBERT:
-    case PlatformMode::DARWIN:
-    case PlatformMode::MAKALU:
-    case PlatformMode::KAMET:
-    case PlatformMode::MONTBLANC:
+  switch (hw_->getPlatform()->getType()) {
+    case PlatformType::PLATFORM_WEDGE:
+    case PlatformType::PLATFORM_WEDGE100:
+    case PlatformType::PLATFORM_GALAXY_LC:
+    case PlatformType::PLATFORM_GALAXY_FC:
+    case PlatformType::PLATFORM_MINIPACK:
+    case PlatformType::PLATFORM_YAMP:
+    case PlatformType::PLATFORM_WEDGE400:
+    case PlatformType::PLATFORM_WEDGE400_GRANDTETON:
+    case PlatformType::PLATFORM_FUJI:
+    case PlatformType::PLATFORM_ELBERT:
+    case PlatformType::PLATFORM_DARWIN:
+    case PlatformType::PLATFORM_DARWIN48V:
+    case PlatformType::PLATFORM_MERU400BIU:
+    case PlatformType::PLATFORM_MERU800BIA:
+    case PlatformType::PLATFORM_MERU800BIAB:
+    case PlatformType::PLATFORM_MERU800BFA:
+    case PlatformType::PLATFORM_MERU800BFA_P1:
+    case PlatformType::PLATFORM_MERU400BIA:
+    case PlatformType::PLATFORM_MERU400BFU:
+    case PlatformType::PLATFORM_MONTBLANC:
+    case PlatformType::PLATFORM_JANGA800BIC:
+    case PlatformType::PLATFORM_TAHAN800BC:
       return UUID + "\n";
-    case PlatformMode::WEDGE400C:
-    case PlatformMode::WEDGE400C_SIM:
-    case PlatformMode::WEDGE400C_VOQ:
-    case PlatformMode::WEDGE400C_FABRIC:
-    case PlatformMode::CLOUDRIPPER:
-    case PlatformMode::CLOUDRIPPER_VOQ:
-    case PlatformMode::CLOUDRIPPER_FABRIC:
-    case PlatformMode::LASSEN:
-    case PlatformMode::SANDIA:
+    case PlatformType::PLATFORM_WEDGE400C:
+    case PlatformType::PLATFORM_WEDGE400C_SIM:
+    case PlatformType::PLATFORM_WEDGE400C_VOQ:
+    case PlatformType::PLATFORM_WEDGE400C_FABRIC:
+    case PlatformType::PLATFORM_WEDGE400C_GRANDTETON:
+    case PlatformType::PLATFORM_CLOUDRIPPER:
+    case PlatformType::PLATFORM_CLOUDRIPPER_VOQ:
+    case PlatformType::PLATFORM_CLOUDRIPPER_FABRIC:
+    case PlatformType::PLATFORM_SANDIA:
+    case PlatformType::PLATFORM_MORGAN800CC:
       return folly::to<std::string>("print('", UUID, "')\n");
-    case PlatformMode::FAKE_WEDGE:
-    case PlatformMode::FAKE_WEDGE40:
+    case PlatformType::PLATFORM_LASSEN_DEPRECATED:
+      throw FbossError("Shell not supported for lassen platform");
+    case PlatformType::PLATFORM_FAKE_WEDGE:
+    case PlatformType::PLATFORM_FAKE_WEDGE40:
+    case PlatformType::PLATFORM_FAKE_SAI:
       throw FbossError("Shell not supported for fake platforms");
+    case PlatformType::PLATFORM_YANGRA:
+    case PlatformType::PLATFORM_MINIPACK3N:
+      throw FbossError("Shell still not supported for Yangra/MP3N platforms");
   }
   CHECK(0) << " Should never get here";
   return "";
@@ -401,20 +437,29 @@ std::string DiagCmdServer::getDelimiterDiagCmd(const std::string& UUID) const {
 std::string& DiagCmdServer::cleanUpOutput(
     std::string& output,
     const std::string& input) {
-  switch (hw_->getPlatform()->getMode()) {
-    case PlatformMode::WEDGE:
-    case PlatformMode::WEDGE100:
-    case PlatformMode::GALAXY_LC:
-    case PlatformMode::GALAXY_FC:
-    case PlatformMode::MINIPACK:
-    case PlatformMode::YAMP:
-    case PlatformMode::WEDGE400:
-    case PlatformMode::FUJI:
-    case PlatformMode::ELBERT:
-    case PlatformMode::DARWIN:
-    case PlatformMode::MAKALU:
-    case PlatformMode::KAMET:
-    case PlatformMode::MONTBLANC:
+  switch (hw_->getPlatform()->getType()) {
+    case PlatformType::PLATFORM_WEDGE:
+    case PlatformType::PLATFORM_WEDGE100:
+    case PlatformType::PLATFORM_GALAXY_LC:
+    case PlatformType::PLATFORM_GALAXY_FC:
+    case PlatformType::PLATFORM_MINIPACK:
+    case PlatformType::PLATFORM_YAMP:
+    case PlatformType::PLATFORM_WEDGE400:
+    case PlatformType::PLATFORM_WEDGE400_GRANDTETON:
+    case PlatformType::PLATFORM_FUJI:
+    case PlatformType::PLATFORM_ELBERT:
+    case PlatformType::PLATFORM_DARWIN:
+    case PlatformType::PLATFORM_DARWIN48V:
+    case PlatformType::PLATFORM_MERU400BIU:
+    case PlatformType::PLATFORM_MERU800BIA:
+    case PlatformType::PLATFORM_MERU800BIAB:
+    case PlatformType::PLATFORM_MERU800BFA:
+    case PlatformType::PLATFORM_MERU800BFA_P1:
+    case PlatformType::PLATFORM_MERU400BIA:
+    case PlatformType::PLATFORM_MERU400BFU:
+    case PlatformType::PLATFORM_MONTBLANC:
+    case PlatformType::PLATFORM_JANGA800BIC:
+    case PlatformType::PLATFORM_TAHAN800BC:
       // Clean up the back of the string
       if (!output.empty() && !input.empty()) {
         std::string shell = "drivshell>";
@@ -431,20 +476,27 @@ std::string& DiagCmdServer::cleanUpOutput(
         }
       }
       return output;
-    case PlatformMode::WEDGE400C:
-    case PlatformMode::WEDGE400C_SIM:
-    case PlatformMode::WEDGE400C_VOQ:
-    case PlatformMode::WEDGE400C_FABRIC:
-    case PlatformMode::LASSEN:
-    case PlatformMode::SANDIA:
+    case PlatformType::PLATFORM_WEDGE400C:
+    case PlatformType::PLATFORM_WEDGE400C_GRANDTETON:
+    case PlatformType::PLATFORM_WEDGE400C_SIM:
+    case PlatformType::PLATFORM_WEDGE400C_VOQ:
+    case PlatformType::PLATFORM_WEDGE400C_FABRIC:
+    case PlatformType::PLATFORM_SANDIA:
+    case PlatformType::PLATFORM_MORGAN800CC:
       return output;
-    case PlatformMode::CLOUDRIPPER:
-    case PlatformMode::CLOUDRIPPER_VOQ:
-    case PlatformMode::CLOUDRIPPER_FABRIC:
+    case PlatformType::PLATFORM_CLOUDRIPPER:
+    case PlatformType::PLATFORM_CLOUDRIPPER_VOQ:
+    case PlatformType::PLATFORM_CLOUDRIPPER_FABRIC:
       throw FbossError("Shell not supported for cloud ripper platform");
-    case PlatformMode::FAKE_WEDGE:
-    case PlatformMode::FAKE_WEDGE40:
+    case PlatformType::PLATFORM_LASSEN_DEPRECATED:
+      throw FbossError("Shell not supported for lassen platform");
+    case PlatformType::PLATFORM_FAKE_WEDGE:
+    case PlatformType::PLATFORM_FAKE_WEDGE40:
+    case PlatformType::PLATFORM_FAKE_SAI:
       throw FbossError("Shell not supported for fake platforms");
+    case PlatformType::PLATFORM_YANGRA:
+    case PlatformType::PLATFORM_MINIPACK3N:
+      throw FbossError("Shell still not supported for Yangra/MP3N platforms");
   }
   CHECK(0) << " Should never get here";
   return output;
@@ -459,7 +511,7 @@ std::string DiagCmdServer::diagCmd(
     // TODO: Look into how we can add timeout in future diffs
     throw FbossError("Another client connected");
   }
-  std::string inputStr = input->toStdString();
+  std::string inputStr = input.get()->c_str();
   XLOG(DBG1) << "Connected and running diagCmd: " << inputStr;
   // Flush out old output
   // These should be made in different consumeInput calls,
@@ -473,7 +525,7 @@ std::string DiagCmdServer::diagCmd(
       std::make_unique<std::string>(getDelimiterDiagCmd(uuid_)),
       std::move(client));
   // TODO: Look into requesting results that take a long time
-  std::string output = produceOutput(500);
+  std::string output = produceOutput(kReadOutputTimeoutMs);
   cleanUpOutput(output, inputStr);
   diagShell_->disconnect();
   return output;

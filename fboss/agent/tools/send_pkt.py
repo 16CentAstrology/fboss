@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # Copyright 2004-present Facebook. All Rights Reserved.
 
+# pyre-unsafe
+
 import argparse
 import binascii
 import re
 import sys
 
-from fboss.thrift_clients import (
+from fboss.py.fboss.thrift_clients import (
     PlainTextFbossAgentClientDontUseInFb as PlainTextFbossAgentClient,
 )
 
@@ -21,7 +23,7 @@ def load_hex_file(path):
             try:
                 raw_line = binascii.a2b_hex(line)
             except Exception as ex:
-                raise Exception("error parsing line %s: %s" % (line_num, ex))
+                raise Exception("error parsing line {}: {}".format(line_num, ex))
             lines.append(raw_line)
     return b"".join(lines)
 

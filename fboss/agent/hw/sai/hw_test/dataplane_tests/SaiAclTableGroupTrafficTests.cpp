@@ -8,25 +8,42 @@
  *
  */
 
+#include "fboss/agent/SwitchStats.h"
+#include "fboss/agent/hw/sai/api/SaiVersion.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
 #include "fboss/agent/hw/test/HwLinkStateDependentTest.h"
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
-#include "fboss/agent/hw/test/dataplane_tests/HwTestDscpMarkingUtils.h"
-#include "fboss/agent/hw/test/dataplane_tests/HwTestOlympicUtils.h"
 #include "fboss/agent/hw/test/dataplane_tests/HwTestQosUtils.h"
-#include "fboss/agent/hw/test/dataplane_tests/HwTestQueuePerHostUtils.h"
 #include "fboss/agent/test/EcmpSetupHelper.h"
 #include "fboss/agent/test/ResourceLibUtil.h"
+#include "fboss/agent/test/utils/DscpMarkingUtils.h"
+#include "fboss/agent/test/utils/OlympicTestUtils.h"
+#include "fboss/agent/test/utils/QueuePerHostTestUtils.h"
 
 #include "fboss/agent/hw/test/HwTestAclUtils.h"
+#include "fboss/agent/packet/IPProto.h"
 
 DECLARE_bool(enable_acl_table_group);
 
+DECLARE_bool(intf_nbr_tables);
+
 namespace facebook::fboss {
 
+template <bool enableIntfNbrTable>
+struct EnableIntfNbrTable {
+  static constexpr auto intfNbrTable = enableIntfNbrTable;
+};
+
+using NbrTableTypes =
+    ::testing::Types<EnableIntfNbrTable<false>, EnableIntfNbrTable<true>>;
+
+template <typename EnableIntfNbrTableT>
 class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
+  static auto constexpr isIntfNbrTable = EnableIntfNbrTableT::intfNbrTable;
+
  protected:
   void SetUp() override {
+    FLAGS_intf_nbr_tables = isIntfNbrTable;
     FLAGS_enable_acl_table_group = true;
     HwLinkStateDependentTest::SetUp();
     helper_ = std::make_unique<utility::EcmpSetupAnyNPorts6>(
@@ -35,11 +52,8 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
   cfg::SwitchConfig initialConfig() const override {
     auto cfg = utility::onePortPerInterfaceConfig(
         getHwSwitch(),
-        masterLogicalPortIds(),
-        getAsic()->desiredLoopbackMode());
-
-    utility::addAclTableGroup(
-        &cfg, cfg::AclStage::INGRESS, utility::getAclTableGroupName());
+        {masterLogicalPortIds()[0], masterLogicalPortIds()[1]},
+        getAsic()->desiredLoopbackModes());
 
     return cfg;
   }
@@ -132,10 +146,20 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
 
     for (const auto& ipToMacAndClassID : getIpToMacAndClassID<AddrT>()) {
       auto ip = ipToMacAndClassID.first;
-      auto neighborTable = outState->getVlans()
-                               ->getVlan(kVlanID)
-                               ->template getNeighborTable<NeighborTableT>()
-                               ->modify(kVlanID, &outState);
+
+      NeighborTableT* neighborTable;
+      if (isIntfNbrTable) {
+        neighborTable = outState->getInterfaces()
+                            ->getNode(kIntfID)
+                            ->template getNeighborTable<NeighborTableT>()
+                            ->modify(kIntfID, &outState);
+      } else {
+        neighborTable = outState->getVlans()
+                            ->getNode(kVlanID)
+                            ->template getNeighborTable<NeighborTableT>()
+                            ->modify(kVlanID, &outState);
+      }
+
       neighborTable->addPendingEntry(ip, kIntfID);
     }
 
@@ -158,10 +182,20 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
       auto macAndClassID = ipToMacAndClassID.second;
       auto neighborMac = macAndClassID.first;
       auto classID = macAndClassID.second;
-      auto neighborTable = outState->getVlans()
-                               ->getVlan(kVlanID)
-                               ->template getNeighborTable<NeighborTableT>()
-                               ->modify(kVlanID, &outState);
+
+      NeighborTableT* neighborTable;
+      if (isIntfNbrTable) {
+        neighborTable = outState->getInterfaces()
+                            ->getNode(kIntfID)
+                            ->template getNeighborTable<NeighborTableT>()
+                            ->modify(kIntfID, &outState);
+      } else {
+        neighborTable = outState->getVlans()
+                            ->getNode(kVlanID)
+                            ->template getNeighborTable<NeighborTableT>()
+                            ->modify(kVlanID, &outState);
+      }
+
       if (setClassIDs) {
         neighborTable->updateEntry(
             ip,
@@ -308,16 +342,25 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
       }
     }
 
-    auto statAfter = utility::getAclInOutPackets(
-        getHwSwitch(),
-        this->getProgrammedState(),
-        ttlAclName,
-        ttlCounterName,
-        kAclStage(),
-        utility::getTtlAclTableName());
+    auto updateStats = [&]() { getHwSwitch()->updateStats(); };
 
-    // counts ttl >= 128 packet only
-    EXPECT_EQ(statAfter - statBefore, getIpToMacAndClassID<AddrT>().size());
+    auto aclStatsMatch = [&]() {
+      auto statAfter = utility::getAclInOutPackets(
+          getHwSwitch(),
+          this->getProgrammedState(),
+          ttlAclName,
+          ttlCounterName,
+          kAclStage(),
+          utility::getTtlAclTableName());
+
+      XLOG(DBG2) << "statBefore: " << statBefore << " statAfter: " << statAfter
+                 << " expected: " << getIpToMacAndClassID<AddrT>().size();
+      // counts ttl >= 128 packet only
+      return statAfter - statBefore == getIpToMacAndClassID<AddrT>().size();
+    };
+
+    EXPECT_TRUE(
+        getHwSwitchEnsemble()->waitStatsCondition(aclStatsMatch, updateStats));
   }
 
   template <typename AddrT>
@@ -330,34 +373,55 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
     return state3;
   }
 
-  void verifyMultipleAclTablesHelper(bool frontPanel) {
+  void verifyMultipleAclTablesHelper() {
     bool multipleAclTableSupport =
         HwTest::isSupported(HwAsic::Feature::MULTIPLE_ACL_TABLES);
-#if defined(TAJO_SDK_VERSION_1_42_1) || defined(TAJO_SDK_VERSION_1_42_8)
+#if defined(TAJO_SDK_VERSION_1_42_8)
     multipleAclTableSupport = false;
 #endif
     ASSERT_TRUE(multipleAclTableSupport);
 
     auto setup = [this]() {
+      /*
+       * Tajo Asic needs a key profile to be set which is supposed to be a
+       * superset of all the qualifiers/action types of all the tables. If key
+       * profile is absent, the first table's attributes will be taken as the
+       * key profile. Hence, the first table is always set with the superset of
+       * qualifiers. addAllQualifiers is used in Tajo SDK versions which
+       * support Multi ACL table to add the superset of qualifiers/action types
+       * in first table
+       */
+      bool addAllQualifiers = false;
       resolveNeigborAndProgramRoutes(*helper_, kEcmpWidth);
+#if defined(TAJO_SDK_GTE_24_4_90)
+      addAllQualifiers = true;
+#endif
 
       auto state1 = addResolvedNeighborWithClassID<folly::IPAddressV4>(
           this->getProgrammedState());
       auto state2 = addResolvedNeighborWithClassID<folly::IPAddressV6>(state1);
       applyNewState(state2);
 
-      if (isSupported()) {
+      if (this->isSupported()) {
         auto newCfg{initialConfig()};
         utility::addQueuePerHostQueueConfig(&newCfg);
-        utility::addQueuePerHostAclTables(&newCfg, 1 /*priority*/);
+        utility::addQueuePerHostAclTables(
+            &newCfg,
+            1 /*priority*/,
+            addAllQualifiers,
+            this->getHwSwitchEnsemble()->isSai());
         utility::addTtlAclTable(&newCfg, 2 /*priority*/);
         applyNewConfig(newCfg);
       }
     };
 
-    auto verify = [this, frontPanel]() {
-      _verifyHelperMultipleAclTables<folly::IPAddressV4>(frontPanel);
-      _verifyHelperMultipleAclTables<folly::IPAddressV6>(frontPanel);
+    auto verify = [this]() {
+      XLOG(DBG2) << "verify send packets switched";
+      _verifyHelperMultipleAclTables<folly::IPAddressV4>(false);
+      _verifyHelperMultipleAclTables<folly::IPAddressV6>(false);
+      XLOG(DBG2) << "verify send packets out of port";
+      _verifyHelperMultipleAclTables<folly::IPAddressV4>(true);
+      _verifyHelperMultipleAclTables<folly::IPAddressV6>(true);
     };
 
     verifyAcrossWarmBoots(setup, verify);
@@ -406,90 +470,120 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
   template <typename AddrT>
   void _verifyHelperDscpTtlAclTables(bool frontPanel) {
     auto [testType, dstIP] = testTypeAndIpHelper<AddrT>();
-
-    auto [beforeDscpAclPkts, beforeTtlAclPkts] = pktCounterHelper();
-    sendAllPacketshelper<AddrT>(dstIP, frontPanel, 0);
-    auto [intermediateDscpAclPkts, intermediateTtlAclPkts] = pktCounterHelper();
-    sendAllPacketshelper<AddrT>(dstIP, frontPanel, utility::kIcpDscp());
-    auto [afterDscpAclPkts, afterTtlAclPkts] = pktCounterHelper();
-
     XLOG(DBG2) << "TestType: " << testType;
-    XLOG(DBG2) << "Before ICP pkts: " << beforeDscpAclPkts
-               << " Intermediate ICP pkts: " << intermediateDscpAclPkts
-               << " After ICP pkts: " << afterDscpAclPkts;
-    XLOG(DBG2) << "Before Ttl pkts: " << beforeTtlAclPkts
-               << " Intermediate Ttl pkts: " << intermediateTtlAclPkts
-               << " After Ttl pkts: " << afterTtlAclPkts;
 
-    /* When packet egresses, DSCP is not marked and so ACL counter is not hit.
-     * It marks the DSCP instead. Since the port is in loopback mode, the same
-     * packet comes in and this time hits the counter and is incremented
-     */
-    EXPECT_EQ(
-        intermediateDscpAclPkts - beforeDscpAclPkts,
-        (1 /* ACL hit once */ * 2 /* Pkt sent twice with different TTL */ *
-         2 /*l4Srcport and l4DstPort */ *
-         (utility::kUdpPorts().size() +
-          utility::kTcpPorts()
-              .size()) /* For each destIP, all ICP port pkts are sent */));
+    auto beforeAclPkts = pktCounterHelper();
+    sendAllPacketshelper<AddrT>(dstIP, frontPanel, 0);
+    auto updateStats = [&]() { getHwSwitch()->updateStats(); };
 
-    EXPECT_EQ(
-        intermediateTtlAclPkts - beforeTtlAclPkts,
-        (2 /*l4Srcport and l4DstPort */ *
-         (utility::kUdpPorts().size() + utility::kTcpPorts().size())));
+    auto intermediateAclStatsMatch = [&]() {
+      auto [dscpAclPkts, ttlAclPkts] = pktCounterHelper();
+      XLOG(DBG2) << "Before ICP pkts: " << beforeAclPkts.first
+                 << " Intermediate ICP pkts: " << dscpAclPkts;
+      XLOG(DBG2) << "Before Ttl pkts: " << beforeAclPkts.second
+                 << " Intermediate Ttl pkts: " << ttlAclPkts;
+      /* When packet egresses, DSCP is not marked and so ACL counter is not hit.
+       * It marks the DSCP instead. Since the port is in loopback mode, the same
+       * packet comes in and this time hits the counter and is incremented
+       */
+      bool dscpAclMatch =
+          (dscpAclPkts - beforeAclPkts.first ==
+           (1 /* ACL hit once */ * 2 /* Pkt sent twice with different TTL */ *
+            2 /*l4Srcport and l4DstPort */ *
+            (utility::kUdpPorts().size() +
+             utility::kTcpPorts()
+                 .size()) /* For each destIP, all ICP port pkts are sent */));
 
-    /* counts ttl >= 128 packet only. We send twice with and without DSCP
-     * marking. Each time, we send to a list of dest ports.
-     * For each send, we send for all UDP and TCP ICP ports. so the expected
-     * value needs to account for that.
-     */
-    EXPECT_EQ(
-        afterTtlAclPkts - intermediateTtlAclPkts,
-        (2 /*l4Srcport and l4DstPort */ *
-         (utility::kUdpPorts().size() + utility::kTcpPorts().size())));
+      bool ttlAclMatch =
+          (ttlAclPkts - beforeAclPkts.second ==
+           (2 /*l4Srcport and l4DstPort */ *
+            (utility::kUdpPorts().size() + utility::kTcpPorts().size())));
 
-    /* Inject a pkt with dscp = ICP DSCP.
-     *   - The packet will match DSCP ACL, thus counter incremented.
-     *   - Packet egress via front panel port which is in loopback mode.
-     *   - Thus, packet gets looped back.
-     *   - Hits ACL again, and thus counter incremented twice.
-     */
-    EXPECT_EQ(
-        afterDscpAclPkts - intermediateDscpAclPkts,
-        (2 /* ACL hit twice */ * 2 /* Pkt sent twice with different TTL */ *
-         2 /*L4Srcport and L4DstPort */ *
-         (utility::kUdpPorts().size() + utility::kTcpPorts().size())));
+      return dscpAclMatch && ttlAclMatch;
+    };
+
+    EXPECT_TRUE(getHwSwitchEnsemble()->waitStatsCondition(
+        intermediateAclStatsMatch, updateStats));
+
+    auto intermediateAclPkts = pktCounterHelper();
+    sendAllPacketshelper<AddrT>(dstIP, frontPanel, utility::kIcpDscp());
+    auto afterAclStatsMatch = [&]() {
+      auto [dscpAclPkts, ttlAclPkts] = pktCounterHelper();
+      XLOG(DBG2) << "Intermediate ICP pkts: " << intermediateAclPkts.first
+                 << " After ICP pkts: " << dscpAclPkts;
+      XLOG(DBG2) << "Intermediate Ttl pkts: " << intermediateAclPkts.second
+                 << " After Ttl pkts: " << ttlAclPkts;
+      /* counts ttl >= 128 packet only. We send twice with and without DSCP
+       * marking. Each time, we send to a list of dest ports.
+       * For each send, we send for all UDP and TCP ICP ports. so the expected
+       * value needs to account for that.
+       */
+      bool ttlAclMatch =
+          (ttlAclPkts - intermediateAclPkts.second ==
+           (2 /*l4Srcport and l4DstPort */ *
+            (utility::kUdpPorts().size() + utility::kTcpPorts().size())));
+
+      /* Inject a pkt with dscp = ICP DSCP.
+       *   - The packet will match DSCP ACL, thus counter incremented.
+       *   - Packet egress via front panel port which is in loopback mode.
+       *   - Thus, packet gets looped back.
+       *   - Hits ACL again, and thus counter incremented twice.
+       */
+      bool dscpAclMatch =
+          (dscpAclPkts - intermediateAclPkts.first ==
+           (2 /* ACL hit twice */ * 2 /* Pkt sent twice with different TTL */ *
+            2 /*L4Srcport and L4DstPort */ *
+            (utility::kUdpPorts().size() + utility::kTcpPorts().size())));
+      return dscpAclMatch && ttlAclMatch;
+    };
+
+    EXPECT_TRUE(getHwSwitchEnsemble()->waitStatsCondition(
+        afterAclStatsMatch, updateStats));
   }
 
-  void verifyDscpTtlAclTablesHelper(bool frontPanel) {
+  void verifyDscpTtlAclTablesHelper() {
     bool multipleAclTableSupport =
         HwTest::isSupported(HwAsic::Feature::MULTIPLE_ACL_TABLES);
-#if defined(TAJO_SDK_VERSION_1_42_1) || defined(TAJO_SDK_VERSION_1_42_8)
+#if defined(TAJO_SDK_VERSION_1_42_8)
     multipleAclTableSupport = false;
 #endif
     ASSERT_TRUE(multipleAclTableSupport);
 
     auto setup = [this]() {
+      /*
+       * Refer to the detailed comment in setup of verifyMultipleAclTablesHelper
+       * for the reason behind this flag
+       */
+      bool addAllQualifiers = false;
       resolveNeigborAndProgramRoutes(*helper_, kEcmpWidth);
+#if defined(TAJO_SDK_GTE_24_4_90)
+      addAllQualifiers = true;
+#endif
 
       auto state1 = addResolvedNeighborWithClassID<folly::IPAddressV4>(
           this->getProgrammedState());
       auto state2 = addResolvedNeighborWithClassID<folly::IPAddressV6>(state1);
       applyNewState(state2);
 
-      if (isSupported()) {
+      if (this->isSupported()) {
         auto newCfg{initialConfig()};
-        utility::addOlympicQosMaps(newCfg);
-        utility::addDscpAclTable(&newCfg, 1 /*priority*/);
+        utility::addOlympicQosMaps(newCfg, {getAsic()});
+        utility::addDscpAclTable(
+            &newCfg,
+            getAsic(),
+            1 /*priority*/,
+            addAllQualifiers,
+            this->getHwSwitchEnsemble()->isSai());
         utility::addTtlAclTable(&newCfg, 2);
         applyNewConfig(newCfg);
       }
     };
 
-    auto verify = [this, frontPanel]() {
+    auto verify = [this]() {
       // TODO: IPV4 not working. It needs to be triaged and fixed
       //_verifyHelperDscpTtlAclTables<folly::IPAddressV4>(frontPanel);
-      _verifyHelperDscpTtlAclTables<folly::IPAddressV6>(frontPanel);
+      _verifyHelperDscpTtlAclTables<folly::IPAddressV6>(false);
+      _verifyHelperDscpTtlAclTables<folly::IPAddressV6>(true);
     };
 
     verifyAcrossWarmBoots(setup, verify);
@@ -598,52 +692,30 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
   std::unique_ptr<utility::EcmpSetupAnyNPorts6> helper_;
 };
 
-TEST_F(
+TYPED_TEST_SUITE(SaiAclTableGroupTrafficTest, NbrTableTypes);
+
+TYPED_TEST(
     SaiAclTableGroupTrafficTest,
-    VerifyQueuePerHostAclTableAndTtlAclTableFrontPanel) {
-  if (!isSupported()) {
+    VerifyQueuePerHostAclTableAndTtlAclTable) {
+  if (!this->isSupported()) {
 #if defined(GTEST_SKIP)
     GTEST_SKIP();
 #endif
     return;
   }
 
-  verifyMultipleAclTablesHelper(false /* cpu port */);
+  this->verifyMultipleAclTablesHelper();
 }
 
-TEST_F(
-    SaiAclTableGroupTrafficTest,
-    VerifyQueuePerHostAclTableAndTtlAclTableCpu) {
-  if (!isSupported()) {
+TYPED_TEST(SaiAclTableGroupTrafficTest, VerifyDscpMarkingAndTtlAclTable) {
+  if (!this->isSupported()) {
 #if defined(GTEST_SKIP)
     GTEST_SKIP();
 #endif
     return;
   }
 
-  verifyMultipleAclTablesHelper(true /* cpu port */);
-}
-
-TEST_F(SaiAclTableGroupTrafficTest, VerifyDscpMarkingAndTtlAclTableCpu) {
-  if (!isSupported()) {
-#if defined(GTEST_SKIP)
-    GTEST_SKIP();
-#endif
-    return;
-  }
-
-  verifyDscpTtlAclTablesHelper(true /* cpu port */);
-}
-
-TEST_F(SaiAclTableGroupTrafficTest, VerifyDscpMarkingAndTtlAclTableFrontPanel) {
-  if (!isSupported()) {
-#if defined(GTEST_SKIP)
-    GTEST_SKIP();
-#endif
-    return;
-  }
-
-  verifyDscpTtlAclTablesHelper(false /* cpu port */);
+  this->verifyDscpTtlAclTablesHelper();
 }
 
 } // namespace facebook::fboss

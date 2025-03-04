@@ -9,8 +9,8 @@
  */
 #include "fboss/agent/hw/test/HwLinkStateDependentTest.h"
 
-#include "fboss/agent/hw/test/HwLinkStateToggler.h"
 #include "fboss/agent/hw/test/HwSwitchEnsemble.h"
+#include "fboss/agent/test/LinkStateToggler.h"
 #include "fboss/agent/types.h"
 
 namespace facebook::fboss {
@@ -23,19 +23,40 @@ void HwLinkStateDependentTest::SetUp() {
     // to warm boot
     getHwSwitchEnsemble()->applyInitialConfig(initialConfig());
   }
+
+  if (isSupported(HwAsic::Feature::LINK_INACTIVE_BASED_ISOLATE)) {
+    // For switches that support LINK_INACTIVE_BASED_ISOLATE, force
+    // switch to come out of isolate post setup. This is required
+    // for data plane to work.
+    //
+    // TODO: For VOQ switches, enhance HwTestLinkScanUpdateObserver to observe
+    // link state updates, exercise (thus test) computeActualSwitchDrainState
+    // which will bring the device out of isolate. At that time, this explicit
+    // unisolate can be removed.
+    auto undrainState = getProgrammedState()->clone();
+    auto multiSwitchSettings = undrainState->getSwitchSettings()->clone();
+    auto matcher = HwSwitchMatcher(std::unordered_set<SwitchID>({SwitchID(0)}));
+    auto settings =
+        multiSwitchSettings->getNode(matcher.matcherString())->clone();
+    settings->setActualSwitchDrainState(cfg::SwitchDrainState::UNDRAINED);
+    multiSwitchSettings->updateNode(matcher.matcherString(), settings);
+    undrainState->resetSwitchSettings(multiSwitchSettings);
+
+    applyNewState(undrainState);
+  }
 }
 
-HwLinkStateToggler* HwLinkStateDependentTest::getLinkToggler() {
+LinkStateToggler* HwLinkStateDependentTest::getLinkToggler() {
   return getHwSwitchEnsemble()->getLinkToggler();
 }
 
 void HwLinkStateDependentTest::bringUpPorts(const std::vector<PortID>& ports) {
-  getLinkToggler()->bringUpPorts(getProgrammedState(), ports);
+  getLinkToggler()->bringUpPorts(ports);
 }
 
 void HwLinkStateDependentTest::bringDownPorts(
     const std::vector<PortID>& ports) {
-  getLinkToggler()->bringDownPorts(getProgrammedState(), ports);
+  getLinkToggler()->bringDownPorts(ports);
 }
 
 } // namespace facebook::fboss

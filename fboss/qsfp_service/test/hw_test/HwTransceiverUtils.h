@@ -11,6 +11,7 @@
 #pragma once
 
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
+#include "fboss/agent/platforms/common/PlatformMapping.h"
 #include "fboss/qsfp_service/if/gen-cpp2/transceiver_types.h"
 
 namespace facebook::fboss::utility {
@@ -18,26 +19,48 @@ namespace facebook::fboss::utility {
 class HwTransceiverUtils {
  public:
   static void verifyTransceiverSettings(
-      const TransceiverInfo& transceiver,
+      const TcvrState& tcvrState,
+      const std::string& portName,
       cfg::PortProfileID profile);
 
   // T114627923 Because some old firmware might not enable all capabilities
   // use `skipCheckingIndividualCapability` to skip checking individual
   // capability until we can make sure all modules have the latest firmware
   static void verifyDiagsCapability(
-      const TransceiverInfo& transceiver,
+      const TcvrState& tcvrState,
       std::optional<DiagsCapability> diagsCapability,
       bool skipCheckingIndividualCapability = true);
 
+  static void verifyPortNameToLaneMap(
+      const std::vector<PortID>& portIDs,
+      cfg::PortProfileID profile,
+      const PlatformMapping* platformMapping,
+      std::map<int32_t, TransceiverInfo>& tcvrInfo);
+
+  static void verifyTempAndVccFlags(
+      std::map<std::string, TransceiverInfo>& portToTransceiverInfoMap);
+
+  static void verifyDatapathResetTimestamp(
+      const std::string& portName,
+      const TcvrState& tcvrState,
+      const TcvrStats& tcvrStats,
+      time_t timeReference,
+      bool expectedReset);
+
  private:
   static void verifyOpticsSettings(
-      const TransceiverInfo& transceiver,
+      const TcvrState& tcvrState,
+      const std::string& portName,
       cfg::PortProfileID profile);
   static void verifyMediaInterfaceCompliance(
-      const TransceiverInfo& transceiver,
-      cfg::PortProfileID profile);
+      const TcvrState& tcvrState,
+      cfg::PortProfileID profile,
+      const std::string& portName);
   static void verify10gProfile(
-      const TransceiverInfo& transceiver,
+      const TcvrState& tcvrState,
+      const TransceiverManagementInterface mgmtInterface,
+      const std::vector<MediaInterfaceId>& mediaInterfaces);
+  static void verify50gProfile(
       const TransceiverManagementInterface mgmtInterface,
       const std::vector<MediaInterfaceId>& mediaInterfaces);
   static void verify100gProfile(
@@ -50,13 +73,23 @@ class HwTransceiverUtils {
       const TransceiverManagementInterface mgmtInterface,
       const std::vector<MediaInterfaceId>& mediaInterfaces);
   static void verifyCopper100gProfile(
-      const TransceiverInfo& transceiver,
+      const TcvrState& tcvrState,
       const std::vector<MediaInterfaceId>& mediaInterfaces);
   static void verifyCopper200gProfile(
-      const TransceiverInfo& transceiver,
+      const TcvrState& tcvrState,
       const std::vector<MediaInterfaceId>& mediaInterfaces);
-
-  static void verifyDataPathEnabled(const TransceiverInfo& transceiver);
+  static void verifyCopper53gProfile(
+      const TcvrState& tcvrState,
+      const std::vector<MediaInterfaceId>& mediaInterfaces);
+  static void verifyCopper400gProfile(
+      const TcvrState& tcvrState,
+      const std::vector<MediaInterfaceId>& mediaInterfaces);
+  static void verifyOptical800gProfile(
+      const TransceiverManagementInterface mgmtInterface,
+      const std::vector<MediaInterfaceId>& mediaInterfaces);
+  static void verifyDataPathEnabled(
+      const TcvrState& tcvrState,
+      const std::string& portName);
 };
 
 } // namespace facebook::fboss::utility

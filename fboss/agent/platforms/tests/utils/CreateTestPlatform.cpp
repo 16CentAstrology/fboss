@@ -14,54 +14,48 @@
 #include "fboss/agent/platforms/tests/utils/BcmTestDarwinPlatform.h"
 #include "fboss/agent/platforms/tests/utils/BcmTestElbertPlatform.h"
 #include "fboss/agent/platforms/tests/utils/BcmTestFujiPlatform.h"
-#include "fboss/agent/platforms/tests/utils/BcmTestGalaxyPlatform.h"
 #include "fboss/agent/platforms/tests/utils/BcmTestMinipackPlatform.h"
 #include "fboss/agent/platforms/tests/utils/BcmTestWedge100Platform.h"
 #include "fboss/agent/platforms/tests/utils/BcmTestWedge400Platform.h"
-#include "fboss/agent/platforms/tests/utils/BcmTestWedge40Platform.h"
 #include "fboss/agent/platforms/tests/utils/BcmTestYampPlatform.h"
 #include "fboss/agent/platforms/tests/utils/FakeBcmTestPlatform.h"
 
 namespace facebook::fboss {
 
-PlatformMode getPlatformMode() {
+PlatformType getPlatformType() {
   try {
     facebook::fboss::PlatformProductInfo productInfo(FLAGS_fruid_filepath);
     productInfo.initialize();
-    return productInfo.getMode();
-  } catch (const facebook::fboss::FbossError& ex) {
-    return PlatformMode::FAKE_WEDGE;
+    return productInfo.getType();
+  } catch (const facebook::fboss::FbossError&) {
+    return PlatformType::PLATFORM_FAKE_WEDGE;
   }
 }
 
 std::unique_ptr<Platform> createTestPlatform() {
-  auto mode = getPlatformMode();
+  auto mode = getPlatformType();
   std::unique_ptr<PlatformProductInfo> productInfo;
-  if (mode != PlatformMode::FAKE_WEDGE) {
+  if (mode != PlatformType::PLATFORM_FAKE_WEDGE) {
     productInfo = std::make_unique<PlatformProductInfo>(FLAGS_fruid_filepath);
     productInfo->initialize();
   }
-  if (mode == PlatformMode::WEDGE) {
-    return std::make_unique<BcmTestWedge40Platform>(std::move(productInfo));
-  } else if (mode == PlatformMode::WEDGE100) {
+  if (mode == PlatformType::PLATFORM_WEDGE100) {
     return std::make_unique<BcmTestWedge100Platform>(std::move(productInfo));
-  } else if (mode == PlatformMode::GALAXY_LC) {
-    return std::make_unique<BcmTestGalaxyLCPlatform>(std::move(productInfo));
-  } else if (mode == PlatformMode::GALAXY_FC) {
-    return std::make_unique<BcmTestGalaxyFCPlatform>(std::move(productInfo));
-  } else if (mode == PlatformMode::MINIPACK) {
+  } else if (mode == PlatformType::PLATFORM_MINIPACK) {
     return std::make_unique<BcmTestMinipackPlatform>(std::move(productInfo));
-  } else if (mode == PlatformMode::YAMP) {
+  } else if (mode == PlatformType::PLATFORM_YAMP) {
     return std::make_unique<BcmTestYampPlatform>(std::move(productInfo));
-  } else if (mode == PlatformMode::WEDGE400) {
+  } else if (mode == PlatformType::PLATFORM_WEDGE400) {
     return std::make_unique<BcmTestWedge400Platform>(std::move(productInfo));
-  } else if (mode == PlatformMode::DARWIN) {
+  } else if (
+      mode == PlatformType::PLATFORM_DARWIN ||
+      mode == PlatformType::PLATFORM_DARWIN48V) {
     return std::make_unique<BcmTestDarwinPlatform>(std::move(productInfo));
-  } else if (mode == PlatformMode::FUJI) {
+  } else if (mode == PlatformType::PLATFORM_FUJI) {
     return std::make_unique<BcmTestFujiPlatform>(std::move(productInfo));
-  } else if (mode == PlatformMode::ELBERT) {
+  } else if (mode == PlatformType::PLATFORM_ELBERT) {
     return std::make_unique<BcmTestElbertPlatform>(std::move(productInfo));
-  } else if (mode == PlatformMode::FAKE_WEDGE) {
+  } else if (mode == PlatformType::PLATFORM_FAKE_WEDGE) {
     return std::make_unique<FakeBcmTestPlatform>();
   } else {
     throw std::runtime_error("invalid mode ");

@@ -10,6 +10,7 @@
 
 #include "fboss/agent/hw/test/HwTestMirrorUtils.h"
 
+#include <gtest/gtest.h>
 #include "fboss/agent/gen-cpp2/switch_config_constants.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
@@ -28,7 +29,6 @@ constexpr auto kErspan = "mirror0"; // erspan mirror
 constexpr auto kSflow = "mirror1"; // sflow mirror
 constexpr auto kDscpDefault =
     cfg::switch_config_constants::DEFAULT_MIRROR_DSCP_; // default dscp value
-constexpr auto kDscp = 46; // non-default dscp value
 using TestTypes = ::testing::Types<IPAddressV4, folly::IPAddressV6>;
 
 template <typename AddrT>
@@ -73,6 +73,19 @@ class HwMirrorTest : public HwTest {
   cfg::SwitchConfig initialConfig() const {
     return utility::onePortPerInterfaceConfig(
         getHwSwitch(), masterLogicalPortIds());
+  }
+
+  void updateMirror(const std::shared_ptr<Mirror>& mirror) {
+    auto newState = this->getProgrammedState()->clone();
+    auto mnpuMirrors =
+        this->getProgrammedState()->getMirrors()->modify(&newState);
+    mnpuMirrors->updateNode(mirror, scopeResolver().scope(mirror));
+    this->applyNewState(newState);
+  }
+  void updateMirrors(const std::vector<std::shared_ptr<Mirror>>& mirrors) {
+    for (const auto& mirror : mirrors) {
+      updateMirror(mirror);
+    }
   }
 
   cfg::Mirror getSpanMirror(
@@ -125,7 +138,7 @@ class HwMirrorTest : public HwTest {
     cfg::SflowTunnel sflowTunnel;
     sflowTunnel.ip() = destinationIp.str();
     sflowTunnel.udpSrcPort() = 6545;
-    sflowTunnel.udpDstPort() = 5343;
+    sflowTunnel.udpDstPort() = 6343;
     tunnel.sflowTunnel() = sflowTunnel;
 
     destination.tunnel() = tunnel;
@@ -180,305 +193,126 @@ class HwMirrorTest : public HwTest {
 
 TYPED_TEST_SUITE(HwMirrorTest, TestTypes);
 
-TYPED_TEST(HwMirrorTest, ResolvedSpanMirror) {
-  auto setup = [=]() {
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getSpanMirror());
-    this->applyNewConfig(cfg);
-  };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSpan);
-    utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
-  };
-
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, DscpHasDefault) {
-  auto setup = [=]() {
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getSpanMirror(kSpan, kDscpDefault));
-    this->applyNewConfig(cfg);
-  };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSpan);
-    EXPECT_EQ(mirror->getDscp(), kDscpDefault);
-    utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
-  };
-
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, DscpHasSetValue) {
-  auto setup = [=]() {
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getSpanMirror(kSpan, kDscp));
-    this->applyNewConfig(cfg);
-  };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSpan);
-    EXPECT_EQ(mirror->getDscp(), kDscp);
-    utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
-  };
-
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, MirrorWithTruncation) {
-  if (!this->getPlatform()->getAsic()->isSupported(
-          HwAsic::Feature::MIRROR_PACKET_TRUNCATION)) {
-    return;
-  }
-  auto setup = [=]() {
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getSpanMirror(kSpan, kDscp, true));
-    this->applyNewConfig(cfg);
-  };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSpan);
-    EXPECT_EQ(mirror->getDscp(), kDscp);
-    utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
-  };
-
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, ResolvedErspanMirror) {
-  auto setup = [=]() {
-    auto params = this->testParams();
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getErspanMirror());
-    this->applyNewConfig(cfg);
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
-    auto newMirror = std::make_shared<Mirror>(
-        mirror->getID(),
-        mirror->getEgressPort(),
-        mirror->getDestinationIp(),
-        mirror->getSrcIp());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
-    newMirror->setMirrorTunnel(MirrorTunnel(
-        params.ipAddrs[0],
-        params.ipAddrs[1],
-        params.macAddrs[0],
-        params.macAddrs[1]));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
-  };
-  auto verify = [=]() {
-    auto mirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
-    utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
-  };
-  if (this->skipMirrorTest()) {
-    return;
-  }
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, ResolvedSflowMirror) {
-  auto setup = [=]() {
-    auto params = this->testParams();
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getSflowMirror());
-    this->applyNewConfig(cfg);
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kSflow);
-    auto newMirror = std::make_shared<Mirror>(
-        mirror->getID(),
-        mirror->getEgressPort(),
-        mirror->getDestinationIp(),
-        mirror->getSrcIp(),
-        mirror->getTunnelUdpPorts());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
-    newMirror->setMirrorTunnel(MirrorTunnel(
-        params.ipAddrs[0],
-        params.ipAddrs[1],
-        params.macAddrs[0],
-        params.macAddrs[1],
-        newMirror->getTunnelUdpPorts().value()));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
-  };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSflow);
-    utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
-  };
-  if (this->skipMirrorTest()) {
-    return;
-  }
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, UnresolvedErspanMirror) {
-  auto setup = [=]() {
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getErspanMirror());
-    this->applyNewConfig(cfg);
-  };
-  auto verify = [=]() {
-    auto mirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
-    utility::verifyUnResolvedMirror(this->getHwSwitch(), mirror);
-  };
-  if (this->skipMirrorTest()) {
-    return;
-  }
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, MirrorRemoved) {
-  auto setup = [=]() {
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getSpanMirror());
-    cfg.mirrors()->push_back(this->getErspanMirror());
-    this->applyNewConfig(cfg);
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    mirrors->removeNode(kSpan);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
-  };
-  auto verify = [=]() {
-    auto local = this->getProgrammedState()->getMirrors()->getMirrorIf(kSpan);
-    EXPECT_EQ(local, nullptr);
-    auto erspan =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
-    utility::verifyUnResolvedMirror(this->getHwSwitch(), erspan);
-  };
-  if (this->skipMirrorTest()) {
-    return;
-  }
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
 TYPED_TEST(HwMirrorTest, UnresolvedToUnresolvedUpdate) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     cfg.mirrors()->push_back(this->getSpanMirror());
     cfg.mirrors()->push_back(this->getErspanMirror());
     this->applyNewConfig(cfg);
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     auto newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         std::optional<folly::IPAddress>(folly::IPAddress(params.ipAddrs[3])));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
   };
-  auto verify = [=]() {
-    auto local = this->getProgrammedState()->getMirrors()->getMirrorIf(kSpan);
+  auto verify = [=, this]() {
+    auto local = this->getProgrammedState()->getMirrors()->getNodeIf(kSpan);
     utility::verifyResolvedMirror(this->getHwSwitch(), local);
-    auto erspan =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
+    auto erspan = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     utility::verifyUnResolvedMirror(this->getHwSwitch(), erspan);
   };
   if (this->skipMirrorTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, ResolvedToResolvedUpdate) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     cfg.mirrors()->push_back(this->getErspanMirror());
     this->applyNewConfig(cfg);
 
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     auto resolvedMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    resolvedMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
+        mirror->getID(),
+        mirror->getEgressPortDesc(),
+        mirror->getDestinationIp());
+    resolvedMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[0]));
     resolvedMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1]));
-    mirrors->updateNode(resolvedMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(resolvedMirror);
 
-    mirrors = this->getProgrammedState()->getMirrors()->clone();
-    mirror = mirrors->getMirrorIf(kErspan);
+    mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     auto updatedMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    updatedMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
+        mirror->getID(),
+        mirror->getEgressPortDesc(),
+        mirror->getDestinationIp());
+    updatedMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[1]));
     updatedMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[2],
         params.ipAddrs[3],
         params.macAddrs[2],
         params.macAddrs[3]));
-    mirrors->updateNode(updatedMirror);
-    auto updatedState = this->getProgrammedState()->clone();
-    updatedState->resetMirrors(mirrors);
-    this->applyNewState(updatedState);
+    this->updateMirror(updatedMirror);
   };
-  auto verify = [=]() {
-    auto mirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
+  auto verify = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
   };
   if (this->skipMirrorTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, ResolvedToUnresolvedUpdate) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     cfg.mirrors()->push_back(this->getErspanMirror());
     this->applyNewConfig(cfg);
 
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     auto resolvedMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    resolvedMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
+        mirror->getID(),
+        mirror->getEgressPortDesc(),
+        mirror->getDestinationIp());
+    resolvedMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[0]));
     resolvedMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1]));
-    mirrors->updateNode(resolvedMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(resolvedMirror);
 
-    mirrors = this->getProgrammedState()->getMirrors()->clone();
-    mirror = mirrors->getMirrorIf(kErspan);
+    mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     auto updatedMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    mirrors->updateNode(updatedMirror);
-    auto updatedState = this->getProgrammedState()->clone();
-    updatedState->resetMirrors(mirrors);
-    this->applyNewState(updatedState);
+        mirror->getID(),
+        mirror->getEgressPortDesc(),
+        mirror->getDestinationIp());
+    this->updateMirror(updatedMirror);
   };
-  auto verify = [=]() {
-    auto mirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
+  auto verify = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     utility::verifyUnResolvedMirror(this->getHwSwitch(), mirror);
   };
   if (this->skipMirrorTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, NoPortMirroringIfUnResolved) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto cfg = this->initialConfig();
     cfg.mirrors()->push_back(this->getErspanMirror());
     auto portCfg = utility::findCfgPort(cfg, this->masterLogicalPortIds()[0]);
@@ -486,9 +320,8 @@ TYPED_TEST(HwMirrorTest, NoPortMirroringIfUnResolved) {
     portCfg->egressMirror() = kErspan;
     this->applyNewConfig(cfg);
   };
-  auto verify = [=]() {
-    auto mirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
+  auto verify = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     utility::verifyUnResolvedMirror(this->getHwSwitch(), mirror);
     utility::verifyPortNoMirrorDestination(
         this->getHwSwitch(),
@@ -500,63 +333,16 @@ TYPED_TEST(HwMirrorTest, NoPortMirroringIfUnResolved) {
         utility::getMirrorPortEgressFlags());
   };
   if (this->skipMirrorTest()) {
-    return;
-  }
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, PortMirroringIfResolved) {
-  auto setup = [=]() {
-    auto params = this->testParams();
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getErspanMirror());
-    auto portCfg = utility::findCfgPort(cfg, this->masterLogicalPortIds()[0]);
-    portCfg->ingressMirror() = kErspan;
-    portCfg->egressMirror() = kErspan;
-    this->applyNewConfig(cfg);
-
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
-    auto updatedMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    updatedMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
-    updatedMirror->setMirrorTunnel(MirrorTunnel(
-        params.ipAddrs[2],
-        params.ipAddrs[3],
-        params.macAddrs[2],
-        params.macAddrs[3]));
-    mirrors->updateNode(updatedMirror);
-    auto updatedState = this->getProgrammedState()->clone();
-    updatedState->resetMirrors(mirrors);
-    this->applyNewState(updatedState);
-  };
-  auto verify = [=]() {
-    auto mirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
-    utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
-    std::vector<uint64_t> destinations;
-    utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
-
-    ASSERT_EQ(destinations.size(), 1);
-    utility::verifyPortMirrorDestination(
-        this->getHwSwitch(),
-        PortID(this->masterLogicalPortIds()[0]),
-        utility::getMirrorPortIngressFlags(),
-        destinations[0]);
-    utility::verifyPortMirrorDestination(
-        this->getHwSwitch(),
-        PortID(this->masterLogicalPortIds()[0]),
-        utility::getMirrorPortEgressFlags(),
-        destinations[0]);
-  };
-  if (this->skipMirrorTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, PortMirrorUpdateIfMirrorUpdate) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     cfg.mirrors()->push_back(this->getErspanMirror());
@@ -565,40 +351,36 @@ TYPED_TEST(HwMirrorTest, PortMirrorUpdateIfMirrorUpdate) {
     portCfg->egressMirror() = kErspan;
     this->applyNewConfig(cfg);
 
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     auto updatedMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    updatedMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
+        mirror->getID(),
+        mirror->getEgressPortDesc(),
+        mirror->getDestinationIp());
+    updatedMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[1]));
     updatedMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[2],
         params.ipAddrs[3],
         params.macAddrs[2],
         params.macAddrs[3]));
-    mirrors->updateNode(updatedMirror);
-    auto updatedState = this->getProgrammedState()->clone();
-    updatedState->resetMirrors(mirrors);
-    this->applyNewState(updatedState);
+    this->updateMirror(updatedMirror);
 
-    mirrors = this->getProgrammedState()->getMirrors()->clone();
-    mirror = mirrors->getMirrorIf(kErspan);
+    mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     updatedMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    updatedMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
+        mirror->getID(),
+        mirror->getEgressPortDesc(),
+        mirror->getDestinationIp());
+    updatedMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[1]));
     updatedMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[3],
         params.ipAddrs[2],
         params.macAddrs[3],
         params.macAddrs[2]));
-
-    mirrors->updateNode(updatedMirror);
-    updatedState = this->getProgrammedState()->clone();
-    updatedState->resetMirrors(mirrors);
-    this->applyNewState(updatedState);
+    this->updateMirror(updatedMirror);
   };
-  auto verify = [=]() {
-    auto mirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
+  auto verify = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
     std::vector<uint64_t> destinations;
     utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
@@ -611,197 +393,38 @@ TYPED_TEST(HwMirrorTest, PortMirrorUpdateIfMirrorUpdate) {
         destinations[0]);
   };
   if (this->skipMirrorTest()) {
-    return;
-  }
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, PortMirror) {
-  auto setup = [=]() {
-    auto params = this->testParams();
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getErspanMirror());
-    auto portCfg = utility::findCfgPort(cfg, this->masterLogicalPortIds()[0]);
-    portCfg->ingressMirror() = kErspan;
-    portCfg->egressMirror() = kErspan;
-    this->applyNewConfig(cfg);
-
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
-    auto newMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
-    newMirror->setMirrorTunnel(MirrorTunnel(
-        params.ipAddrs[2],
-        params.ipAddrs[3],
-        params.macAddrs[2],
-        params.macAddrs[3]));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
-  };
-  auto verify = [=]() {
-    auto mirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
-    utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
-    std::vector<uint64_t> destinations;
-    utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
-
-    ASSERT_EQ(destinations.size(), 1);
-    utility::verifyPortMirrorDestination(
-        this->getHwSwitch(),
-        PortID(this->masterLogicalPortIds()[0]),
-        utility::getMirrorPortIngressFlags(),
-        destinations[0]);
-  };
-  if (this->skipMirrorTest()) {
-    return;
-  }
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, UpdatePortMirror) {
-  auto setup = [=]() {
-    auto params = this->testParams();
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getErspanMirror());
-    auto portCfg = utility::findCfgPort(cfg, this->masterLogicalPortIds()[0]);
-    portCfg->ingressMirror() = kErspan;
-    portCfg->egressMirror() = kErspan;
-    this->applyNewConfig(cfg);
-
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
-    auto newMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
-    newMirror->setMirrorTunnel(MirrorTunnel(
-        params.ipAddrs[2],
-        params.ipAddrs[3],
-        params.macAddrs[2],
-        params.macAddrs[3]));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
-
-    cfg.mirrors()[0] = this->getSpanMirror();
-    portCfg->ingressMirror().reset();
-    portCfg->egressMirror().reset();
-    portCfg = utility::findCfgPort(cfg, this->masterLogicalPortIds()[1]);
-    portCfg->ingressMirror() = kSpan;
-    portCfg->egressMirror() = kSpan;
-    this->applyNewConfig(cfg);
-  };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSpan);
-    utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
-    std::vector<uint64_t> destinations;
-    utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
-
-    ASSERT_EQ(destinations.size(), 1);
-    utility::verifyPortNoMirrorDestination(
-        this->getHwSwitch(),
-        PortID(this->masterLogicalPortIds()[0]),
-        utility::getMirrorPortIngressFlags());
-    utility::verifyPortNoMirrorDestination(
-        this->getHwSwitch(),
-        PortID(this->masterLogicalPortIds()[0]),
-        utility::getMirrorPortEgressFlags());
-
-    utility::verifyPortMirrorDestination(
-        this->getHwSwitch(),
-        PortID(this->masterLogicalPortIds()[1]),
-        utility::getMirrorPortIngressFlags(),
-        destinations[0]);
-    utility::verifyPortMirrorDestination(
-        this->getHwSwitch(),
-        PortID(this->masterLogicalPortIds()[1]),
-        utility::getMirrorPortEgressFlags(),
-        destinations[0]);
-  };
-  if (this->skipMirrorTest()) {
-    return;
-  }
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, RemovePortMirror) {
-  auto setup = [=]() {
-    auto params = this->testParams();
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getErspanMirror());
-    auto portCfg = utility::findCfgPort(cfg, this->masterLogicalPortIds()[0]);
-    portCfg->ingressMirror() = kErspan;
-    portCfg->egressMirror() = kErspan;
-    this->applyNewConfig(cfg);
-
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
-    auto newMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
-    newMirror->setMirrorTunnel(MirrorTunnel(
-        params.ipAddrs[2],
-        params.ipAddrs[3],
-        params.macAddrs[2],
-        params.macAddrs[3]));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
-
-    portCfg->ingressMirror().reset();
-    portCfg->egressMirror().reset();
-    this->applyNewConfig(cfg);
-  };
-  auto verify = [=]() {
-    auto mirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
-    utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
-    std::vector<uint64_t> destinations;
-    utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
-    ASSERT_EQ(destinations.size(), 1);
-
-    utility::verifyPortNoMirrorDestination(
-        this->getHwSwitch(),
-        PortID(this->masterLogicalPortIds()[0]),
-        utility::getMirrorPortIngressFlags());
-    utility::verifyPortNoMirrorDestination(
-        this->getHwSwitch(),
-        PortID(this->masterLogicalPortIds()[0]),
-        utility::getMirrorPortEgressFlags());
-  };
-  if (this->skipMirrorTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, HwMirrorStat) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto cfg = this->initialConfig();
     cfg.mirrors()->push_back(this->getSpanMirror());
     cfg.mirrors()->push_back(this->getErspanMirror());
     this->applyNewConfig(cfg);
   };
-  auto verify = [=]() {
+  auto verify = [=, this]() {
     auto stats = utility::getHwTableStats(this->getHwSwitch());
     EXPECT_EQ(*stats.mirrors_used(), 1);
     EXPECT_EQ(*stats.mirrors_span(), 1);
     EXPECT_EQ(*stats.mirrors_erspan(), 0);
   };
   if (this->skipMirrorTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, HwResolvedMirrorStat) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     cfg.mirrors()->resize(3);
@@ -810,45 +433,45 @@ TYPED_TEST(HwMirrorTest, HwResolvedMirrorStat) {
     cfg.mirrors()[2] = this->getSflowMirror();
     this->applyNewConfig(cfg);
 
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     auto newMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
+        mirror->getID(),
+        mirror->getEgressPortDesc(),
+        mirror->getDestinationIp());
+    newMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[1]));
     newMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1]));
-    mirrors->updateNode(newMirror);
+    this->updateMirror(newMirror);
 
-    auto sflowMirror = mirrors->getMirrorIf(kSflow);
+    auto sflowMirror =
+        this->getProgrammedState()->getMirrors()->getNodeIf(kSflow);
     auto newSflowMirror = std::make_shared<Mirror>(
         sflowMirror->getID(),
-        sflowMirror->getEgressPort(),
+        sflowMirror->getEgressPortDesc(),
         sflowMirror->getDestinationIp(),
         sflowMirror->getSrcIp(),
         sflowMirror->getTunnelUdpPorts());
-    newSflowMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
+    newSflowMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[1]));
     newSflowMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1],
         sflowMirror->getTunnelUdpPorts().value()));
-    mirrors->updateNode(newSflowMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newSflowMirror);
   };
-  auto verify = [=]() {
+  auto verify = [=, this]() {
     auto stats = utility::getHwTableStats(this->getHwSwitch());
-    auto span = this->getProgrammedState()->getMirrors()->getMirrorIf(kSpan);
-    auto erspan =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
+    auto span = this->getProgrammedState()->getMirrors()->getNodeIf(kSpan);
+    auto erspan = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
 
     auto sflowMirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kSflow);
+        this->getProgrammedState()->getMirrors()->getNodeIf(kSflow);
     EXPECT_TRUE(span->isResolved());
     EXPECT_TRUE(erspan->isResolved());
     EXPECT_TRUE(sflowMirror->isResolved());
@@ -858,14 +481,17 @@ TYPED_TEST(HwMirrorTest, HwResolvedMirrorStat) {
     EXPECT_EQ(*stats.mirrors_erspan(), 1);
     EXPECT_EQ(*stats.mirrors_sflow(), 1);
   };
-  if (this->skipMirrorTest()) {
+  if (this->skipMirrorTest() || this->skipSflowTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, HwUnresolvedMirrorStat) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     cfg.mirrors()->resize(3);
@@ -874,62 +500,57 @@ TYPED_TEST(HwMirrorTest, HwUnresolvedMirrorStat) {
     cfg.mirrors()[2] = this->getSflowMirror();
     this->applyNewConfig(cfg);
 
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     auto resolvedMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    resolvedMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
+        mirror->getID(),
+        mirror->getEgressPortDesc(),
+        mirror->getDestinationIp());
+    resolvedMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[1]));
     resolvedMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1]));
-    mirrors->updateNode(resolvedMirror);
+    this->updateMirror(resolvedMirror);
 
-    auto sflowMirror = mirrors->getMirrorIf(kSflow);
+    auto sflowMirror =
+        this->getProgrammedState()->getMirrors()->getNodeIf(kSflow);
     auto newSflowMirror = std::make_shared<Mirror>(
         sflowMirror->getID(),
-        sflowMirror->getEgressPort(),
+        sflowMirror->getEgressPortDesc(),
         sflowMirror->getDestinationIp(),
         sflowMirror->getSrcIp(),
         sflowMirror->getTunnelUdpPorts());
-    newSflowMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
+    newSflowMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[1]));
     newSflowMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1],
         newSflowMirror->getTunnelUdpPorts().value()));
-    mirrors->updateNode(sflowMirror);
+    this->updateMirror(newSflowMirror);
 
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
-
-    mirrors = this->getProgrammedState()->getMirrors()->clone();
     auto unresolvedMirror = std::make_shared<Mirror>(
         resolvedMirror->getID(),
-        resolvedMirror->getEgressPort(),
+        resolvedMirror->getEgressPortDesc(),
         resolvedMirror->getDestinationIp());
     EXPECT_TRUE(!unresolvedMirror->isResolved());
-    mirrors->updateNode(unresolvedMirror);
+    this->updateMirror(unresolvedMirror);
     auto unresolvedSflowMirror = std::make_shared<Mirror>(
         newSflowMirror->getID(),
-        newSflowMirror->getEgressPort(),
+        newSflowMirror->getEgressPortDesc(),
         newSflowMirror->getDestinationIp());
     EXPECT_TRUE(!unresolvedSflowMirror->isResolved());
-    mirrors->updateNode(unresolvedSflowMirror);
-    newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(unresolvedSflowMirror);
   };
-  auto verify = [=]() {
+  auto verify = [=, this]() {
     auto stats = utility::getHwTableStats(this->getHwSwitch());
-    auto span = this->getProgrammedState()->getMirrors()->getMirrorIf(kSpan);
-    auto erspan =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
+    auto span = this->getProgrammedState()->getMirrors()->getNodeIf(kSpan);
+    auto erspan = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     auto sflowMirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kSflow);
+        this->getProgrammedState()->getMirrors()->getNodeIf(kSflow);
     EXPECT_TRUE(span->isResolved());
     EXPECT_TRUE(!erspan->isResolved());
     EXPECT_EQ(*stats.mirrors_used(), 1);
@@ -937,146 +558,10 @@ TYPED_TEST(HwMirrorTest, HwUnresolvedMirrorStat) {
     EXPECT_EQ(*stats.mirrors_erspan(), 0);
     EXPECT_EQ(*stats.mirrors_sflow(), 0);
   };
-  if (this->skipMirrorTest()) {
-    return;
-  }
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, AclMirror) {
-  auto setup = [=]() {
-    auto params = this->testParams();
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getErspanMirror());
-    cfg::AclEntry acl;
-    acl.name() = "acl0";
-    acl.dstIp() = "192.168.0.0/16";
-    this->addAclMirror(kErspan, acl, cfg);
-    this->applyNewConfig(cfg);
-
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
-    auto newMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
-    newMirror->setMirrorTunnel(MirrorTunnel(
-        params.ipAddrs[2],
-        params.ipAddrs[3],
-        params.macAddrs[2],
-        params.macAddrs[3]));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
-  };
-  auto verify = [=]() {
-    auto mirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
-    utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
-    utility::verifyAclMirrorDestination(this->getHwSwitch(), kErspan);
-  };
-  if (this->skipMirrorTest()) {
-    return;
-  }
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, UpdateAclMirror) {
-  auto setup = [=]() {
-    auto params = this->testParams();
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getSpanMirror());
-    cfg.mirrors()->push_back(this->getErspanMirror());
-    cfg::AclEntry acl;
-    acl.name() = "acl0";
-    acl.dstIp() = "192.168.0.0/16";
-    this->addAclMirror(kErspan, acl, cfg);
-    this->applyNewConfig(cfg);
-
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
-    auto newMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
-    newMirror->setMirrorTunnel(MirrorTunnel(
-        params.ipAddrs[2],
-        params.ipAddrs[3],
-        params.macAddrs[2],
-        params.macAddrs[3]));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
-
-    cfg.mirrors()->clear();
-    cfg.mirrors()->push_back(this->getSpanMirror());
-    for (auto& match2Action : *cfg.dataPlaneTrafficPolicy()->matchToAction()) {
-      if (*match2Action.matcher() == "acl0") {
-        match2Action.action()->ingressMirror() = kSpan;
-        match2Action.action()->egressMirror() = kSpan;
-      }
-    }
-    this->applyNewConfig(cfg);
-  };
-  auto verify = [=]() {
-    auto erspan =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
-    EXPECT_EQ(erspan, nullptr);
-
-    auto span = this->getProgrammedState()->getMirrors()->getMirrorIf(kSpan);
-    utility::verifyResolvedMirror(this->getHwSwitch(), span);
-    utility::verifyAclMirrorDestination(this->getHwSwitch(), kSpan);
-  };
-  if (this->skipMirrorTest()) {
-    return;
-  }
-  this->verifyAcrossWarmBoots(setup, verify);
-}
-
-TYPED_TEST(HwMirrorTest, RemoveAclMirror) {
-  auto setup = [=]() {
-    auto params = this->testParams();
-    auto cfg = this->initialConfig();
-    cfg.mirrors()->push_back(this->getErspanMirror());
-    cfg::AclEntry acl;
-    acl.name() = "acl0";
-    acl.dstIp() = "192.168.0.0/16";
-    this->addAclMirror(kErspan, acl, cfg);
-    this->applyNewConfig(cfg);
-
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
-    auto newMirror = std::make_shared<Mirror>(
-        mirror->getID(), mirror->getEgressPort(), mirror->getDestinationIp());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[1]));
-    newMirror->setMirrorTunnel(MirrorTunnel(
-        params.ipAddrs[2],
-        params.ipAddrs[3],
-        params.macAddrs[2],
-        params.macAddrs[3]));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
-
-    for (auto& match2Action : *cfg.dataPlaneTrafficPolicy()->matchToAction()) {
-      if (*match2Action.matcher() == "acl0") {
-        match2Action.action()->ingressMirror().reset();
-        match2Action.action()->egressMirror().reset();
-      }
-    }
-    this->applyNewConfig(cfg);
-  };
-  auto verify = [=]() {
-    auto mirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
-    utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
-    utility::verifyNoAclMirrorDestination(this->getHwSwitch(), kErspan);
-  };
-  if (this->skipMirrorTest()) {
+  if (this->skipMirrorTest() || this->skipSflowTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
@@ -1084,6 +569,9 @@ TYPED_TEST(HwMirrorTest, RemoveAclMirror) {
 
 TYPED_TEST(HwMirrorTest, HwMirrorLimitExceeded) {
   if (this->skipMirrorTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto cfg = this->initialConfig();
@@ -1103,7 +591,7 @@ TYPED_TEST(HwMirrorTest, HwMirrorLimitExceeded) {
 }
 
 TYPED_TEST(HwMirrorTest, SampleOnePort) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     /* sampling one port and send traffic to sflow mirror */
@@ -1115,28 +603,26 @@ TYPED_TEST(HwMirrorTest, SampleOnePort) {
     this->applyNewConfig(cfg);
 
     // resolve mirror
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kSflow);
+    auto mirrors = this->getProgrammedState()->getMirrors();
+    auto mirror = mirrors->getNodeIf(kSflow);
     auto newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         mirror->getDestinationIp(),
         mirror->getSrcIp(),
         mirror->getTunnelUdpPorts());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
+    newMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[0]));
     newMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1],
         newMirror->getTunnelUdpPorts().value()));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
   };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSflow);
+  auto verify = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kSflow);
     utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
     std::vector<uint64_t> destinations;
     utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
@@ -1148,6 +634,9 @@ TYPED_TEST(HwMirrorTest, SampleOnePort) {
         destinations[0]);
   };
   if (this->skipMirrorTest() || this->skipSflowTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
@@ -1156,7 +645,7 @@ TYPED_TEST(HwMirrorTest, SampleOnePort) {
 TYPED_TEST(HwMirrorTest, SampleAllPorts) {
   /* Setup sample destination to mirror for all ports, and mirror only one port
   this will ensure all port traffic is sampled and sent to that mirror */
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     /* sampling all ports and send traffic to sflow mirror */
@@ -1169,28 +658,26 @@ TYPED_TEST(HwMirrorTest, SampleAllPorts) {
     }
     this->applyNewConfig(cfg);
     // resolve mirror
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kSflow);
+    auto mirrors = this->getProgrammedState()->getMirrors();
+    auto mirror = mirrors->getNodeIf(kSflow);
     auto newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         mirror->getDestinationIp(),
         mirror->getSrcIp(),
         mirror->getTunnelUdpPorts());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
+    newMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[0]));
     newMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1],
         newMirror->getTunnelUdpPorts().value()));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
   };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSflow);
+  auto verify = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kSflow);
     utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
     std::vector<uint64_t> destinations;
     utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
@@ -1204,13 +691,16 @@ TYPED_TEST(HwMirrorTest, SampleAllPorts) {
     }
   };
   if (this->skipMirrorTest() || this->skipSflowTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, SflowMirrorWithErspanMirror) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     cfg.mirrors()->push_back(this->getSflowMirror());
@@ -1228,46 +718,50 @@ TYPED_TEST(HwMirrorTest, SflowMirrorWithErspanMirror) {
     portCfg->egressMirror() = *cfg.mirrors()[1].name();
     this->applyNewConfig(cfg);
     // resolve both mirror
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    for (auto iter : *mirrors) {
-      auto mirror = iter.second;
-      auto newMirror = mirror->getTunnelUdpPorts()
-          ? std::make_shared<Mirror>(
-                mirror->getID(),
-                mirror->getEgressPort(),
-                mirror->getDestinationIp(),
-                mirror->getSrcIp(),
-                mirror->getTunnelUdpPorts())
-          : std::make_shared<Mirror>(
-                mirror->getID(),
-                mirror->getEgressPort(),
-                mirror->getDestinationIp(),
-                mirror->getSrcIp());
-      newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
-      newMirror->setMirrorTunnel(
-          newMirror->getTunnelUdpPorts()
-              ? MirrorTunnel(
-                    params.ipAddrs[0],
-                    params.ipAddrs[1],
-                    params.macAddrs[0],
-                    params.macAddrs[1],
-                    newMirror->getTunnelUdpPorts().value())
-              : MirrorTunnel(
-                    params.ipAddrs[0],
-                    params.ipAddrs[1],
-                    params.macAddrs[0],
-                    params.macAddrs[1]));
-      mirrors->updateNode(newMirror);
-    }
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
-  };
-  auto verify = [=]() {
     auto mirrors = this->getProgrammedState()->getMirrors();
-    for (auto iter : std::as_const(*mirrors)) {
-      auto mirror = iter.second;
-      utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
+    std::vector<std::shared_ptr<Mirror>> updatedMirrors;
+    for (auto mniter = mirrors->cbegin(); mniter != mirrors->cend(); ++mniter) {
+      for (auto iter : std::as_const(*mniter->second)) {
+        auto mirror = iter.second;
+        auto newMirror = mirror->getTunnelUdpPorts()
+            ? std::make_shared<Mirror>(
+                  mirror->getID(),
+                  mirror->getEgressPortDesc(),
+                  mirror->getDestinationIp(),
+                  mirror->getSrcIp(),
+                  mirror->getTunnelUdpPorts())
+            : std::make_shared<Mirror>(
+                  mirror->getID(),
+                  mirror->getEgressPortDesc(),
+                  mirror->getDestinationIp(),
+                  mirror->getSrcIp());
+        newMirror->setEgressPortDesc(
+            PortDescriptor(this->masterLogicalPortIds()[0]));
+        newMirror->setMirrorTunnel(
+            newMirror->getTunnelUdpPorts()
+                ? MirrorTunnel(
+                      params.ipAddrs[0],
+                      params.ipAddrs[1],
+                      params.macAddrs[0],
+                      params.macAddrs[1],
+                      newMirror->getTunnelUdpPorts().value())
+                : MirrorTunnel(
+                      params.ipAddrs[0],
+                      params.ipAddrs[1],
+                      params.macAddrs[0],
+                      params.macAddrs[1]));
+        updatedMirrors.push_back(newMirror);
+      }
+    }
+    this->updateMirrors(updatedMirrors);
+  };
+  auto verify = [=, this]() {
+    for (auto mniter :
+         std::as_const(*this->getProgrammedState()->getMirrors())) {
+      for (auto iter : std::as_const(*mniter.second)) {
+        auto mirror = iter.second;
+        utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
+      }
     }
     std::vector<uint64_t> destinations;
     utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
@@ -1301,13 +795,16 @@ TYPED_TEST(HwMirrorTest, SflowMirrorWithErspanMirror) {
         erspan);
   };
   if (this->skipMirrorTest() || this->skipSflowTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, SflowMirrorWithErspanMirrorOnePortSflow) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     cfg.mirrors()->push_back(this->getSflowMirror());
@@ -1325,40 +822,42 @@ TYPED_TEST(HwMirrorTest, SflowMirrorWithErspanMirrorOnePortSflow) {
     portCfg->egressMirror() = *cfg.mirrors()[1].name();
     this->applyNewConfig(cfg);
     // resolve both mirror
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    for (auto iter : *mirrors) {
-      auto mirror = iter.second;
-      auto newMirror = mirror->getTunnelUdpPorts()
-          ? std::make_shared<Mirror>(
-                mirror->getID(),
-                mirror->getEgressPort(),
-                mirror->getDestinationIp(),
-                mirror->getSrcIp(),
-                mirror->getTunnelUdpPorts())
-          : std::make_shared<Mirror>(
-                mirror->getID(),
-                mirror->getEgressPort(),
-                mirror->getDestinationIp(),
-                mirror->getSrcIp());
-      newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
-      newMirror->setMirrorTunnel(
-          newMirror->getTunnelUdpPorts()
-              ? MirrorTunnel(
-                    params.ipAddrs[0],
-                    params.ipAddrs[1],
-                    params.macAddrs[0],
-                    params.macAddrs[1],
-                    newMirror->getTunnelUdpPorts().value())
-              : MirrorTunnel(
-                    params.ipAddrs[0],
-                    params.ipAddrs[1],
-                    params.macAddrs[0],
-                    params.macAddrs[1]));
-      mirrors->updateNode(newMirror);
+    auto mirrors = this->getProgrammedState()->getMirrors();
+    std::vector<std::shared_ptr<Mirror>> updatedMirrors;
+    for (auto mniter = mirrors->cbegin(); mniter != mirrors->cend(); ++mniter) {
+      for (auto iter : std::as_const(*mniter->second)) {
+        auto mirror = iter.second;
+        auto newMirror = mirror->getTunnelUdpPorts()
+            ? std::make_shared<Mirror>(
+                  mirror->getID(),
+                  mirror->getEgressPortDesc(),
+                  mirror->getDestinationIp(),
+                  mirror->getSrcIp(),
+                  mirror->getTunnelUdpPorts())
+            : std::make_shared<Mirror>(
+                  mirror->getID(),
+                  mirror->getEgressPortDesc(),
+                  mirror->getDestinationIp(),
+                  mirror->getSrcIp());
+        newMirror->setEgressPortDesc(
+            PortDescriptor(this->masterLogicalPortIds()[0]));
+        newMirror->setMirrorTunnel(
+            newMirror->getTunnelUdpPorts()
+                ? MirrorTunnel(
+                      params.ipAddrs[0],
+                      params.ipAddrs[1],
+                      params.macAddrs[0],
+                      params.macAddrs[1],
+                      newMirror->getTunnelUdpPorts().value())
+                : MirrorTunnel(
+                      params.ipAddrs[0],
+                      params.ipAddrs[1],
+                      params.macAddrs[0],
+                      params.macAddrs[1]));
+        updatedMirrors.push_back(std::move(newMirror));
+      }
     }
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirrors(updatedMirrors);
 
     portCfg = utility::findCfgPort(cfg, this->masterLogicalPortIds()[1]);
     portCfg->sampleDest() = cfg::SampleDestination::CPU;
@@ -1366,11 +865,13 @@ TYPED_TEST(HwMirrorTest, SflowMirrorWithErspanMirrorOnePortSflow) {
     portCfg->ingressMirror().reset();
     this->applyNewConfig(cfg);
   };
-  auto verify = [=]() {
-    auto mirrors = this->getProgrammedState()->getMirrors();
-    for (auto iter : std::as_const(*mirrors)) {
-      auto mirror = iter.second;
-      utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
+  auto verify = [=, this]() {
+    for (auto mniter :
+         std::as_const(*this->getProgrammedState()->getMirrors())) {
+      for (auto iter : std::as_const(*mniter.second)) {
+        auto mirror = iter.second;
+        utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
+      }
     }
     std::vector<uint64_t> destinations;
     utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
@@ -1404,13 +905,16 @@ TYPED_TEST(HwMirrorTest, SflowMirrorWithErspanMirrorOnePortSflow) {
         erspan);
   };
   if (this->skipMirrorTest() || this->skipSflowTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, SflowMirrorWithErspanMirrorNoPortSflow) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     cfg.mirrors()->push_back(this->getSflowMirror());
@@ -1428,41 +932,44 @@ TYPED_TEST(HwMirrorTest, SflowMirrorWithErspanMirrorNoPortSflow) {
     portCfg->egressMirror() = *cfg.mirrors()[1].name();
     this->applyNewConfig(cfg);
     // resolve both mirror
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    for (auto iter : *mirrors) {
-      auto mirror = iter.second;
-      auto newMirror = mirror->getTunnelUdpPorts()
-          ? std::make_shared<Mirror>(
-                mirror->getID(),
-                mirror->getEgressPort(),
-                mirror->getDestinationIp(),
-                mirror->getSrcIp(),
-                mirror->getTunnelUdpPorts())
-          : std::make_shared<Mirror>(
-                mirror->getID(),
-                mirror->getEgressPort(),
-                mirror->getDestinationIp(),
-                mirror->getSrcIp());
-      newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
-      newMirror->setMirrorTunnel(
-          newMirror->getTunnelUdpPorts()
-              ? MirrorTunnel(
-                    params.ipAddrs[0],
-                    params.ipAddrs[1],
-                    params.macAddrs[0],
-                    params.macAddrs[1],
-                    newMirror->getTunnelUdpPorts().value())
-              : MirrorTunnel(
-                    params.ipAddrs[0],
-                    params.ipAddrs[1],
-                    params.macAddrs[0],
-                    params.macAddrs[1]));
-      mirrors->updateNode(newMirror);
-    }
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    auto mirrors = this->getProgrammedState()->getMirrors();
+    std::vector<std::shared_ptr<Mirror>> updatedMirrors;
+    for (auto mniter = mirrors->cbegin(); mniter != mirrors->cend(); ++mniter) {
+      for (auto iter : std::as_const(*mniter->second)) {
+        auto mirror = iter.second;
+        auto newMirror = mirror->getTunnelUdpPorts()
+            ? std::make_shared<Mirror>(
+                  mirror->getID(),
+                  mirror->getEgressPortDesc(),
+                  mirror->getDestinationIp(),
+                  mirror->getSrcIp(),
+                  mirror->getTunnelUdpPorts())
+            : std::make_shared<Mirror>(
+                  mirror->getID(),
+                  mirror->getEgressPortDesc(),
+                  mirror->getDestinationIp(),
+                  mirror->getSrcIp());
+        newMirror->setEgressPortDesc(
+            PortDescriptor(this->masterLogicalPortIds()[0]));
 
+        newMirror->setMirrorTunnel(
+            newMirror->getTunnelUdpPorts()
+                ? MirrorTunnel(
+                      params.ipAddrs[0],
+                      params.ipAddrs[1],
+                      params.macAddrs[0],
+                      params.macAddrs[1],
+                      newMirror->getTunnelUdpPorts().value())
+                : MirrorTunnel(
+                      params.ipAddrs[0],
+                      params.ipAddrs[1],
+                      params.macAddrs[0],
+                      params.macAddrs[1]));
+        updatedMirrors.push_back(std::move(newMirror));
+      }
+    }
+    XLOG(INFO) << " UPDATING MIRRORS";
+    this->updateMirrors(updatedMirrors);
     for (auto i = 0; i < 2; i++) {
       auto portId = this->masterLogicalPortIds()[i];
       auto portConfig = utility::findCfgPort(cfg, portId);
@@ -1472,11 +979,13 @@ TYPED_TEST(HwMirrorTest, SflowMirrorWithErspanMirrorNoPortSflow) {
     }
     this->applyNewConfig(cfg);
   };
-  auto verify = [=]() {
-    auto mirrors = this->getProgrammedState()->getMirrors();
-    for (auto iter : std::as_const(*mirrors)) {
-      auto mirror = iter.second;
-      utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
+  auto verify = [=, this]() {
+    for (auto mniter :
+         std::as_const(*this->getProgrammedState()->getMirrors())) {
+      for (auto iter : std::as_const(*mniter.second)) {
+        auto mirror = iter.second;
+        utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
+      }
     }
     std::vector<uint64_t> destinations;
     utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
@@ -1508,13 +1017,16 @@ TYPED_TEST(HwMirrorTest, SflowMirrorWithErspanMirrorNoPortSflow) {
         erspan);
   };
   if (this->skipMirrorTest() || this->skipSflowTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, SampleAllPortsMirrorUnresolved) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     /* sampling all ports and send traffic to sflow mirror */
@@ -1527,43 +1039,38 @@ TYPED_TEST(HwMirrorTest, SampleAllPortsMirrorUnresolved) {
     }
     this->applyNewConfig(cfg);
     // resolve mirror
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kSflow);
+    auto mirrors = this->getProgrammedState()->getMirrors();
+    auto mirror = mirrors->getNodeIf(kSflow);
     auto newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         mirror->getDestinationIp(),
         mirror->getSrcIp(),
         mirror->getTunnelUdpPorts());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
+    newMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[0]));
     newMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1],
         newMirror->getTunnelUdpPorts().value()));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
 
     /* unresolve */
-    mirrors = this->getProgrammedState()->getMirrors()->clone();
-    mirror = mirrors->getMirrorIf(kSflow);
+    mirrors = this->getProgrammedState()->getMirrors();
+    mirror = mirrors->getNodeIf(kSflow);
     newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         mirror->getDestinationIp(),
         mirror->getSrcIp(),
         mirror->getTunnelUdpPorts());
 
-    mirrors->updateNode(newMirror);
-    newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
   };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSflow);
+  auto verify = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kSflow);
     utility::verifyUnResolvedMirror(this->getHwSwitch(), mirror);
     std::vector<uint64_t> destinations;
     utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
@@ -1578,13 +1085,16 @@ TYPED_TEST(HwMirrorTest, SampleAllPortsMirrorUnresolved) {
     }
   };
   if (this->skipMirrorTest() || this->skipSflowTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, SampleAllPortsMirrorUnresolvedResolved) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     /* sampling all ports and send traffic to sflow mirror */
@@ -1597,47 +1107,42 @@ TYPED_TEST(HwMirrorTest, SampleAllPortsMirrorUnresolvedResolved) {
     }
     this->applyNewConfig(cfg);
     // resolve mirror
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kSflow);
+    auto mirrors = this->getProgrammedState()->getMirrors();
+    auto mirror = mirrors->getNodeIf(kSflow);
     auto newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         mirror->getDestinationIp(),
         mirror->getSrcIp(),
         mirror->getTunnelUdpPorts());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
+    newMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[0]));
     newMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1],
         newMirror->getTunnelUdpPorts().value()));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
 
     /* unresolve */
-    mirrors = this->getProgrammedState()->getMirrors()->clone();
-    mirror = mirrors->getMirrorIf(kSflow);
+    mirrors = this->getProgrammedState()->getMirrors();
+    mirror = mirrors->getNodeIf(kSflow);
     newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         mirror->getDestinationIp(),
         mirror->getSrcIp(),
         mirror->getTunnelUdpPorts());
 
-    mirrors->updateNode(newMirror);
-    newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
 
     /* reresolve */
-    mirrors = this->getProgrammedState()->getMirrors()->clone();
-    mirror = mirrors->getMirrorIf(kSflow);
+    mirrors = this->getProgrammedState()->getMirrors();
+    mirror = mirrors->getNodeIf(kSflow);
     newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         mirror->getDestinationIp(),
         mirror->getSrcIp(),
         mirror->getTunnelUdpPorts());
@@ -1647,13 +1152,10 @@ TYPED_TEST(HwMirrorTest, SampleAllPortsMirrorUnresolvedResolved) {
         params.macAddrs[0],
         params.macAddrs[1],
         newMirror->getTunnelUdpPorts().value()));
-    mirrors->updateNode(newMirror);
-    newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
   };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSflow);
+  auto verify = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kSflow);
     utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
     std::vector<uint64_t> destinations;
     utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
@@ -1667,13 +1169,16 @@ TYPED_TEST(HwMirrorTest, SampleAllPortsMirrorUnresolvedResolved) {
     }
   };
   if (this->skipMirrorTest() || this->skipSflowTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, SampleAllPortsMirrorUpdate) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     /* sampling all ports and send traffic to sflow mirror */
@@ -1686,28 +1191,26 @@ TYPED_TEST(HwMirrorTest, SampleAllPortsMirrorUpdate) {
     }
     this->applyNewConfig(cfg);
     // resolve mirror
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kSflow);
+    auto mirrors = this->getProgrammedState()->getMirrors();
+    auto mirror = mirrors->getNodeIf(kSflow);
     auto newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         mirror->getDestinationIp(),
         mirror->getSrcIp(),
         mirror->getTunnelUdpPorts());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
+    newMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[0]));
     newMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1],
         newMirror->getTunnelUdpPorts().value()));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
   };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSflow);
+  auto verify = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kSflow);
     utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
     std::vector<uint64_t> destinations;
     utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
@@ -1720,7 +1223,7 @@ TYPED_TEST(HwMirrorTest, SampleAllPortsMirrorUpdate) {
           destinations[0]);
     }
   };
-  auto setupPostWb = [=] {
+  auto setupPostWb = [=, this] {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     cfg.mirrors()->push_back(this->getSflowMirror());
@@ -1739,34 +1242,35 @@ TYPED_TEST(HwMirrorTest, SampleAllPortsMirrorUpdate) {
     }
     this->applyNewConfig(cfg);
     // resolve mirror
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kSflow);
+    auto mirrors = this->getProgrammedState()->getMirrors();
+    auto mirror = mirrors->getNodeIf(kSflow);
     auto newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         mirror->getDestinationIp(),
         mirror->getSrcIp(),
         mirror->getTunnelUdpPorts());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
+    newMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[0]));
     newMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1],
         newMirror->getTunnelUdpPorts().value()));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
   };
   if (this->skipMirrorTest() || this->skipSflowTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify, setupPostWb, verify);
 }
 
 TYPED_TEST(HwMirrorTest, RemoveSampleAllPorts) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     /* sampling all ports and send traffic to sflow mirror */
@@ -1779,32 +1283,30 @@ TYPED_TEST(HwMirrorTest, RemoveSampleAllPorts) {
     }
     this->applyNewConfig(cfg);
     // resolve mirror
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kSflow);
+    auto mirrors = this->getProgrammedState()->getMirrors();
+    auto mirror = mirrors->getNodeIf(kSflow);
     auto newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         mirror->getDestinationIp(),
         mirror->getSrcIp(),
         mirror->getTunnelUdpPorts());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
+    newMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[0]));
     newMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1],
         newMirror->getTunnelUdpPorts().value()));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
 
     /* reset all config */
     cfg = this->initialConfig();
     this->applyNewConfig(cfg);
   };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSflow);
+  auto verify = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kSflow);
     EXPECT_EQ(mirror, nullptr);
     std::vector<uint64_t> destinations;
     utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
@@ -1817,13 +1319,16 @@ TYPED_TEST(HwMirrorTest, RemoveSampleAllPorts) {
     }
   };
   if (this->skipMirrorTest() || this->skipSflowTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, RemoveSampleAllPortsAfterWarmBoot) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     /* sampling all ports and send traffic to sflow mirror */
@@ -1836,28 +1341,26 @@ TYPED_TEST(HwMirrorTest, RemoveSampleAllPortsAfterWarmBoot) {
     }
     this->applyNewConfig(cfg);
     // resolve mirror
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kSflow);
+    auto mirrors = this->getProgrammedState()->getMirrors();
+    auto mirror = mirrors->getNodeIf(kSflow);
     auto newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         mirror->getDestinationIp(),
         mirror->getSrcIp(),
         mirror->getTunnelUdpPorts());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
+    newMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[0]));
     newMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1],
         newMirror->getTunnelUdpPorts().value()));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
   };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSflow);
+  auto verify = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kSflow);
     utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
     std::vector<uint64_t> destinations;
     utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
@@ -1870,12 +1373,12 @@ TYPED_TEST(HwMirrorTest, RemoveSampleAllPortsAfterWarmBoot) {
           destinations[0]);
     }
   };
-  auto setupPostWb = [=]() {
+  auto setupPostWb = [=, this]() {
     /* reset all config */
     this->applyNewConfig(this->initialConfig());
   };
-  auto verifyPostWb = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSflow);
+  auto verifyPostWb = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kSflow);
     EXPECT_EQ(mirror, nullptr);
     std::vector<uint64_t> destinations;
     utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
@@ -1888,6 +1391,9 @@ TYPED_TEST(HwMirrorTest, RemoveSampleAllPortsAfterWarmBoot) {
     }
   };
   if (this->skipMirrorTest() || this->skipSflowTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify, setupPostWb, verifyPostWb);
@@ -1896,7 +1402,7 @@ TYPED_TEST(HwMirrorTest, RemoveSampleAllPortsAfterWarmBoot) {
 TYPED_TEST(HwMirrorTest, SampleAllPortsReloadConfig) {
   /* Setup sample destination to mirror for all ports, and mirror only one port
   this will ensure all port traffic is sampled and sent to that mirror */
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
     /* sampling all ports and send traffic to sflow mirror */
@@ -1909,31 +1415,29 @@ TYPED_TEST(HwMirrorTest, SampleAllPortsReloadConfig) {
     }
     this->applyNewConfig(cfg);
     // resolve mirror
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kSflow);
+    auto mirrors = this->getProgrammedState()->getMirrors();
+    auto mirror = mirrors->getNodeIf(kSflow);
     auto newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         mirror->getDestinationIp(),
         mirror->getSrcIp(),
         mirror->getTunnelUdpPorts());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
+    newMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[0]));
     newMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1],
         newMirror->getTunnelUdpPorts().value()));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
 
     // reload config and verify mirror stays resolved
     this->applyNewConfig(cfg);
   };
-  auto verify = [=]() {
-    auto mirror = this->getProgrammedState()->getMirrors()->getMirrorIf(kSflow);
+  auto verify = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kSflow);
     utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
     std::vector<uint64_t> destinations;
     utility::getAllMirrorDestinations(this->getHwSwitch(), destinations);
@@ -1947,13 +1451,16 @@ TYPED_TEST(HwMirrorTest, SampleAllPortsReloadConfig) {
     }
   };
   if (this->skipMirrorTest() || this->skipSflowTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);
 }
 
 TYPED_TEST(HwMirrorTest, ResolvedErspanMirrorOnTrunk) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     auto params = this->testParams();
     auto cfg = this->initialConfig();
 
@@ -1962,30 +1469,30 @@ TYPED_TEST(HwMirrorTest, ResolvedErspanMirrorOnTrunk) {
     auto state = this->applyNewConfig(cfg);
     this->applyNewState(utility::enableTrunkPorts(state));
 
-    auto mirrors = this->getProgrammedState()->getMirrors()->clone();
-    auto mirror = mirrors->getMirrorIf(kErspan);
+    auto mirrors = this->getProgrammedState()->getMirrors();
+    auto mirror = mirrors->getNodeIf(kErspan);
     auto newMirror = std::make_shared<Mirror>(
         mirror->getID(),
-        mirror->getEgressPort(),
+        mirror->getEgressPortDesc(),
         mirror->getDestinationIp(),
         mirror->getSrcIp());
-    newMirror->setEgressPort(PortID(this->masterLogicalPortIds()[0]));
+    newMirror->setEgressPortDesc(
+        PortDescriptor(this->masterLogicalPortIds()[0]));
     newMirror->setMirrorTunnel(MirrorTunnel(
         params.ipAddrs[0],
         params.ipAddrs[1],
         params.macAddrs[0],
         params.macAddrs[1]));
-    mirrors->updateNode(newMirror);
-    auto newState = this->getProgrammedState()->clone();
-    newState->resetMirrors(mirrors);
-    this->applyNewState(newState);
+    this->updateMirror(newMirror);
   };
-  auto verify = [=]() {
-    auto mirror =
-        this->getProgrammedState()->getMirrors()->getMirrorIf(kErspan);
+  auto verify = [=, this]() {
+    auto mirror = this->getProgrammedState()->getMirrors()->getNodeIf(kErspan);
     utility::verifyResolvedMirror(this->getHwSwitch(), mirror);
   };
   if (this->skipMirrorTest()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   this->verifyAcrossWarmBoots(setup, verify);

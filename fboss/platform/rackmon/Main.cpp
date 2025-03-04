@@ -14,7 +14,7 @@ FOLLY_INIT_LOGGING_CONFIG("fboss=DBG2; default:async=true");
 DEFINE_int32(port, 5973, "Port for the thrift service");
 
 int main(int argc, char** argv) {
-  helpers::init(argc, argv);
+  helpers::init(&argc, &argv);
   fb303::registerFollyLoggingOptionHandlers();
 
   auto server = std::make_shared<apache::thrift::ThriftServer>();
@@ -23,7 +23,7 @@ int main(int argc, char** argv) {
   server->setPort(FLAGS_port);
   server->setInterface(handler);
   server->setAllowPlaintextOnLoopback(true);
-  helpers::runThriftService(server, handler, "DataCorralService", FLAGS_port);
+  helpers::runThriftService(server, handler, "Rackmon", FLAGS_port);
 
   return 0;
 }

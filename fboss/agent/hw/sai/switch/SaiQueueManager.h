@@ -17,6 +17,7 @@
 #include "fboss/agent/hw/sai/switch/SaiBufferManager.h"
 #include "fboss/agent/hw/sai/switch/SaiSchedulerManager.h"
 #include "fboss/agent/hw/sai/switch/SaiWredManager.h"
+#include "fboss/agent/state/Port.h"
 #include "fboss/agent/state/PortQueue.h"
 #include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/types.h"
@@ -48,6 +49,12 @@ struct SaiQueueHandle {
 using SaiQueueHandles =
     folly::F14FastMap<SaiQueueConfig, std::unique_ptr<SaiQueueHandle>>;
 
+bool fillQueueExtensionStats(
+    const uint8_t queueId,
+    const sai_stat_id_t& counterId,
+    const uint64_t& counterValue,
+    HwPortStats& hwPortStats);
+
 class SaiQueueManager {
  public:
   SaiQueueManager(
@@ -55,11 +62,32 @@ class SaiQueueManager {
       SaiManagerTable* managerTable,
       const SaiPlatform* platform);
   SaiQueueHandles loadQueues(const std::vector<QueueSaiId>& queueSaiIds);
-  void changeQueue(SaiQueueHandle* queueHandle, const PortQueue& newPortQueue);
+  void changeQueue(
+      SaiQueueHandle* queueHandle,
+      const PortQueue& newPortQueue,
+      const Port* swPort = nullptr,
+      const std::optional<cfg::PortType> portType = std::nullopt);
+  void changeQueueBufferProfile(
+      SaiQueueHandle* queueHandle,
+      const PortQueue& newPortQueue);
+  void changeQueueEcnWred(
+      SaiQueueHandle* queueHandle,
+      const PortQueue& newPortQueue);
+  void changeQueueScheduler(
+      SaiQueueHandle* queueHandle,
+      const PortQueue& newPortQueue,
+      const Port* swPort);
+  void changeQueueDeadlockEnable(
+      SaiQueueHandle* queueHandle,
+      const Port* swPort);
+  void queuePfcDeadlockDetectionRecoveryEnable(
+      SaiQueueHandle* queueHandle,
+      const bool portPfcWdEnabled);
   void ensurePortQueueConfig(
       PortSaiId portSaiId,
       const SaiQueueHandles& queueHandles,
-      const QueueConfig& queues);
+      const QueueConfig& queues,
+      const facebook::fboss::Port* swPort = nullptr);
   void updateStats(
       const std::vector<SaiQueueHandle*>& queues,
       HwPortStats& stats,
@@ -67,18 +95,30 @@ class SaiQueueManager {
   void updateStats(
       const std::vector<SaiQueueHandle*>& queues,
       HwSysPortStats& stats,
-      bool updateWatermarks);
+      bool updateWatermarks,
+      bool updateVoqStats);
   void getStats(SaiQueueHandles& queueHandles, HwPortStats& hwPortStats);
+  void clearStats(const std::vector<SaiQueueHandle*>& queueHandles);
   QueueConfig getQueueSettings(const SaiQueueHandles& queueHandles) const;
+  std::optional<std::tuple<uint8_t, PortSaiId>> getQueueIndexAndPortSaiId(
+      const QueueSaiId& queueSaiId);
 
  private:
+  bool isVoqSwitchAndQueueHandleNotForVoq(SaiQueueHandle* queueHandle);
   const std::vector<sai_stat_id_t>& supportedNonWatermarkCounterIdsRead(
-      int queueType) const;
+      int queueType,
+      SaiQueueHandle* queueHandle) const;
+  const std::vector<sai_stat_id_t>&
+  supportedVoqWatermarkCounterIdsReadAndClear() const;
 
   const std::vector<sai_stat_id_t>& egressQueueNonWatermarkCounterIdsRead(
       int queueType) const;
 
   const std::vector<sai_stat_id_t>& voqNonWatermarkCounterIdsRead(
+      int queueType,
+      SaiQueueHandle* queueHandle) const;
+
+  const std::vector<sai_stat_id_t>& supportedWatermarkCounterIdsReadAndClear(
       int queueType) const;
   SaiStore* saiStore_;
   SaiManagerTable* managerTable_;

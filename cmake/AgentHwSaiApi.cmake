@@ -34,23 +34,23 @@ add_library(sai_fake_extensions
 set_target_properties(sai_fake_extensions PROPERTIES LINKER_LANGUAGE C)
 
 set(SAI_API_SRC
-  fboss/agent/hw/sai/api/DebugCounterApi.cpp
   fboss/agent/hw/sai/api/FdbApi.cpp
   fboss/agent/hw/sai/api/HashApi.cpp
   fboss/agent/hw/sai/api/MplsApi.cpp
   fboss/agent/hw/sai/api/NeighborApi.cpp
   fboss/agent/hw/sai/api/NextHopGroupApi.cpp
   fboss/agent/hw/sai/api/QosMapApi.cpp
+  fboss/agent/hw/sai/api/PortApi.cpp
   fboss/agent/hw/sai/api/RouteApi.cpp
   fboss/agent/hw/sai/api/SaiApiLock.cpp
   fboss/agent/hw/sai/api/SaiApiTable.cpp
   fboss/agent/hw/sai/api/SwitchApi.cpp
+  fboss/agent/hw/sai/api/DebugCounterApi.cpp
   fboss/agent/hw/sai/api/Types.cpp
   fboss/agent/hw/sai/api/AclApi.h
   fboss/agent/hw/sai/api/BridgeApi.h
   fboss/agent/hw/sai/api/FdbApi.h
   fboss/agent/hw/sai/api/HashApi.h
-  fboss/agent/hw/sai/api/HwWriteBehavior.cpp
   fboss/agent/hw/sai/api/HostifApi.h
   fboss/agent/hw/sai/api/LagApi.h
   fboss/agent/hw/sai/api/MirrorApi.h
@@ -73,12 +73,16 @@ set(SAI_API_SRC
   fboss/agent/hw/sai/api/SystemPortApi.h
   fboss/agent/hw/sai/api/SystemPortApi.cpp
   fboss/agent/hw/sai/api/TamApi.h
+  fboss/agent/hw/sai/api/TamEventAgingGroupApi.h
   fboss/agent/hw/sai/api/Traits.h
   fboss/agent/hw/sai/api/TunnelApi.h
   fboss/agent/hw/sai/api/Types.h
+  fboss/agent/hw/sai/api/UdfApi.h
+  fboss/agent/hw/sai/api/VendorSwitchApi.h
   fboss/agent/hw/sai/api/VirtualRouterApi.h
   fboss/agent/hw/sai/api/VlanApi.h
   fboss/agent/hw/sai/api/WredApi.h
+  fboss/agent/hw/sai/api/DebugCounterApi.h
 )
 
 if (SAI_TAJO_IMPL)
@@ -86,6 +90,11 @@ if (SAI_TAJO_IMPL)
     fboss/agent/hw/sai/api/tajo/PortApi.cpp
     fboss/agent/hw/sai/api/tajo/TamApi.cpp
     fboss/agent/hw/sai/api/tajo/SwitchApi.cpp
+    fboss/agent/hw/sai/api/tajo/DebugCounterApi.cpp
+    fboss/agent/hw/sai/api/tajo/BufferApi.cpp
+    fboss/agent/hw/sai/api/tajo/QueueApi.cpp
+    fboss/agent/hw/sai/api/tajo/MirrorApi.cpp
+    fboss/agent/hw/sai/api/tajo/SystemPortApi.cpp
   )
 
   find_path(SAI_IMPL_DIR NAMES lib/libsai_impl.a)
@@ -96,11 +105,32 @@ elseif (SAI_BRCM_IMPL)
     fboss/agent/hw/sai/api/bcm/PortApi.cpp
     fboss/agent/hw/sai/api/bcm/TamApi.cpp
     fboss/agent/hw/sai/api/bcm/SwitchApi.cpp
+    fboss/agent/hw/sai/api/bcm/DebugCounterApi.cpp
+    fboss/agent/hw/sai/api/bcm/BufferApi.cpp
+    fboss/agent/hw/sai/api/bcm/QueueApi.cpp
+    fboss/agent/hw/sai/api/bcm/MirrorApi.cpp
+    fboss/agent/hw/sai/api/bcm/SystemPortApi.cpp
   )
 
   find_path(SAI_IMPL_DIR NAMES lib/libsai_impl.a)
   include_directories(${SAI_IMPL_DIR})
   message(STATUS "Found SAI_INCLUDE_DIR: ${SAI_INCLUDE_DIR}")
+elseif (CHENAB_SAI_SDK)
+  list(APPEND SAI_API_SRC
+    fboss/agent/hw/sai/api/oss/PortApi.cpp
+    fboss/agent/hw/sai/api/oss/TamApi.cpp
+    fboss/agent/hw/sai/api/oss/SwitchApi.cpp
+    fboss/agent/hw/sai/api/oss/DebugCounterApi.cpp
+    fboss/agent/hw/sai/api/oss/BufferApi.cpp
+    fboss/agent/hw/sai/api/oss/QueueApi.cpp
+    fboss/agent/hw/sai/api/oss/MirrorApi.cpp
+    fboss/agent/hw/sai/api/oss/SystemPortApi.cpp
+  )
+
+  find_path(SAI_IMPL_DIR NAMES lib/libsai_impl.a)
+  include_directories(${SAI_IMPL_DIR})
+  message(STATUS "Found SAI_INCLUDE_DIR: ${SAI_INCLUDE_DIR}")
+
 else()
   list(APPEND SAI_API_SRC
     fboss/agent/hw/sai/api/fake/FakeSaiExtensions.cpp
@@ -113,6 +143,7 @@ set(SAI_API_DEPS
   fboss_error
   fboss_types
   function_call_time_reporter
+  hw_write_behavior
   switch_config_cpp2
   Folly::folly
 )

@@ -10,9 +10,7 @@
 #include "fboss/agent/platforms/wedge/WedgePlatform.h"
 
 #include <folly/Memory.h>
-#include <folly/logging/xlog.h>
 
-#include "fboss/agent/SwSwitch.h"
 #include "fboss/agent/SysError.h"
 #include "fboss/agent/hw/bcm/BcmAPI.h"
 #include "fboss/agent/hw/bcm/BcmConfig.h"
@@ -24,13 +22,9 @@
 #include "fboss/agent/platforms/wedge/WedgePort.h"
 #include "fboss/agent/platforms/wedge/WedgePortMapping.h"
 #include "fboss/agent/state/Port.h"
-#include "fboss/agent/state/SwitchState.h"
 #include "fboss/lib/platforms/PlatformProductInfo.h"
 #include "fboss/lib/usb/UsbError.h"
 #include "fboss/lib/usb/WedgeI2CBus.h"
-#include "fboss/qsfp_service/lib/QsfpCache.h"
-
-#include <future>
 
 DEFINE_string(
     fabric_location,
@@ -47,8 +41,10 @@ WedgePlatform::WedgePlatform(
     std::unique_ptr<PlatformProductInfo> productInfo,
     std::unique_ptr<PlatformMapping> platformMapping,
     folly::MacAddress localMac)
-    : BcmPlatform(std::move(productInfo), std::move(platformMapping), localMac),
-      qsfpCache_(std::make_unique<AutoInitQsfpCache>()) {}
+    : BcmPlatform(
+          std::move(productInfo),
+          std::move(platformMapping),
+          localMac) {}
 
 void WedgePlatform::initImpl(uint32_t hwFeaturesDesired) {
   if (getAsic()->isSupported(HwAsic::Feature::HSDK)) {
@@ -82,12 +78,7 @@ WedgePlatform::BcmPlatformPortMap WedgePlatform::getPlatformPortMap() {
   return mapping;
 }
 
-void WedgePlatform::stop() {
-  // destroying the cache will cause it to stop the QsfpCacheThread
-  qsfpCache_.reset();
-}
-
-void WedgePlatform::onHwInitialized(SwSwitch* sw) {
+void WedgePlatform::onHwInitialized(HwSwitchCallback* sw) {
   // could populate with initial ports here, but should get taken care
   // of through state changes sent to the stateUpdated method.
   initLEDs();
@@ -102,35 +93,20 @@ void WedgePlatform::onHwInitialized(SwSwitch* sw) {
     bool up = hw_->isPortUp(entry.first);
     entry.second->linkStatusChanged(up, true);
   }
-  sw->registerStateObserver(this, "WedgePlatform");
+  /*
+   * In multiswitch mode, the platform is part hw agent
+   * binary and has no access to swswitch. Skip state
+   * observer registration. The state updates will be
+   * propagated to platform as part of oper delta sync
+   * from sw agent to hw agent
+   */
+  if (sw) {
+    sw->registerStateObserver(this, "WedgePlatform");
+  }
 }
 
 void WedgePlatform::stateUpdated(const StateDelta& delta) {
   updatePorts(delta);
-  updateQsfpCache(delta);
-}
-
-void WedgePlatform::updateQsfpCache(const StateDelta& delta) {
-  QsfpCache::PortMapThrift changedPorts;
-  auto portsDelta = delta.getPortsDelta();
-  for (const auto& entry : portsDelta) {
-    auto newPort = entry.getNew();
-    if (newPort) {
-      auto platformPort = getPort(newPort->getID());
-      if (platformPort->supportsTransceiver()) {
-        changedPorts[newPort->getID()] = platformPort->toThrift(newPort);
-      }
-    }
-  }
-  qsfpCache_->portsChanged(changedPorts);
-  for (const auto& entry : portsDelta) {
-    auto newPort = entry.getNew();
-    if (newPort) {
-      // clear cached port profile config that depends on transceiver info
-      auto platformPort = getPort(newPort->getID());
-      platformPort->clearCachedProfileConfig();
-    }
-  }
 }
 
 void WedgePlatform::updatePorts(const StateDelta& delta) {
@@ -146,45 +122,14 @@ HwSwitch* WedgePlatform::getHwSwitch() const {
   return hw_.get();
 }
 
-string WedgePlatform::getVolatileStateDir() const {
-  return FLAGS_volatile_state_dir;
-}
-
-string WedgePlatform::getPersistentStateDir() const {
-  return FLAGS_persistent_state_dir;
-}
-
 void WedgePlatform::onUnitCreate(int unit) {
-  warmBootHelper_ = std::make_unique<BcmWarmBootHelper>(unit, getWarmBootDir());
+  warmBootHelper_ = std::make_unique<BcmWarmBootHelper>(
+      unit, getDirectoryUtil()->getWarmBootDir());
 }
 
 void WedgePlatform::onUnitAttach(int /*unit*/) {}
 
-void WedgePlatform::preWarmbootStateApplied() {
-  // Update QsfpCache with the existing ports
-  QsfpCache::PortMapThrift changedPorts;
-  for (const auto& entry : *portMapping_) {
-    // As some platform allows add/remove port at the first time applying the
-    // config, we should skip those ports which doesn't exist in hw.
-    auto bcmPortIf = hw_->getPortTable()->getBcmPortIf(entry.first);
-    if (!bcmPortIf) {
-      XLOG(WARNING) << "Port:" << entry.first << " is not in hw port table.";
-      continue;
-    }
-
-    if (entry.second->supportsTransceiver()) {
-      PortStatus s;
-      *s.enabled() = bcmPortIf->isEnabled();
-      *s.up() = bcmPortIf->isUp();
-      *s.speedMbps() = static_cast<int>(bcmPortIf->getSpeed());
-      s.transceiverIdx() = entry.second->getTransceiverMapping();
-      changedPorts[entry.first] = s;
-    }
-  }
-  XLOG(DBG2) << "[preWarmbootStateApplied]: Will update " << changedPorts.size()
-             << " ports to qsfp cache.";
-  qsfpCache_->portsChanged(changedPorts);
-}
+void WedgePlatform::preWarmbootStateApplied() {}
 
 std::unique_ptr<BaseWedgeI2CBus> WedgePlatform::getI2CBus() {
   return make_unique<WedgeI2CBus>();
@@ -192,7 +137,7 @@ std::unique_ptr<BaseWedgeI2CBus> WedgePlatform::getI2CBus() {
 
 TransceiverIdxThrift WedgePlatform::getPortMapping(
     PortID portId,
-    cfg::PortSpeed /* speed */) const {
+    cfg::PortProfileID /* profileID */) const {
   return getPort(portId)->getTransceiverMapping();
 }
 
@@ -228,4 +173,9 @@ std::string WedgePlatform::loadYamlConfig() {
   }
   throw FbossError("Failed to get bcm yaml config from agent config");
 }
+
+void WedgePlatform::stateChanged(const StateDelta& delta) {
+  updatePorts(delta);
+}
+
 } // namespace facebook::fboss

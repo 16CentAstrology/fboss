@@ -10,66 +10,19 @@
 #include "fboss/agent/state/Port.h"
 #include "folly/IPAddress.h"
 #include "folly/MacAddress.h"
-#include "folly/dynamic.h"
+#include "folly/json/dynamic.h"
 
 namespace facebook::fboss {
 
-namespace {
-constexpr auto kSrcIp = "srcIp";
-constexpr auto kDstIp = "dstIp";
-constexpr auto kSrcMac = "srcMac";
-constexpr auto kDstMac = "dstMac";
-constexpr auto kName = "name";
-constexpr auto kEgressPort = "egressPort";
-constexpr auto kDestinationIp = "destinationIp";
-constexpr auto kTunnel = "tunnel";
-constexpr auto kConfigHasEgressPort = "configHasEgressPort";
-constexpr auto kIsResolved = "isResolved";
-constexpr auto kDscp = "dscp";
-constexpr auto kUdpSrcPort = "udpSrcPort";
-constexpr auto kUdpDstPort = "udpDstPort";
-constexpr auto kTruncate = "truncate";
-constexpr auto kTtl = "ttl";
-} // namespace
-
-folly::dynamic MirrorTunnel::toFollyDynamic() const {
-  folly::dynamic tunnel = folly::dynamic::object;
-  tunnel[kSrcIp] = srcIp.str();
-  tunnel[kDstIp] = dstIp.str();
-  tunnel[kSrcMac] = srcMac.toString();
-  tunnel[kDstMac] = dstMac.toString();
-  if (udpPorts.has_value()) {
-    tunnel[kUdpSrcPort] = udpPorts.value().udpSrcPort;
-    tunnel[kUdpDstPort] = udpPorts.value().udpDstPort;
-  }
-  tunnel[kTtl] = ttl;
-  return tunnel;
-}
-
-MirrorTunnel MirrorTunnel::fromFollyDynamic(const folly::dynamic& json) {
-  auto tunnel = MirrorTunnel(
-      folly::IPAddress(json[kSrcIp].asString()),
-      folly::IPAddress(json[kDstIp].asString()),
-      folly::MacAddress(json[kSrcMac].asString()),
-      folly::MacAddress(json[kDstMac].asString()));
-
-  if (json.find(kUdpSrcPort) != json.items().end()) {
-    tunnel.udpPorts =
-        TunnelUdpPorts(json[kUdpSrcPort].asInt(), json[kUdpDstPort].asInt());
-    tunnel.greProtocol = 0;
-  }
-  tunnel.ttl = json.getDefault(kTtl, MirrorTunnel::kTTL).asInt();
-  return tunnel;
-}
-
 Mirror::Mirror(
     std::string name,
-    std::optional<PortID> egressPort,
+    std::optional<PortDescriptor> egressPortDesc,
     std::optional<folly::IPAddress> destinationIp,
     std::optional<folly::IPAddress> srcIp,
     std::optional<TunnelUdpPorts> udpPorts,
     uint8_t dscp,
-    bool truncate)
+    bool truncate,
+    std::optional<uint32_t> samplingRate)
     : ThriftStructNode<Mirror, state::MirrorFields>() {
   // span mirror is resolved as soon as it is created
   // erspan and sflow are resolved when tunnel is set
@@ -78,9 +31,13 @@ Mirror::Mirror(
   set<switch_state_tags::truncate>(truncate);
   set<switch_state_tags::configHasEgressPort>(false);
   set<switch_state_tags::isResolved>(false);
+  if (samplingRate.has_value()) {
+    set<switch_state_tags::samplingRate>(samplingRate.value());
+  }
 
-  if (egressPort) {
-    set<switch_state_tags::egressPort>(*egressPort);
+  if (egressPortDesc.has_value()) {
+    set<switch_state_tags::egressPortDesc>(egressPortDesc.value().toThrift());
+    set<switch_state_tags::egressPort>(egressPortDesc.value().phyPortID());
     set<switch_state_tags::configHasEgressPort>(true);
   }
   if (destinationIp) {
@@ -104,6 +61,13 @@ std::string Mirror::getID() const {
 std::optional<PortID> Mirror::getEgressPort() const {
   if (auto port = get<switch_state_tags::egressPort>()) {
     return PortID(port->cref());
+  }
+  return std::nullopt;
+}
+
+std::optional<PortDescriptor> Mirror::getEgressPortDesc() const {
+  if (auto portDesc = get<switch_state_tags::egressPortDesc>()) {
+    return PortDescriptor::fromThrift(portDesc->toThrift());
   }
   return std::nullopt;
 }
@@ -141,10 +105,35 @@ void Mirror::setEgressPort(PortID egressPort) {
   set<switch_state_tags::egressPort>(egressPort);
 }
 
+void Mirror::setEgressPortDesc(const PortDescriptor& egressPortDesc) {
+  set<switch_state_tags::egressPortDesc>(egressPortDesc.toThrift());
+}
+
+void Mirror::setDestinationMac(const folly::MacAddress& dstMac) {
+  auto tunnel = get<switch_state_tags::tunnel>();
+  if (tunnel) {
+    auto tunnelThrift = tunnel->toThrift();
+    tunnelThrift.dstMac() = dstMac.toString();
+    set<switch_state_tags::tunnel>(tunnelThrift);
+  }
+}
+
 void Mirror::setMirrorTunnel(const MirrorTunnel& tunnel) {
   set<switch_state_tags::tunnel>(tunnel.toThrift());
   // sflow or erspan mirror is resolved.
   markResolved();
+}
+
+void Mirror::setSwitchId(SwitchID switchId) {
+  set<switch_state_tags::switchId>(switchId);
+}
+
+SwitchID Mirror::getSwitchId() const {
+  return static_cast<SwitchID>(cref<ctrl_if_tags::switchId>()->toThrift());
+}
+
+void Mirror::setMirrorName(const std::string& name) {
+  set<switch_state_tags::name>(name);
 }
 
 bool Mirror::isResolved() const {
@@ -192,6 +181,13 @@ Mirror::Type Mirror::type() const {
   return Mirror::Type::SFLOW;
 }
 
-template class ThriftStructNode<Mirror, state::MirrorFields>;
+std::optional<uint32_t> Mirror::getSamplingRate() const {
+  if (auto samplingRate = get<switch_state_tags::samplingRate>()) {
+    return samplingRate->cref();
+  }
+  return std::nullopt;
+}
+
+template struct ThriftStructNode<Mirror, state::MirrorFields>;
 
 } // namespace facebook::fboss

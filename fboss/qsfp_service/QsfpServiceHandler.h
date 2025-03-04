@@ -7,10 +7,12 @@
 
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_types.h"
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
+#include "fboss/fsdb/client/FsdbPubSubManager.h"
 #include "fboss/lib/phy/gen-cpp2/phy_types.h"
 #include "fboss/lib/phy/gen-cpp2/prbs_types.h"
 #include "fboss/mka_service/handlers/MacsecHandler.h"
 #include "fboss/qsfp_service/TransceiverManager.h"
+#include "fboss/qsfp_service/fsdb/QsfpFsdbSubscriber.h"
 #include "fboss/qsfp_service/if/gen-cpp2/QsfpService.h"
 
 DECLARE_string(sak_list_warmboot_config);
@@ -26,7 +28,7 @@ class QsfpServiceHandler
   QsfpServiceHandler(
       std::unique_ptr<TransceiverManager> manager,
       std::shared_ptr<mka::MacsecHandler> handler);
-  ~QsfpServiceHandler() override = default;
+  ~QsfpServiceHandler() override;
 
   void init();
   facebook::fb303::cpp2::fb_status getStatus() override;
@@ -37,6 +39,19 @@ class QsfpServiceHandler
   void getTransceiverInfo(
       std::map<int32_t, TransceiverInfo>& info,
       std::unique_ptr<std::vector<int32_t>> ids) override;
+
+  /*
+   * Returns qsfp config validation information for a transceiver.
+   *
+   * When getConfigString is true, the map is populated with stringified JSONs
+   * of non-validated transceiver configurations. Otherwise, when
+   * getConfigString is false, the map is populated with strings representing
+   * the reason validation failed as applicable.
+   */
+  void getTransceiverConfigValidationInfo(
+      std::map<int32_t, std::string>& info,
+      std::unique_ptr<std::vector<int32_t>> ids,
+      bool getConfigString) override;
 
   /*
    * Returns raw DOM page data for each passed in transceiver.
@@ -61,12 +76,6 @@ class QsfpServiceHandler
       std::unique_ptr<std::map<int32_t, PortStatus>> ports) override;
 
   /*
-   * Customise the transceiver based on the speed at which it has
-   * been configured to operate at
-   */
-  void customizeTransceiver(int32_t idx, cfg::PortSpeed speed) override;
-
-  /*
    * Return a pointer to the transceiver manager.
    */
   TransceiverManager* getTransceiverManager() const {
@@ -80,6 +89,9 @@ class QsfpServiceHandler
 
   void pauseRemediation(
       int32_t timeout,
+      std::unique_ptr<std::vector<std::string>> portList) override;
+
+  void unpauseRemediation(
       std::unique_ptr<std::vector<std::string>> portList) override;
 
   void getRemediationUntilTime(
@@ -131,12 +143,26 @@ class QsfpServiceHandler
       phy::PortComponent component) override;
 
   /*
+   * Get the PRBS settings on all interfaces.
+   */
+  void getAllInterfacePrbsStates(
+      std::map<std::string, prbs::InterfacePrbsState>& prbsStates,
+      phy::PortComponent component) override;
+
+  /*
    * Get the PRBS stats on an interface. Useful when debugging a link
    * down or flapping issue.
    */
   void getInterfacePrbsStats(
       phy::PrbsStats& response,
       std::unique_ptr<std::string> portName,
+      phy::PortComponent component) override;
+
+  /*
+   * Get the PRBS stats on all interfaces.
+   */
+  void getAllInterfacePrbsStats(
+      std::map<std::string, phy::PrbsStats>& prbsStats,
       phy::PortComponent component) override;
 
   /*
@@ -151,6 +177,18 @@ class QsfpServiceHandler
   void clearInterfacePrbsStats(
       std::unique_ptr<std::string> portName,
       phy::PortComponent component) override;
+
+  void bulkClearInterfacePrbsStats(
+      std::unique_ptr<std::vector<std::string>> interfaces,
+      phy::PortComponent component) override;
+
+  void dumpTransceiverI2cLog(std::unique_ptr<std::string> portName) override;
+
+  void getPortsRequiringOpticsFwUpgrade(
+      std::map<std::string, FirmwareUpgradeData>& ports) override;
+
+  void triggerAllOpticsFwUpgrade(
+      std::map<std::string, FirmwareUpgradeData>& ports) override;
 
   /*
    * Get the list of supported PRBS polynomials for the given port and
@@ -198,6 +236,11 @@ class QsfpServiceHandler
       phy::PortComponent component,
       bool setAdminUp) override;
 
+  void setInterfaceTxRx(
+      std::vector<phy::TxRxEnableResponse>& txRxEnableResponse,
+      std::unique_ptr<std::vector<phy::TxRxEnableRequest>> txRxEnableRequests)
+      override;
+
   void saiPhyRegisterAccess(
       std::string& out,
       std::unique_ptr<std::string> portName,
@@ -212,7 +255,7 @@ class QsfpServiceHandler
       std::unique_ptr<std::string> portName,
       bool opRead,
       int16_t mdioAddr,
-      bool lineSide,
+      phy::Side side,
       int serdesLane,
       int64_t regOffset,
       int64_t data) override;
@@ -226,6 +269,18 @@ class QsfpServiceHandler
   void getInterfacePhyInfo(
       std::map<std::string, phy::PhyInfo>& phyInfos,
       std::unique_ptr<std::vector<std::string>> portNames) override;
+
+  void getAllInterfacePhyInfo(
+      std::map<std::string, phy::PhyInfo>& phyInfos) override;
+
+  void getSymbolErrorHistogram(
+      CdbDatapathSymErrHistogram& symErr,
+      std::unique_ptr<std::string> portName) override;
+
+  void getAllPortSupportedProfiles(
+      std::map<std::string, std::vector<cfg::PortProfileID>>&
+          supportedPortProfiles,
+      bool checkOptics) override;
 
 #if FOLLY_HAS_COROUTINES
   folly::coro::Task<bool> co_sakInstallRx(
@@ -273,6 +328,8 @@ class QsfpServiceHandler
 
 #endif
 
+  QsfpServiceRunState getQsfpServiceRunState() override;
+
  private:
   // Forbidden copy constructor and assignment operator
   QsfpServiceHandler(QsfpServiceHandler const&) = delete;
@@ -282,6 +339,9 @@ class QsfpServiceHandler
 
   std::unique_ptr<TransceiverManager> manager_{nullptr};
   std::shared_ptr<mka::MacsecHandler> macsecHandler_;
+
+  std::unique_ptr<fsdb::FsdbPubSubManager> fsdbPubSubMgr_;
+  std::unique_ptr<QsfpFsdbSubscriber> fsdbSubscriber_;
 };
 } // namespace fboss
 } // namespace facebook

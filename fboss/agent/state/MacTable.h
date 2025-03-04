@@ -18,7 +18,6 @@
 #include "fboss/agent/state/Vlan.h"
 #include "fboss/agent/types.h"
 
-#include <folly/MacAddress.h>
 #include <string>
 
 namespace facebook::fboss {
@@ -40,6 +39,7 @@ using MacTableTraits = ThriftMapNodeTraits<
 class MacTable : public ThriftMapNode<MacTable, MacTableTraits> {
  public:
   using Base = ThriftMapNode<MacTable, MacTableTraits>;
+  using Base::modify;
   MacTable();
   ~MacTable() override;
 
@@ -72,6 +72,6 @@ class MacTable : public ThriftMapNode<MacTable, MacTableTraits> {
   friend class CloneAllocator;
 };
 
-using MacTableDelta = thrift_cow::ThriftMapDelta<MacTable>;
+using MacTableDelta = ThriftMapDelta<MacTable>;
 
 } // namespace facebook::fboss

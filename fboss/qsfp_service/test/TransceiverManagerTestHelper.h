@@ -11,7 +11,7 @@
 
 #include "fboss/qsfp_service/platforms/wedge/tests/MockWedgeManager.h"
 
-#include <folly/experimental/TestUtil.h>
+#include <folly/testing/TestUtil.h>
 #include <gtest/gtest.h>
 
 namespace facebook::fboss {
@@ -30,6 +30,21 @@ class TransceiverManagerTestHelper : public ::testing::Test {
   std::string qsfpCfgPath = qsfpSvcVolatileDir + "/fakeQsfpConfig";
 
   std::unique_ptr<MockWedgeManager> transceiverManager_;
+  std::shared_ptr<const TransceiverConfig> tcvrConfig_;
+
+  std::string getFakePartNumber() const {
+    return "FAKE";
+  }
+
+  std::string getFakeAppFwVersion() const {
+    return "1.2";
+  }
+
+  std::string getFakeDspFwVersion() const {
+    return "2.3";
+  }
+
+  std::vector<std::unique_ptr<TransceiverImpl>> qsfpImpls_;
 };
 
 } // namespace facebook::fboss

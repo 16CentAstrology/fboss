@@ -13,7 +13,7 @@
 #include "fboss/agent/hw/sai/store/SaiObject.h"
 #include "fboss/agent/hw/sai/store/SaiStore.h"
 
-#include <folly/json.h>
+#include <folly/json/json.h>
 #include "fboss/agent/hw/sai/store/tests/SaiStoreTest.h"
 
 using namespace facebook::fboss;
@@ -23,7 +23,7 @@ class NextHopGroupStoreTest : public SaiStoreTest {
   NextHopGroupSaiId createNextHopGroup() {
     auto& nextHopGroupApi = saiApiTable->nextHopGroupApi();
     return nextHopGroupApi.create<SaiNextHopGroupTraits>(
-        {SAI_NEXT_HOP_GROUP_TYPE_ECMP}, 0);
+        {SAI_NEXT_HOP_GROUP_TYPE_ECMP, std::nullopt}, 0);
   }
 
   NextHopGroupMemberSaiId createNextHopGroupMember(
@@ -146,7 +146,8 @@ TEST_F(NextHopGroupStoreTest, nextHopGroupMemberLoadCtor) {
 
 TEST_F(NextHopGroupStoreTest, nextHopGroupCreateCtor) {
   SaiNextHopGroupTraits::AdapterHostKey k{{}};
-  SaiNextHopGroupTraits::CreateAttributes c{SAI_NEXT_HOP_GROUP_TYPE_ECMP};
+  SaiNextHopGroupTraits::CreateAttributes c{
+      SAI_NEXT_HOP_GROUP_TYPE_ECMP, std::nullopt};
   auto obj = createObj<SaiNextHopGroupTraits>(k, c, 0);
 }
 

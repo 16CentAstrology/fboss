@@ -12,6 +12,8 @@
 #include "fboss/agent/hw/sai/switch/SaiSwitchManager.h"
 
 #include "fboss/agent/FbossError.h"
+#include "fboss/agent/Utils.h"
+#include "fboss/agent/VoqUtils.h"
 #include "fboss/agent/hw/HwSysPortFb303Stats.h"
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_constants.h"
 #include "fboss/agent/hw/sai/store/SaiStore.h"
@@ -35,6 +37,13 @@ bool createOnlyAttributesChanged(
       GET_ATTR(SystemPort, ConfigInfo, newAttrs);
 }
 } // namespace
+
+void SaiSystemPortHandle::resetQueues() {
+  for (auto& cfgAndQueue : queues) {
+    cfgAndQueue.second->resetQueue();
+  }
+}
+
 SaiSystemPortManager::SaiSystemPortManager(
     SaiStore* saiStore,
     SaiManagerTable* managerTable,
@@ -44,8 +53,25 @@ SaiSystemPortManager::SaiSystemPortManager(
       managerTable_(managerTable),
       platform_(platform),
       concurrentIndices_(concurrentIndices),
-      tcToQueueMapAllowedOnSystemPort_(platform_->getAsic()->isSupported(
-          HwAsic::Feature::TC_TO_QUEUE_QOS_MAP_ON_SYSTEM_PORT)) {}
+      tcToQueueMapAllowedOnSystemPort_(
+          platform_->getAsic()->getSwitchType() == cfg::SwitchType::VOQ &&
+          platform_->getAsic()->isSupported(
+              HwAsic::Feature::TC_TO_QUEUE_QOS_MAP_ON_SYSTEM_PORT)) {
+  // Extract platform created system ports
+  if (platform_->getAsic()->getSwitchType() == cfg::SwitchType::VOQ) {
+    auto& systemPortStore = saiStore_->get<SaiSystemPortTraits>();
+    for (auto& sysPort : platform_->getInternalSystemPortConfig()) {
+      SaiSystemPortTraits::Attributes::ConfigInfo confInfo{sysPort};
+      const auto& obj = systemPortStore.get(confInfo);
+      auto sysPortObj =
+          systemPortStore.loadObjectOwnedByAdapter(obj->adapterKey());
+      auto handle = std::make_unique<SaiSystemPortHandle>();
+      handle->systemPort = std::move(sysPortObj);
+      handles_.insert(
+          {SystemPortID(confInfo.value().port_id), std::move(handle)});
+    }
+  }
+}
 
 SaiSystemPortManager::~SaiSystemPortManager() {}
 
@@ -62,8 +88,21 @@ SaiSystemPortManager::attributesFromSwSystemPort(
       .speed = static_cast<uint32_t>(swSystemPort->getSpeedMbps()),
       .num_voq = static_cast<uint32_t>(swSystemPort->getNumVoqs()),
   };
+  std::optional<SaiSystemPortTraits::Attributes::QosTcToQueueMap>
+      qosTcToQueueMap = std::nullopt;
+  auto qosMapHandle =
+      managerTable_->qosMapManager().getQosMap(swSystemPort->getQosPolicy());
+  if (qosMapHandle && qosMapHandle->tcToVoqMap) {
+    auto qosMap = qosMapHandle->tcToVoqMap;
+    auto qosMapId = qosMap->adapterKey();
+    qosTcToQueueMap =
+        SaiSystemPortTraits::Attributes::QosTcToQueueMap{qosMapId};
+  }
   return SaiSystemPortTraits::CreateAttributes{
-      config, swSystemPort->getEnabled(), std::nullopt};
+      config,
+      true /*enabled*/,
+      qosTcToQueueMap,
+      std::nullopt /* shelPktDstEnable */};
 }
 
 SystemPortSaiId SaiSystemPortManager::addSystemPort(
@@ -79,11 +118,12 @@ SystemPortSaiId SaiSystemPortManager::addSystemPort(
   SaiSystemPortTraits::CreateAttributes attributes =
       attributesFromSwSystemPort(swSystemPort);
 
-  if (swSystemPort->getEnabled()) {
-    portStats_.emplace(
-        swSystemPort->getID(),
-        std::make_unique<HwSysPortFb303Stats>(swSystemPort->getPortName()));
-  }
+  portStats_.emplace(
+      swSystemPort->getID(),
+      std::make_unique<HwSysPortFb303Stats>(
+          swSystemPort->getName(),
+          HwBasePortFb303Stats::QueueId2Name(),
+          platform_->getMultiSwitchStatsPrefix()));
   auto handle = std::make_unique<SaiSystemPortHandle>();
 
   auto& systemPortStore = saiStore_->get<SaiSystemPortTraits>();
@@ -98,7 +138,81 @@ SystemPortSaiId SaiSystemPortManager::addSystemPort(
       {saiSystemPort->adapterKey(), swSystemPort->getID()});
   concurrentIndices_->sysPortSaiIds.insert(
       {swSystemPort->getID(), saiSystemPort->adapterKey()});
+  configureQueues(
+      swSystemPort,
+      getSystemPortHandleImpl(swSystemPort->getID()),
+      swSystemPort->getPortQueues()->impl());
   return saiSystemPort->adapterKey();
+}
+
+SaiQueueHandle* FOLLY_NULLABLE SaiSystemPortManager::getQueueHandle(
+    SystemPortID swId,
+    const SaiQueueConfig& saiQueueConfig) const {
+  auto portHandle = getSystemPortHandleImpl(swId);
+  if (!portHandle) {
+    XLOG(FATAL) << "Invalid null SaiPortHandle for " << swId;
+  }
+  auto itr = portHandle->queues.find(saiQueueConfig);
+  if (itr == portHandle->queues.end()) {
+    return nullptr;
+  }
+  if (!itr->second.get()) {
+    throw FbossError("Invalid null SaiQueueHandle for ", swId);
+  }
+  return itr->second.get();
+}
+
+void SaiSystemPortManager::configureQueues(
+    const std::shared_ptr<SystemPort>& systemPort,
+    SaiSystemPortHandle* sysPortHandle,
+    const QueueConfig& newQueueConfig) {
+  auto swId = systemPort->getID();
+  auto pitr = portStats_.find(swId);
+
+  // Repopulate configured queues
+  sysPortHandle->configuredQueues.clear();
+  for (const auto& newPortQueue : std::as_const(newQueueConfig)) {
+    SaiQueueConfig saiQueueConfig =
+        std::make_pair(newPortQueue->getID(), newPortQueue->getStreamType());
+    auto queueHandle = getQueueHandle(swId, saiQueueConfig);
+    DCHECK(queueHandle);
+    managerTable_->queueManager().changeQueue(queueHandle, *newPortQueue);
+
+    auto queueName = newPortQueue->getName()
+        ? *newPortQueue->getName()
+        : folly::to<std::string>("queue", newPortQueue->getID());
+    if (pitr != portStats_.end()) {
+      pitr->second->queueChanged(newPortQueue->getID(), queueName);
+    }
+    sysPortHandle->configuredQueues.push_back(queueHandle);
+  }
+}
+
+void SaiSystemPortManager::changeQueue(
+    const std::shared_ptr<SystemPort>& systemPort,
+    const QueueConfig& oldQueueConfig,
+    const QueueConfig& newQueueConfig) {
+  auto systemPortHandle = getSystemPortHandleImpl(systemPort->getID());
+  if (!systemPortHandle) {
+    throw FbossError("Attempted to change non-existent system port!");
+  }
+  configureQueues(systemPort, systemPortHandle, newQueueConfig);
+  auto swId = systemPort->getID();
+  auto pitr = portStats_.find(swId);
+  for (const auto& oldPortQueue : std::as_const(oldQueueConfig)) {
+    auto portQueueIter = std::find_if(
+        newQueueConfig.begin(),
+        newQueueConfig.end(),
+        [&](const std::shared_ptr<PortQueue> portQueue) {
+          return portQueue->getID() == oldPortQueue->getID();
+        });
+    // Queue Remove
+    if (portQueueIter == newQueueConfig.end()) {
+      if (pitr != portStats_.end()) {
+        pitr->second->queueRemoved(oldPortQueue->getID());
+      }
+    }
+  }
 }
 
 void SaiSystemPortManager::changeSystemPort(
@@ -112,23 +226,10 @@ void SaiSystemPortManager::changeSystemPort(
     removeSystemPort(oldSystemPort);
     addSystemPort(newSystemPort);
   } else {
-    handle->systemPort->setAttributes(newAttributes);
-    if (newSystemPort->getEnabled()) {
-      if (!oldSystemPort->getEnabled()) {
-        // Port transitioned from disabled to enabled, setup port stats
-        portStats_.emplace(
-            newSystemPort->getID(),
-            std::make_unique<HwSysPortFb303Stats>(
-                newSystemPort->getPortName()));
-        setupVoqStats(newSystemPort);
-      } else if (oldSystemPort->getPortName() != newSystemPort->getPortName()) {
-        // Port was already enabled, but Port name changed - update stats
-        portStats_.find(newSystemPort->getID())
-            ->second->portNameChanged(newSystemPort->getPortName());
-      }
-    } else if (oldSystemPort->getEnabled()) {
-      // Port transitioned from enabled to disabled, remove stats
-      portStats_.erase(newSystemPort->getID());
+    if (oldSystemPort->getName() != newSystemPort->getName()) {
+      // Port name changed - update stats
+      portStats_.find(newSystemPort->getID())
+          ->second->portNameChanged(newSystemPort->getName());
     }
     // TODO:
     // Compare qos queues changing and if so update qosmap
@@ -136,6 +237,11 @@ void SaiSystemPortManager::changeSystemPort(
     // Note that we don't need to worry about numVoqs changing
     // since that's a create only attribute, which upon change
     // would cause a remove + add sys port sequence
+    changeQueue(
+        newSystemPort,
+        oldSystemPort->getPortQueues()->impl(),
+        newSystemPort->getPortQueues()->impl());
+    changeQosPolicy(oldSystemPort, newSystemPort);
   }
 }
 
@@ -143,18 +249,6 @@ const HwSysPortFb303Stats* SaiSystemPortManager::getLastPortStats(
     SystemPortID port) const {
   auto pitr = portStats_.find(port);
   return pitr != portStats_.end() ? pitr->second.get() : nullptr;
-}
-
-void SaiSystemPortManager::setupVoqStats(
-    const std::shared_ptr<SystemPort>& swSystemPort) {
-  auto pitr = portStats_.find(swSystemPort->getID());
-  if (pitr != portStats_.end()) {
-    for (auto i = 0; i < swSystemPort->getNumVoqs(); ++i) {
-      // TODO pull name from qos config
-      auto queueName = folly::to<std::string>("queue", i);
-      pitr->second->queueChanged(i, queueName);
-    }
-  }
 }
 
 void SaiSystemPortManager::loadQueues(
@@ -182,7 +276,6 @@ void SaiSystemPortManager::loadQueues(
         return QueueSaiId(queueId);
       });
   sysPortHandle.queues = managerTable_->queueManager().loadQueues(queueSaiIds);
-  setupVoqStats(swSystemPort);
 }
 
 void SaiSystemPortManager::removeSystemPort(
@@ -192,11 +285,19 @@ void SaiSystemPortManager::removeSystemPort(
   if (itr == handles_.end()) {
     throw FbossError("Attempted to remove non-existent system port: ", swId);
   }
+  clearQosPolicy(swSystemPort->getID());
   concurrentIndices_->sysPortSaiIds.erase(swId);
   concurrentIndices_->sysPortIds.erase(itr->second->systemPort->adapterKey());
+  itr->second->resetQueues();
   handles_.erase(itr);
   portStats_.erase(swId);
   XLOG(DBG2) << "removed system port: " << swId;
+}
+
+void SaiSystemPortManager::resetQueues() {
+  for (auto& idAndHandle : handles_) {
+    idAndHandle.second->resetQueues();
+  }
 }
 
 // private const getter for use by const and non-const getters
@@ -214,97 +315,212 @@ SaiSystemPortHandle* SaiSystemPortManager::getSystemPortHandleImpl(
 
 void SaiSystemPortManager::updateStats(
     SystemPortID portId,
-    bool updateWatermarks) {
+    bool updateWatermarks,
+    bool updateVoqStats) {
   auto handlesItr = handles_.find(portId);
   if (handlesItr == handles_.end()) {
     return;
   }
-  auto* handle = handlesItr->second.get();
-  // TODO - only populate queues that show up in qos config
-  std::vector<SaiQueueHandle*> configuredQueues;
-  for (auto& confAndQueueHandle : handle->queues) {
-    configuredQueues.push_back(confAndQueueHandle.second.get());
-  }
 
-  auto now = duration_cast<seconds>(system_clock::now().time_since_epoch());
   auto portStatItr = portStats_.find(portId);
   if (portStatItr == portStats_.end()) {
     // We don't maintain port stats for disabled ports.
     return;
   }
+
+  auto* handle = handlesItr->second.get();
+  auto now = duration_cast<seconds>(system_clock::now().time_since_epoch());
   const auto& prevPortStats = portStatItr->second->portStats();
   HwSysPortStats curPortStats{prevPortStats};
-  managerTable_->queueManager().updateStats(
-      configuredQueues, curPortStats, updateWatermarks);
+  curPortStats.timestamp_() =
+      duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
+  if (updateVoqStats || updateWatermarks) {
+    managerTable_->queueManager().updateStats(
+        handle->configuredQueues,
+        curPortStats,
+        updateWatermarks,
+        updateVoqStats);
+  }
   portStats_[portId]->updateStats(curPortStats, now);
 }
+
 std::shared_ptr<SystemPortMap> SaiSystemPortManager::constructSystemPorts(
-    const std::shared_ptr<PortMap>& ports,
-    int64_t switchId,
-    std::optional<cfg::Range64> systemPortRange) {
+    const std::shared_ptr<MultiSwitchPortMap>& ports,
+    const std::map<int64_t, cfg::SwitchInfo>& switchIdToSwitchInfo,
+    int64_t switchId) {
   auto sysPortMap = std::make_shared<SystemPortMap>();
-  CHECK(systemPortRange);
   const std::set<cfg::PortType> kCreateSysPortsFor = {
-      cfg::PortType::INTERFACE_PORT, cfg::PortType::RECYCLE_PORT};
-  for (const auto& port : std::as_const(*ports)) {
-    if (kCreateSysPortsFor.find(port.second->getPortType()) ==
-        kCreateSysPortsFor.end()) {
-      continue;
+      cfg::PortType::INTERFACE_PORT,
+      cfg::PortType::RECYCLE_PORT,
+      cfg::PortType::MANAGEMENT_PORT,
+      cfg::PortType::EVENTOR_PORT};
+  for (const auto& portMap : std::as_const(*ports)) {
+    for (const auto& port : std::as_const(*portMap.second)) {
+      if (kCreateSysPortsFor.find(port.second->getPortType()) ==
+          kCreateSysPortsFor.end()) {
+        continue;
+      }
+      auto sysPort = std::make_shared<SystemPort>(getSystemPortID(
+          port.second->getID(),
+          port.second->getScope(),
+          switchIdToSwitchInfo,
+          SwitchID(switchId)));
+      sysPort->setSwitchId(SwitchID(switchId));
+      sysPort->setName(
+          folly::sformat("{}:{}", switchId, port.second->getName()));
+      auto platformPort = platform_->getPlatformPort(port.second->getID());
+      sysPort->setCoreIndex(*platformPort->getAttachedCoreId());
+      sysPort->setCorePortIndex(*platformPort->getCorePortIndex());
+      sysPort->setSpeedMbps(static_cast<int>(port.second->getSpeed()));
+      sysPort->setNumVoqs(getLocalPortNumVoqs(
+          port.second->getPortType(), port.second->getScope()));
+      sysPort->setScope(platformPort->getScope());
+      sysPort->setQosPolicy(port.second->getQosPolicy());
+      sysPortMap->addSystemPort(std::move(sysPort));
     }
-    auto sysPort = std::make_shared<SystemPort>(
-        SystemPortID{*systemPortRange->minimum() + port.second->getID()});
-    sysPort->setSwitchId(SwitchID(switchId));
-    sysPort->setPortName(
-        folly::sformat("{}:{}", switchId, port.second->getName()));
-    auto platformPort = platform_->getPlatformPort(port.second->getID());
-    sysPort->setCoreIndex(*platformPort->getAttachedCoreId());
-    sysPort->setCorePortIndex(*platformPort->getCorePortIndex());
-    sysPort->setSpeedMbps(static_cast<int>(port.second->getSpeed()));
-    sysPort->setNumVoqs(8);
-    sysPort->setEnabled(port.second->isEnabled());
-    sysPort->setQosPolicy(port.second->getQosPolicy());
-    sysPortMap->addSystemPort(std::move(sysPort));
   }
 
   return sysPortMap;
 }
 
-void SaiSystemPortManager::setQosMapOnAllSystemPorts(QosMapSaiId qosMapId) {
-  for (const auto& systemPortIdAndHandle : handles_) {
-    systemPortIdAndHandle.second->systemPort->setOptionalAttribute(
+void SaiSystemPortManager::setQosMapOnSystemPort(
+    const SaiQosMapHandle* qosMapHandle,
+    SystemPortID swId) {
+  auto handle = getSystemPortHandle(swId);
+  if (qosMapHandle && qosMapHandle->tcToVoqMap) {
+    // set qos policy
+    auto qosMap = qosMapHandle->tcToVoqMap;
+    auto qosMapId = qosMap->adapterKey();
+    handle->systemPort->setOptionalAttribute(
         SaiSystemPortTraits::Attributes::QosTcToQueueMap{qosMapId});
+    handle->tcToQueueQosMap = qosMap;
+    handle->qosPolicy = qosMapHandle->name;
+  } else {
+    // clear qos policy
+    auto qosMapId = QosMapSaiId(SAI_NULL_OBJECT_ID);
+    handle->systemPort->setOptionalAttribute(
+        SaiSystemPortTraits::Attributes::QosTcToQueueMap{qosMapId});
+    handle->tcToQueueQosMap.reset();
+    handle->qosPolicy.reset();
   }
 }
 
-void SaiSystemPortManager::setQosPolicy() {
-  if (platform_->getAsic()->getSwitchType() != cfg::SwitchType::VOQ) {
-    return;
-  }
+void SaiSystemPortManager::setQosPolicy(
+    SystemPortID portId,
+    const std::optional<std::string>& qosPolicy) {
   if (!tcToQueueMapAllowedOnSystemPort_) {
     return;
   }
-  auto& qosMapManager = managerTable_->qosMapManager();
-  auto qosMapHandle = qosMapManager.getQosMap();
-  globalTcToQueueQosMap_ = qosMapHandle->tcToQueueMap;
-  setQosMapOnAllSystemPorts(globalTcToQueueQosMap_->adapterKey());
+  XLOG(DBG2) << "set QoS policy " << (qosPolicy ? qosPolicy.value() : "null")
+             << " for system port " << portId;
+  auto qosMapHandle = managerTable_->qosMapManager().getQosMap(qosPolicy);
+  if (!qosMapHandle) {
+    if (qosPolicy) {
+      throw FbossError(
+          "QosMap handle is null for QoS policy: ", qosPolicy.value());
+    }
+    XLOG(DBG2)
+        << "skip programming QoS policy on system port " << portId
+        << " because applied QoS policy is null and default QoS policy is absent";
+    return;
+  }
+  setQosMapOnSystemPort(qosMapHandle, portId);
 }
 
-void SaiSystemPortManager::clearQosPolicy() {
-  if (platform_->getAsic()->getSwitchType() != cfg::SwitchType::VOQ) {
-    return;
+void SaiSystemPortManager::setQosPolicy(
+    const std::shared_ptr<QosPolicy>& qosPolicy) {
+  for (const auto& portIdAndHandle : handles_) {
+    if (portIdAndHandle.second->qosPolicy == qosPolicy->getName()) {
+      setQosPolicy(portIdAndHandle.first, qosPolicy->getName());
+    }
   }
+}
+
+void SaiSystemPortManager::clearQosPolicy(SystemPortID portId) {
   if (!tcToQueueMapAllowedOnSystemPort_) {
     return;
   }
-  setQosMapOnAllSystemPorts(QosMapSaiId(SAI_NULL_OBJECT_ID));
-  globalTcToQueueQosMap_.reset();
+  XLOG(DBG2) << "clear QoS policy for system port " << portId;
+  setQosMapOnSystemPort(nullptr, portId);
+}
+
+void SaiSystemPortManager::clearQosPolicy(
+    const std::shared_ptr<QosPolicy>& qosPolicy) {
+  for (const auto& portIdAndHandle : handles_) {
+    if (portIdAndHandle.second->qosPolicy == qosPolicy->getName()) {
+      clearQosPolicy(portIdAndHandle.first);
+    }
+  }
+}
+
+void SaiSystemPortManager::changeQosPolicy(
+    const std::shared_ptr<SystemPort>& oldSystemPort,
+    const std::shared_ptr<SystemPort>& newSystemPort) {
+  if (oldSystemPort->getQosPolicy() == newSystemPort->getQosPolicy()) {
+    return;
+  }
+  clearQosPolicy(oldSystemPort->getID());
+  setQosPolicy(newSystemPort->getID(), newSystemPort->getQosPolicy());
 }
 
 void SaiSystemPortManager::resetQosMaps() {
   if (!tcToQueueMapAllowedOnSystemPort_) {
     return;
   }
-  setQosMapOnAllSystemPorts(QosMapSaiId(SAI_NULL_OBJECT_ID));
+  for (const auto& systemPortIdAndHandle : handles_) {
+    clearQosPolicy(systemPortIdAndHandle.first);
+  }
+}
+
+void SaiSystemPortManager::addSystemPortShelPktDstEnable(
+    const std::shared_ptr<SystemPort>& swSystemPort) const {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  if (!swSystemPort->getShelDestinationEnabled().has_value()) {
+    return;
+  }
+  auto systemPortHandle = getSystemPortHandle(swSystemPort->getID());
+  CHECK(systemPortHandle);
+
+  // Load current SDK value into SaiStore - this will avoid unnecessary hw
+  // writes.
+  auto gotShelPktDstEnable =
+      SaiApiTable::getInstance()->systemPortApi().getAttribute(
+          systemPortHandle->systemPort->adapterKey(),
+          SaiSystemPortTraits::Attributes::ShelPktDstEnable{});
+  std::optional<SaiSystemPortTraits::Attributes::ShelPktDstEnable>
+      shelPktDstEnable = gotShelPktDstEnable;
+  systemPortHandle->systemPort->setAttribute(
+      shelPktDstEnable, true /* skipHwWrite */);
+
+  shelPktDstEnable = swSystemPort->getShelDestinationEnabled();
+  systemPortHandle->systemPort->setAttribute(shelPktDstEnable);
+#endif
+}
+
+void SaiSystemPortManager::changeSystemPortShelPktDstEnable(
+    const std::shared_ptr<SystemPort>& oldSystemPort,
+    const std::shared_ptr<SystemPort>& newSystemPort) const {
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  if (oldSystemPort->getShelDestinationEnabled() !=
+      newSystemPort->getShelDestinationEnabled()) {
+    auto systemPortHandle = getSystemPortHandle(newSystemPort->getID());
+    CHECK(systemPortHandle);
+
+    // Load current SDK value into SaiStore - this will avoid unnecessary hw
+    // writes.
+    auto gotShelPktDstEnable =
+        SaiApiTable::getInstance()->systemPortApi().getAttribute(
+            systemPortHandle->systemPort->adapterKey(),
+            SaiSystemPortTraits::Attributes::ShelPktDstEnable{});
+    std::optional<SaiSystemPortTraits::Attributes::ShelPktDstEnable>
+        shelPktDstEnable = gotShelPktDstEnable;
+    systemPortHandle->systemPort->setAttribute(
+        shelPktDstEnable, true /* skipHwWrite */);
+
+    shelPktDstEnable = newSystemPort->getShelDestinationEnabled();
+    systemPortHandle->systemPort->setAttribute(shelPktDstEnable);
+  }
+#endif
 }
 
 } // namespace facebook::fboss

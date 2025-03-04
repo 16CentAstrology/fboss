@@ -11,8 +11,8 @@
 #pragma once
 
 #include <fatal/container/tuple.h>
-#include <folly/dynamic.h>
-#include <thrift/lib/cpp2/reflection/folly_dynamic.h>
+#include <folly/json/dynamic.h>
+#include <thrift/lib/cpp2/folly_dynamic/folly_dynamic.h>
 #include <thrift/lib/cpp2/reflection/reflection.h>
 #include "fboss/agent/state/NodeBase-defs.h"
 #include "fboss/thrift_cow/nodes/Types.h"
@@ -216,7 +216,7 @@ struct ThriftUnionStorage {
 };
 
 template <typename TType>
-struct ThriftUnionFields {
+struct ThriftUnionFields : public FieldBaseType {
   using Self = ThriftUnionFields<TType>;
 
   // reflected union metadata
@@ -249,9 +249,7 @@ struct ThriftUnionFields {
   using TypeFor = typename fatal::find<
       MemberTypes,
       Name,
-      std::enable_if_t<
-          fatal::contains<MemberTypes, Name, fatal::get_type::name>::value,
-          std::false_type>,
+      std::false_type,
       fatal::get_type::name,
       fatal::get_type::type>;
 
@@ -267,10 +265,10 @@ struct ThriftUnionFields {
 
   ThriftUnionFields() {}
 
-  template <
-      typename T,
-      typename = std::enable_if_t<std::is_same<std::decay_t<T>, TType>::value>>
-  explicit ThriftUnionFields(T&& thrift) {
+  template <typename T>
+  explicit ThriftUnionFields(T&& thrift)
+    requires(std::is_same_v<std::decay_t<T>, TType>)
+  {
     fromThrift(std::forward<T>(thrift));
   }
 
@@ -281,10 +279,10 @@ struct ThriftUnionFields {
     return thrift;
   }
 
-  template <
-      typename T,
-      typename = std::enable_if_t<std::is_same<std::decay_t<T>, TType>::value>>
-  void fromThrift(T&& thrift) {
+  template <typename T>
+  void fromThrift(T&& thrift)
+    requires(std::is_same_v<std::decay_t<T>, TType>)
+  {
     fatal::foreach<MemberTypes>(
         union_helpers::CopyToMember<Self>(), storage_, std::forward<T>(thrift));
   }
@@ -293,29 +291,37 @@ struct ThriftUnionFields {
 
   folly::dynamic toDynamic() const {
     folly::dynamic out;
-    apache::thrift::to_dynamic<TC>(
-        out, toThrift(), apache::thrift::dynamic_format::JSON_1);
+    facebook::thrift::to_dynamic(
+        out, toThrift(), facebook::thrift::dynamic_format::JSON_1);
     return out;
   }
 
   void fromDynamic(const folly::dynamic& value) {
     TType thrift;
-    apache::thrift::from_dynamic<TC>(
-        thrift, value, apache::thrift::dynamic_format::JSON_1);
+    facebook::thrift::from_dynamic(
+        thrift, value, facebook::thrift::dynamic_format::JSON_1);
     fromThrift(thrift);
   }
 #endif
-
-  TypeEnum type() const {
-    return storage_.type();
-  }
 
   folly::fbstring encode(fsdb::OperProtocol proto) const {
     return serialize<TC>(proto, toThrift());
   }
 
+  folly::IOBuf encodeBuf(fsdb::OperProtocol proto) const {
+    return serializeBuf<TC>(proto, toThrift());
+  }
+
   void fromEncoded(fsdb::OperProtocol proto, const folly::fbstring& encoded) {
     fromThrift(deserialize<TC, TType>(proto, encoded));
+  }
+
+  void fromEncodedBuf(fsdb::OperProtocol proto, folly::IOBuf&& encoded) {
+    fromThrift(deserializeBuf<TC, TType>(proto, std::move(encoded)));
+  }
+
+  TypeEnum type() const {
+    return storage_.type();
   }
 
   template <typename Name>
@@ -366,12 +372,11 @@ struct ThriftUnionFields {
 
   bool remove(const std::string& token) {
     bool found{false}, ret{false};
-    fatal::trie_find<MemberTypes, fatal::get_type::name>(
-        token.begin(), token.end(), [&](auto tag) {
-          using name = typename decltype(fatal::tag_type(tag))::name;
-          found = true;
-          ret = this->template remove<name>();
-        });
+    visitMember<MemberTypes>(token, [&](auto tag) {
+      using name = typename decltype(fatal::tag_type(tag))::name;
+      found = true;
+      ret = this->template remove<name>();
+    });
 
     if (!found) {
       throw std::runtime_error(
@@ -393,7 +398,8 @@ struct ThriftUnionFields {
 
 template <typename TType>
 class ThriftUnionNode
-    : public NodeBaseT<ThriftUnionNode<TType>, ThriftUnionFields<TType>> {
+    : public NodeBaseT<ThriftUnionNode<TType>, ThriftUnionFields<TType>>,
+      public thrift_cow::Serializable {
  public:
   using Self = ThriftUnionNode<TType>;
   using Fields = ThriftUnionFields<TType>;
@@ -428,12 +434,13 @@ class ThriftUnionNode
   }
 #endif
 
-  folly::fbstring encode(fsdb::OperProtocol proto) const {
-    return this->getFields()->encode(proto);
+  folly::IOBuf encodeBuf(fsdb::OperProtocol proto) const override {
+    return this->getFields()->encodeBuf(proto);
   }
 
-  void fromEncoded(fsdb::OperProtocol proto, const folly::fbstring& encoded) {
-    return this->writableFields()->fromEncoded(proto, encoded);
+  void fromEncodedBuf(fsdb::OperProtocol proto, folly::IOBuf&& encoded)
+      override {
+    return this->writableFields()->fromEncodedBuf(proto, std::move(encoded));
   }
 
   TypeEnum type() const {
@@ -493,7 +500,7 @@ class ThriftUnionNode
   }
 
   template <typename Name>
-  void modify() {
+  void modify(bool construct = true) {
     DCHECK(!this->isPublished());
 
     if (this->template isSet<Name>()) {
@@ -504,49 +511,23 @@ class ThriftUnionNode
           child.swap(clonedChild);
         }
       }
-    } else {
+    } else if (construct) {
       // default construct target member
       this->template set<Name>();
     }
   }
 
-  void modify(const std::string& token) {
-    fatal::trie_find<typename Fields::MemberTypes, fatal::get_type::name>(
-        token.begin(), token.end(), [&](auto tag) {
-          using name = typename decltype(fatal::tag_type(tag))::name;
-          this->template modify<name>();
-        });
+  virtual void modify(const std::string& token, bool construct = true) {
+    visitMember<typename Fields::MemberTypes>(token, [&](auto tag) {
+      using name = typename decltype(fatal::tag_type(tag))::name;
+      this->template modify<name>(construct);
+    });
   }
 
   static void modify(std::shared_ptr<Self>* node, std::string token) {
     auto newNode = ((*node)->isPublished()) ? (*node)->clone() : *node;
     newNode->modify(token);
     node->swap(newNode);
-  }
-
-  /*
-   * Visitors by string path
-   */
-
-  template <typename Func>
-  inline ThriftTraverseResult
-  visitPath(PathIter begin, PathIter end, Func&& f) {
-    return PathVisitor<TC>::visit(
-        *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
-  }
-
-  template <typename Func>
-  inline ThriftTraverseResult visitPath(PathIter begin, PathIter end, Func&& f)
-      const {
-    return PathVisitor<TC>::visit(
-        *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
-  }
-
-  template <typename Func>
-  inline ThriftTraverseResult cvisitPath(PathIter begin, PathIter end, Func&& f)
-      const {
-    return PathVisitor<TC>::visit(
-        *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
   }
 
  private:

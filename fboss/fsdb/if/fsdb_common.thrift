@@ -7,10 +7,24 @@ namespace go facebook.fboss.fsdb_common
 cpp_include "folly/container/F14Map.h"
 cpp_include "folly/container/F14Set.h"
 
+include "thrift/annotation/cpp.thrift"
+
 const string kFsdbServiceHandlerNativeStatsPrefix = "fsdb.handler.";
 const string kFsdbStatsFanOutNativeStatsPrefix = "fsdb.statsFanOut.";
 
 const i32 PORT = 5908;
+
+/**
+ * Default value sourced from Cfgr "neteng/qosdb/cos_utility_maps"
+ *   dscpToClassOfServiceMap.ClassOfService.NC : 48
+ * Rationale: In DSF clusters fsdb is a Tier 0 service required for
+ * bringing up network control plane and needs to be up with minimal
+ * dependencies. Therefore, sourcing the const in fbcode instead of
+ * a runtime configerator read.
+ *
+ * 8-bit TOS = 6-bit DSCP followed by 2-bit ECN
+ */
+const i32 kTosForClassOfServiceNC = 0xc0;
 
 // NOTE: keep in sync with fb303::ExportType
 enum ExportType {
@@ -21,7 +35,8 @@ enum ExportType {
   PERCENT = 4,
 }
 
-typedef set<ExportType> (cpp.template = 'folly::F14FastSet') ExportTypes
+@cpp.Type{template = "folly::F14FastSet"}
+typedef set<ExportType> ExportTypes
 
 enum FsdbErrorCode {
   NONE = 0,
@@ -40,6 +55,12 @@ enum FsdbErrorCode {
   ALL_PUBLISHERS_GONE = 13,
   DISCONNECTED = 14,
   PUBLISHER_NOT_READY = 15,
+  PUBLISHER_GR_DISCONNECT = 16,
+  SUBSCRIPTION_NOT_PERMITTED = 17,
+  SUBSCRIPTION_DATA_CALLBACK_ERROR = 18,
+  CLIENT_CHUNK_TIMEOUT = 19,
+  CLIENT_TRANSPORT_EXCEPTION = 20,
+  SUBSCRIPTION_SERVE_QUEUE_FULL = 21,
 }
 
 exception FsdbException {
@@ -52,9 +73,12 @@ typedef string SubscriberId
 typedef string Metric
 typedef string EchoBackTag
 
-typedef set<PublisherId> (cpp.template = 'folly::F14FastSet') PublisherIds
-typedef set<SubscriberId> (cpp.template = 'folly::F14FastSet') SubscriberIds
-typedef set<Metric> (cpp.template = 'folly::F14FastSet') Metrics
+@cpp.Type{template = "folly::F14FastSet"}
+typedef set<PublisherId> PublisherIds
+@cpp.Type{template = "folly::F14FastSet"}
+typedef set<SubscriberId> SubscriberIds
+@cpp.Type{template = "folly::F14FastSet"}
+typedef set<Metric> Metrics
 
 // NOTE: Fully Qualified => Fq
 struct FqMetric {
@@ -62,4 +86,33 @@ struct FqMetric {
   2: Metric metric;
 }
 
-typedef map<PublisherId, Metrics> (cpp.template = 'folly::F14FastMap') FqMetrics
+@cpp.Type{template = "folly::F14FastMap"}
+typedef map<PublisherId, Metrics> FqMetrics
+
+enum FsdbSubscriptionState {
+  DISCONNECTED = 1,
+  CONNECTED = 2,
+}
+
+enum FsdbClient {
+  UNSPECIFIED = 0,
+  AGENT = 1,
+  QSFP_SERVICE = 2,
+  MKA_SERVICE = 3,
+  BGP = 4,
+  OPENR = 5,
+  FAN_SERVICE = 6,
+  SENSOR_SERVICE = 7,
+  LED_SERVICE = 8,
+  NETSTATE = 9,
+  FSDB_NORMALIZER = 10,
+  SWITCH_AGENT = 11,
+  FBOSS2_CLI = 12,
+  ADHOC = 13,
+}
+
+struct ClientId {
+  1: FsdbClient client;
+  // Optional freeform id. Should be used sparingly, only for subscribers that have multiple idential subscriptions
+  2: string instanceId = "";
+}

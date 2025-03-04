@@ -9,6 +9,7 @@
  */
 
 #include "fboss/agent/platforms/common/PlatformMapping.h"
+#include "fboss/lib/config/PlatformConfigUtils.h"
 
 #include <folly/logging/xlog.h>
 #include <re2/re2.h>
@@ -17,28 +18,41 @@
 
 #include "fboss/agent/FbossError.h"
 
+DEFINE_string(
+    platform_mapping_override_path,
+    "",
+    "The path to the Platform Mapping JSON file");
+
+DEFINE_bool(
+    multi_npu_platform_mapping,
+    false,
+    "use multi-npu platform mapping for applicable platforms");
+
+DEFINE_int32(platform_mapping_profile, 0, "Platform mapping profile");
+
 namespace {
 constexpr auto kFbossPortNameRegex = "eth(\\d+)/(\\d+)/(\\d+)";
 const re2::RE2 portNameRegex(kFbossPortNameRegex);
 } // namespace
 
-namespace facebook {
-namespace fboss {
+namespace facebook::fboss {
 
 cfg::PlatformPortConfigOverrideFactor buildPlatformPortConfigOverrideFactor(
     const TransceiverInfo& transceiverInfo) {
   cfg::PlatformPortConfigOverrideFactor factor;
-  if (auto cable = transceiverInfo.cable(); cable && cable->length()) {
+  if (auto cable = transceiverInfo.tcvrState()->cable();
+      cable && cable->length()) {
     factor.cableLengths() = {*cable->length()};
   }
-  if (auto settings = transceiverInfo.settings()) {
+  if (auto settings = transceiverInfo.tcvrState()->settings()) {
     if (auto mediaInterfaces = settings->mediaInterface();
         mediaInterfaces && !mediaInterfaces->empty()) {
       // Use the first lane mediaInterface
       factor.mediaInterfaceCode() = *(*mediaInterfaces)[0].code();
     }
   }
-  if (auto interface = transceiverInfo.transceiverManagementInterface()) {
+  if (auto interface =
+          transceiverInfo.tcvrState()->transceiverManagementInterface()) {
     factor.transceiverManagementInterface() = *interface;
   }
   return factor;
@@ -167,7 +181,7 @@ cfg::PlatformMapping PlatformMapping::toThrift() const {
   cfg::PlatformMapping newMapping;
   newMapping.ports() = this->platformPorts_;
   newMapping.platformSupportedProfiles() = this->platformSupportedProfiles_;
-  for (auto nameChipPair : this->chips_) {
+  for (const auto& nameChipPair : this->chips_) {
     newMapping.chips()->push_back(nameChipPair.second);
   }
   newMapping.portConfigOverrides() = this->portConfigOverrides_;
@@ -182,7 +196,7 @@ void PlatformMapping::merge(PlatformMapping* mapping) {
   }
   mapping->platformPorts_.clear();
 
-  for (auto incomingProfile : mapping->platformSupportedProfiles_) {
+  for (const auto& incomingProfile : mapping->platformSupportedProfiles_) {
     mergePlatformSupportedProfile(incomingProfile);
   }
   mapping->platformSupportedProfiles_.clear();
@@ -277,7 +291,7 @@ cfg::PortSpeed PlatformMapping::getPortMaxSpeed(PortID portID) const {
   }
 
   cfg::PortSpeed maxSpeed{cfg::PortSpeed::DEFAULT};
-  for (auto profile : *itPlatformPort->second.supportedProfiles()) {
+  for (const auto& profile : *itPlatformPort->second.supportedProfiles()) {
     if (auto profileConfig = getPortProfileConfig(
             PlatformPortProfileConfigMatcher(profile.first, portID))) {
       if (static_cast<int>(maxSpeed) <
@@ -287,6 +301,14 @@ cfg::PortSpeed PlatformMapping::getPortMaxSpeed(PortID portID) const {
     }
   }
   return maxSpeed;
+}
+
+cfg::Scope PlatformMapping::getPortScope(PortID portID) const {
+  auto itPlatformPort = platformPorts_.find(portID);
+  if (itPlatformPort == platformPorts_.end()) {
+    throw FbossError("Unrecoganized port:", portID);
+  }
+  return *itPlatformPort->second.mapping()->scope();
 }
 
 std::vector<phy::PinConfig> PlatformMapping::getPortIphyPinConfigs(
@@ -384,6 +406,71 @@ PlatformMapping::getPortTransceiverPinConfigs(
   return std::nullopt;
 }
 
+std::set<uint8_t> PlatformMapping::getTransceiverHostLanes(
+    PlatformPortProfileConfigMatcher matcher) const {
+  auto portID = matcher.getPortIDIf();
+
+  if (!portID.has_value()) {
+    throw FbossError("getTransceiverHostLanes miss portID match factor");
+  }
+
+  std::set<uint8_t> tcvrHostLanes;
+  auto pinConfigs = getPortTransceiverPinConfigs(matcher);
+  if (!pinConfigs || pinConfigs->empty()) {
+    throw FbossError("Can't find tcvr pinConfigs for portId ", *portID);
+  }
+  for (auto pin : *pinConfigs) {
+    uint8_t lane = *pin.id()->lane();
+    tcvrHostLanes.insert(lane);
+  }
+  return tcvrHostLanes;
+}
+
+int PlatformMapping::getTransceiverIdFromSwPort(PortID swPort) const {
+  const auto& platformPorts = getPlatformPorts();
+  const auto& chips = getChips();
+
+  auto platformPortItr = platformPorts.find(static_cast<int32_t>(swPort));
+  if (platformPortItr == platformPorts.end()) {
+    throw FbossError("Can't find Platform Port for portId ", swPort);
+  }
+
+  auto tcvrID = utility::getTransceiverId(platformPortItr->second, chips);
+  if (!tcvrID.has_value()) {
+    throw FbossError("Can't find Tcvr ID for portId ", swPort);
+  }
+
+  return tcvrID.value();
+}
+
+std::vector<PortID> PlatformMapping::getSwPortListFromTransceiverId(
+    int tcvrId) const {
+  std::optional<phy::DataPlanePhyChip> tcvrChip;
+  for (const auto& chip : getChips()) {
+    if (*chip.second.type() == phy::DataPlanePhyChipType::TRANSCEIVER &&
+        *chip.second.physicalID() == tcvrId) {
+      tcvrChip = chip.second;
+      break;
+    }
+  }
+  if (!tcvrChip) {
+    throw FbossError(
+        "Can't find transceiver: ", tcvrId, " from PlatformMapping");
+  }
+
+  const auto& platformPorts =
+      utility::getPlatformPortsByChip(getPlatformPorts(), *tcvrChip);
+  if (platformPorts.empty()) {
+    throw FbossError("Can't find platformPorts for transceiver: ", tcvrId);
+  }
+
+  std::vector<PortID> swPorts;
+  for (auto platformPort : platformPorts) {
+    swPorts.emplace_back(*platformPort.mapping()->id());
+  }
+  return swPorts;
+}
+
 std::vector<phy::PinConfig> PlatformMapping::getPortXphySidePinConfigs(
     PlatformPortProfileConfigMatcher matcher,
     phy::Side side) const {
@@ -463,6 +550,9 @@ phy::PortPinConfig PlatformMapping::getPortXphyPinConfig(
       getPortXphySidePinConfigs(matcher, phy::Side::SYSTEM);
   newPortPinConfig.xphyLine() =
       getPortXphySidePinConfigs(matcher, phy::Side::LINE);
+  if (auto transceivers = getPortTransceiverPinConfigs(matcher)) {
+    newPortPinConfig.transceiver() = *transceivers;
+  }
   return newPortPinConfig;
 }
 
@@ -563,6 +653,29 @@ const PortID PlatformMapping::getPortID(const std::string& portName) const {
   throw FbossError("No PlatformPortEntry found for portName: ", portName);
 }
 
+std::optional<std::string> PlatformMapping::getPortNameByPortId(
+    PortID portId) const {
+  const auto& platformPorts = getPlatformPorts();
+  int32_t portIdInt = static_cast<int32_t>(portId);
+  if (platformPorts.find(portIdInt) != platformPorts.end()) {
+    return *platformPorts.at(portIdInt).mapping()->name();
+  }
+  return std::nullopt;
+}
+
+std::optional<int32_t> PlatformMapping::getVirtualDeviceID(
+    const std::string& portName) const {
+  for (const auto& platPortEntry : platformPorts_) {
+    if (*platPortEntry.second.mapping()->name() == portName) {
+      return platPortEntry.second.mapping()->virtualDeviceId()
+          ? *platPortEntry.second.mapping()->virtualDeviceId()
+          : std::optional<int32_t>();
+    }
+  }
+
+  throw FbossError("No PlatformPortEntry found for portName: ", portName);
+}
+
 const cfg::PlatformPortConfig& PlatformMapping::getPlatformPortConfig(
     PortID id,
     cfg::PortProfileID profileID) const {
@@ -606,5 +719,161 @@ PlatformMapping::getCorePinMapping(const std::vector<cfg::Port>& ports) const {
   return corePinMapping;
 }
 
-} // namespace fboss
-} // namespace facebook
+const cfg::PlatformPortEntry& PlatformMapping::getPlatformPort(
+    int32_t portId) const {
+  auto entry = platformPorts_.find(portId);
+  if (entry != platformPorts_.end()) {
+    return entry->second;
+  }
+  throw FbossError("No PlatformMapping entry for port ", portId);
+}
+
+std::map<std::string, phy::DataPlanePhyChip>
+PlatformMapping::getPortDataplaneChips(
+    PlatformPortProfileConfigMatcher matcher) const {
+  std::map<std::string, phy::DataPlanePhyChip> chips;
+  const auto& pins = getPortXphyPinConfig(matcher);
+  auto allChips = getChips();
+
+  auto addChips = [&allChips, &chips](const auto& pins) {
+    for (auto& pin : pins) {
+      auto chip = *pin.id()->chip();
+      chips[chip] = allChips[chip];
+    }
+  };
+
+  addChips(*pins.iphy());
+  if (auto xphySys = pins.xphySys()) {
+    addChips(*xphySys);
+  }
+  if (auto xphyLine = pins.xphyLine()) {
+    addChips(*xphyLine);
+  }
+  if (auto transceiver = pins.transceiver()) {
+    addChips(*transceiver);
+  }
+
+  return chips;
+}
+
+cfg::PortProfileID PlatformMapping::getProfileIDBySpeed(
+    PortID portID,
+    cfg::PortSpeed speed) const {
+  auto profile = getProfileIDBySpeedIf(portID, speed);
+  if (!profile.has_value()) {
+    throw FbossError(
+        "Platform port ",
+        portID,
+        " has no profile for speed ",
+        apache::thrift::util::enumNameSafe(speed));
+  }
+  return profile.value();
+}
+
+std::optional<cfg::PortProfileID> PlatformMapping::getProfileIDBySpeedIf(
+    PortID portID,
+    cfg::PortSpeed speed) const {
+  if (speed == cfg::PortSpeed::DEFAULT) {
+    return cfg::PortProfileID::PROFILE_DEFAULT;
+  }
+
+  const auto& platformPortEntry = getPlatformPort(portID);
+  for (const auto& profile : *platformPortEntry.supportedProfiles()) {
+    auto profileID = profile.first;
+    if (auto profileCfg = getPortProfileConfig(
+            PlatformPortProfileConfigMatcher(profileID, portID))) {
+      if (*profileCfg->speed() == speed) {
+        return profileID;
+      }
+    } else {
+      throw FbossError(
+          "Platform port ",
+          portID,
+          " has invalid profile ",
+          apache::thrift::util::enumNameSafe(profileID));
+    }
+  }
+  XLOG(DBG2) << "Can't find supported profile for port=" << portID
+             << ", speed=" << apache::thrift::util::enumNameSafe(speed);
+  return std::nullopt;
+}
+
+/*
+ * getAllPortProfiles
+ *
+ * Returns a map of all port names in the system to the list of supported port
+ * profile ids for that port.
+ */
+std::map<std::string, std::vector<cfg::PortProfileID>>
+PlatformMapping::getAllPortProfiles() const {
+  std::map<std::string, std::vector<cfg::PortProfileID>> portProfileIds;
+
+  for (auto& platformPort : platformPorts_) {
+    auto& portName = *platformPort.second.mapping()->name();
+    auto& portProfiles = *platformPort.second.supportedProfiles();
+    std::vector<cfg::PortProfileID> profiles;
+    for (auto& profile : portProfiles) {
+      profiles.push_back(profile.first);
+    }
+    portProfileIds[portName] = profiles;
+  }
+  return portProfileIds;
+}
+
+/*
+ * getPortProfileFromLinkProperties
+ *
+ * Returns the Port Profile ID based on the link properties. The following 5
+ * link properties can uniquely identify a Port Profile:
+ *   - Speed (100G/200G/...)
+ *   - Number of Host Lanes
+ *   - IP Modulation (NRZ/PAM4)
+ *   - FEC (RS528/RS544/RS544_2N/...)
+ *   - Transmitter Media (OPTICAL/COPPER/...)
+ */
+std::vector<cfg::PortProfileID>
+PlatformMapping::getPortProfileFromLinkProperties(
+    cfg::PortSpeed speed,
+    uint16_t numLanes,
+    phy::IpModulation modulation,
+    phy::FecMode fec,
+    std::optional<TransmitterTechnology> medium) const {
+  std::vector<cfg::PortProfileID> profiles;
+
+  for (auto& supportedProfile : platformSupportedProfiles_) {
+    auto& profile = supportedProfile.profile().value();
+    if (profile.speed().value() == speed &&
+        profile.iphy().value().numLanes().value() == numLanes &&
+        profile.iphy().value().modulation().value() == modulation &&
+        profile.iphy().value().fec().value() == fec) {
+      if (medium.has_value() && profile.iphy().value().medium().has_value()) {
+        if (medium.value() != profile.iphy().value().medium().value()) {
+          if (medium.value() == TransmitterTechnology::OPTICAL &&
+              profile.iphy().value().medium().value() ==
+                  TransmitterTechnology::BACKPLANE) {
+            profiles.push_back(
+                supportedProfile.factor().value().profileID().value());
+          }
+          continue;
+        }
+      }
+      profiles.push_back(supportedProfile.factor().value().profileID().value());
+    }
+  }
+  return profiles;
+}
+
+std::vector<PortID> PlatformMapping::getPlatformPorts(
+    cfg::PortType portType) const {
+  std::vector<PortID> portIds;
+  for (const auto& port : getPlatformPorts()) {
+    auto portID = PortID(port.first);
+    const auto& platformPort = port.second;
+    if (platformPort.mapping()->portType() == portType) {
+      portIds.push_back(portID);
+    }
+  }
+  return portIds;
+}
+
+} // namespace facebook::fboss

@@ -7,8 +7,12 @@
 
 namespace facebook::fboss {
 
-void initBenchmarks(int argc, char* argv[]) {
-  benchmarksMain(argc, argv, initSaiPlatform);
+void initBenchmarks() {
+  std::optional<facebook::fboss::cfg::StreamType> streamType = std::nullopt;
+#if defined(TAJO_SDK_GTE_24_4_90)
+  streamType = facebook::fboss::cfg::StreamType::UNICAST;
+#endif
+  benchmarksMain(initSaiPlatform, streamType);
 }
 
 } // namespace facebook::fboss

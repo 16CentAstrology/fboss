@@ -8,6 +8,7 @@ namespace py.asyncio neteng.fboss.asyncio.ctrl
 include "fboss/agent/if/fboss.thrift"
 include "common/fb303/if/fb303.thrift"
 include "common/network/if/Address.thrift"
+include "fboss/agent/agent_stats.thrift"
 include "fboss/agent/if/mpls.thrift"
 include "fboss/agent/if/common.thrift"
 include "fboss/agent/if/product_info.thrift"
@@ -15,9 +16,13 @@ include "fboss/qsfp_service/if/transceiver.thrift"
 include "fboss/agent/switch_config.thrift"
 include "fboss/agent/platform_config.thrift"
 include "fboss/lib/phy/phy.thrift"
+include "fboss/agent/hw/hardware_stats.thrift"
+include "thrift/annotation/python.thrift"
+include "thrift/annotation/cpp.thrift"
 
-typedef binary (cpp2.type = "::folly::fbstring") fbbinary
-typedef string (cpp2.type = "::folly::fbstring") fbstring
+typedef common.fbbinary fbbinary
+typedef common.fbstring fbstring
+typedef common.ClientInformation ClientInformation
 
 const i32 DEFAULT_CTRL_PORT = 5909;
 const i32 NO_VLAN = -1;
@@ -33,15 +38,7 @@ enum AdminDistance {
   MAX_ADMIN_DISTANCE = 255,
 }
 
-// SwSwitch run states. SwSwitch moves forward from a
-// lower numbered state to the next
-enum SwitchRunState {
-  UNINITIALIZED = 0,
-  INITIALIZED = 1,
-  CONFIGURED = 2,
-  FIB_SYNCED = 3,
-  EXITING = 4,
-}
+typedef common.SwitchRunState SwitchRunState
 
 enum SSLType {
   DISABLED = 0,
@@ -54,11 +51,19 @@ enum PortLedExternalState {
   CABLING_ERROR = 1,
   EXTERNAL_FORCE_ON = 2,
   EXTERNAL_FORCE_OFF = 3,
+  CABLING_ERROR_LOOP_DETECTED = 4,
+}
+
+enum PortError {
+  ERROR_DISABLE_LOOP_DETECTED = 1,
+  LANE_SWAP_DETECTED = 2,
+  MISMATCHED_NEIGHBOR = 3,
+  MISSING_EXPECTED_NEIGHBOR = 4,
 }
 
 struct IpPrefix {
-  1: required Address.BinaryAddress ip;
-  2: required i16 prefixLength;
+  1: Address.BinaryAddress ip;
+  2: i16 prefixLength;
 }
 
 enum RouteForwardAction {
@@ -70,7 +75,7 @@ enum RouteForwardAction {
 typedef string RouteCounterID
 
 struct UnicastRoute {
-  1: required IpPrefix dest;
+  1: IpPrefix dest;
   // NOTE: nextHopAddrs was once required. While we work on
   // fully deprecating it, we need to be extra careful and
   // ensure we don't crash clients/servers that still see it as required.
@@ -87,7 +92,7 @@ struct UnicastRoute {
 }
 
 struct MplsRoute {
-  1: required mpls.MplsLabel topLabel;
+  1: mpls.MplsLabel topLabel;
   3: optional AdminDistance adminDistance;
   4: list<common.NextHopThrift> nextHops;
   // use this instead of next hops for using policy based routing or named next hop group
@@ -95,26 +100,26 @@ struct MplsRoute {
 }
 
 struct ClientAndNextHops {
-  1: required i32 clientId;
+  1: i32 clientId;
   // Deprecated in favor of '3: nextHops'
-  2: required list<Address.BinaryAddress> nextHopAddrs;
-  3: required list<common.NextHopThrift> nextHops;
+  2: list<Address.BinaryAddress> nextHopAddrs;
+  3: list<common.NextHopThrift> nextHops;
   // will be populated if policy based route or named next hop group is used
   4: optional common.NamedRouteDestination namedRouteDestination;
 }
 
 struct IfAndIP {
-  1: required i32 interfaceID;
-  2: required Address.BinaryAddress ip;
+  1: i32 interfaceID;
+  2: Address.BinaryAddress ip;
 }
 
 struct RouteDetails {
-  1: required IpPrefix dest;
-  2: required string action;
+  1: IpPrefix dest;
+  2: string action;
   // Deprecated in favor of '7: nextHops'
-  3: required list<IfAndIP> fwdInfo;
-  4: required list<ClientAndNextHops> nextHopMulti;
-  5: required bool isConnected;
+  3: list<IfAndIP> fwdInfo;
+  4: list<ClientAndNextHops> nextHopMulti;
+  5: bool isConnected;
   6: optional AdminDistance adminDistance;
   7: list<common.NextHopThrift> nextHops;
   // use this for policy based route or with named next hop groups
@@ -145,11 +150,19 @@ struct ArpEntryThrift {
   8: i32 classID;
   9: bool isLocal = true;
   10: optional i64 switchId;
+  11: optional i64 resolvedSince;
+  12: i32 interfaceID;
+  13: switch_config.PortDescriptor portDescriptor;
 }
 
 enum L2EntryType {
   L2_ENTRY_TYPE_PENDING = 0,
   L2_ENTRY_TYPE_VALIDATED = 1,
+}
+
+enum L2EntryUpdateType {
+  L2_ENTRY_UPDATE_TYPE_DELETE = 0,
+  L2_ENTRY_UPDATE_TYPE_ADD = 1,
 }
 
 struct L2EntryThrift {
@@ -227,6 +240,9 @@ struct InterfaceDetail {
   5: string mac;
   6: list<IpPrefix> address;
   7: i32 mtu;
+  8: optional common.RemoteInterfaceType remoteIntfType;
+  9: optional common.LivenessStatus remoteIntfLivenessStatus;
+  10: switch_config.Scope scope = switch_config.Scope.LOCAL;
 }
 
 /*
@@ -249,7 +265,8 @@ struct QueueStats {
  */
 struct PortCounters {
   // avoid typechecker error here as bytes is a py3 reserved keyword
-  1: i64 bytes (py3.name = "bytes_");
+  @python.Name{name = "bytes_"}
+  1: i64 bytes;
   2: i64 ucastPkts;
   3: i64 multicastPkts;
   4: i64 broadcastPkts;
@@ -267,10 +284,16 @@ enum PortOperState {
   UP = 1,
 }
 
+enum PortActiveState {
+  INACTIVE = 0,
+  ACTIVE = 1,
+}
+
 enum PortLoopbackMode {
   NONE = 0,
   MAC = 1,
   PHY = 2,
+  NIF = 3,
 }
 
 struct LinearQueueCongestionDetection {
@@ -315,6 +338,7 @@ struct PortQueueThrift {
   9: optional i32 bandwidthBurstMinKbits;
   10: optional i32 bandwidthBurstMaxKbits;
   11: optional list<byte> dscps;
+  12: optional i32 maxDynamicSharedBytes;
 }
 
 struct PfcConfig {
@@ -346,6 +370,70 @@ struct PortInfoThrift {
   21: optional PortHardwareDetails hw;
   22: optional TransceiverIdxThrift transceiverIdx;
   23: optional i32 hwLogicalPortId;
+  24: bool isDrained;
+  25: optional PortActiveState activeState;
+  26: list<PortError> activeErrors;
+  27: optional string expectedLLDPeerName;
+  28: optional string expectedLLDPPeerPort;
+  29: optional i32 coreId;
+  30: optional i32 virtualDeviceId;
+  31: switch_config.PortType portType;
+  32: switch_config.Scope scope;
+}
+
+// Port queueing configuration
+struct PortQueueFields {
+  1: i16 id = 0;
+  2: i32 weight = 1;
+  3: optional i32 reserved;
+  // TODO: replace with switch_config.MMUScalingFactor?
+  4: optional string scalingFactor;
+  // TODO: replace with switch_config.QueueScheduling?
+  5: string scheduling = "WEIGHTED_ROUND_ROBIN";
+  // TODO: replace with switch_config.StreamType?
+  6: string streamType = "UNICAST";
+  7: optional list<switch_config.ActiveQueueManagement> aqms;
+  8: optional string name;
+  /*
+  * Refer PortQueueRate which is a generalized version and allows configuring
+  * pps as well as kbps.
+  */
+  10: optional i32 packetsPerSec_DEPRECATED;
+  11: optional i32 sharedBytes;
+  12: optional switch_config.PortQueueRate portQueueRate;
+
+  13: optional i32 bandwidthBurstMinKbits;
+  14: optional i32 bandwidthBurstMaxKbits;
+  15: optional i16 trafficClass;
+  16: optional list<i16> pfcPriorities;
+  17: optional i32 maxDynamicSharedBytes;
+  18: optional string bufferPoolName;
+  19: optional common.BufferPoolFields bufferPoolConfig;
+}
+
+struct SystemPortThrift {
+  1: i64 portId;
+  2: i64 switchId;
+  3: string portName; // switchId::portName
+  4: i64 coreIndex;
+  5: i64 corePortIndex;
+  6: i64 speedMbps;
+  7: i64 numVoqs;
+  // System ports are always enabled
+  9: bool enabled_DEPRECATED = true;
+  10: optional string qosPolicy;
+  11: list<PortQueueFields> queues;
+  /*
+   * Set only on Remote System Ports of VOQ switches.
+   */
+  12: optional common.RemoteSystemPortType remoteSystemPortType;
+  /*
+   * Set only on Remote System Ports of VOQ switches.
+   */
+  13: optional common.LivenessStatus remoteSystemPortLivenessStatus;
+  14: switch_config.Scope scope = switch_config.Scope.LOCAL;
+  15: bool shelDestinationEnabled_DEPRECATED = false;
+  16: optional bool shelDestinationEnabled;
 }
 
 struct PortHardwareDetails {
@@ -367,6 +455,9 @@ struct NdpEntryThrift {
   8: i32 classID;
   9: bool isLocal = true;
   10: optional i64 switchId;
+  11: optional i64 resolvedSince;
+  12: i32 interfaceID;
+  13: switch_config.PortDescriptor portDescriptor;
 }
 
 enum BootType {
@@ -388,6 +479,7 @@ struct PortStatus {
   4: optional TransceiverIdxThrift transceiverIdx;
   5: i64 speedMbps; // TODO: i32 (someone is optimistic about port speeds)
   6: string profileID;
+  7: bool drained;
 }
 
 enum CaptureDirection {
@@ -405,7 +497,7 @@ enum CpuCosQueueId {
 
 struct RxCaptureFilter {
   1: list<CpuCosQueueId> cosQueues;
-# can put additional Rx filters here if need be
+  # can put additional Rx filters here if need be
 }
 
 struct CaptureFilter {
@@ -500,6 +592,12 @@ enum ClientID {
   LINKLOCAL_ROUTE = 3,
 
   /*
+   * Interface routes that are derived from remote interface nodes in the DSF cluster.
+   * These routes are propagated by DSF subscriptions.
+   */
+  REMOTE_INTERFACE_ROUTE = 4,
+
+  /*
    * Auto generated routes by Agent. Agent by default programs default (v4 & v6)
    * route pointing to NULL if they're not specified by any other clients. These
    * routes should be least preferred and act as last resort.
@@ -536,11 +634,11 @@ struct AclEntryThrift {
   21: string actionType;
   22: optional byte lookupClassL2;
   23: optional bool enabled;
+  24: optional list<string> udfGroups;
 }
 
-struct ClientInformation {
-  1: optional fbstring username;
-  2: optional fbstring hostname;
+struct AclTableThrift {
+  1: map<string, list<AclEntryThrift>> aclTableEntries;
 }
 
 enum HwObjectType {
@@ -569,6 +667,7 @@ enum HwObjectType {
   MACSEC = 22,
   SAI_MANAGED_OBJECTS = 23,
   IPTUNNEL = 24,
+  SYSTEM_PORT = 25,
 }
 
 exception FbossFibUpdateError {
@@ -597,8 +696,10 @@ typedef string TeCounterID
 
 struct FlowEntry {
   1: TeFlow flow;
+  // DEPRECATED: nextHops is replaced by the optional nexthops field.
   2: list<common.NextHopThrift> nextHops;
   3: optional TeCounterID counterID;
+  4: optional list<common.NextHopThrift> nexthops;
 }
 
 safe stateful server exception FbossTeUpdateError {
@@ -624,10 +725,51 @@ struct FabricEndpoint {
   // Is the port attached to anything on the
   // other side. All other fields are relevant
   // only when isAttached == true
-  5: bool isAttached;
+  5: bool isAttached = false;
   6: switch_config.SwitchType switchType;
   7: optional i64 expectedSwitchId;
   8: optional i32 expectedPortId;
+  9: optional string expectedPortName;
+  10: optional string expectedSwitchName;
+}
+
+struct FsdbSubscriptionThrift {
+  1: string name;
+  2: list<string> paths;
+  3: string state;
+  4: string ip;
+  // Unique ID for subscription to name, ip
+  5: string subscriptionId;
+}
+
+enum DsfSessionState {
+  IDLE = 1,
+  CONNECT = 2,
+  WAIT_FOR_REMOTE = 3,
+  ESTABLISHED = 4,
+  DISCONNECTED = 5,
+  REMOTE_DISCONNECTED = 6,
+}
+
+struct DsfSessionThrift {
+  1: string remoteName;
+  2: DsfSessionState state;
+  3: optional i64 lastEstablishedAt;
+  4: optional i64 lastDisconnectedAt;
+}
+
+struct MultiSwitchRunState {
+  1: SwitchRunState swSwitchRunState;
+  // SwitchIndex to SwitchRunState
+  2: map<i32, SwitchRunState> hwIndexToRunState;
+  3: bool multiSwitchEnabled;
+}
+
+struct EcmpDetails {
+  1: i32 ecmpId;
+  2: bool flowletEnabled;
+  3: i16 flowletInterval;
+  4: i32 flowletTableSize;
 }
 
 service FbossCtrl extends phy.FbossCommonPhyCtrl {
@@ -792,9 +934,8 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
     1: fboss.FbossBaseError error,
   );
   // DEPRECATED: API will no longer work in agent
-  void registerForNeighborChanged() throws (1: fboss.FbossBaseError error) (
-    thread = 'eb',
-  );
+  @cpp.ProcessInEbThreadUnsafe
+  void registerForNeighborChanged() throws (1: fboss.FbossBaseError error);
   list<string> getInterfaceList() throws (1: fboss.FbossBaseError error);
   /*
    * TODO (allwync): get rid of getRouteTable after agent code with thrift
@@ -861,6 +1002,13 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
    * state after, for example, restart.
    */
   void setPortState(1: i32 portId, 2: bool enable) throws (
+    1: fboss.FbossBaseError error,
+  );
+
+  /*
+   * Set drain state for a port
+   */
+  void setPortDrainState(1: i32 portId, 2: bool drain) throws (
     1: fboss.FbossBaseError error,
   );
 
@@ -944,6 +1092,26 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
   map<i32, PortInfoThrift> getAllPortStats() throws (
     1: fboss.FbossBaseError error,
   );
+  map<string, hardware_stats.HwSysPortStats> getSysPortStats() throws (
+    1: fboss.FbossBaseError error,
+  );
+  map<string, hardware_stats.HwPortStats> getHwPortStats() throws (
+    1: fboss.FbossBaseError error,
+  );
+  hardware_stats.CpuPortStats getCpuPortStats() throws (
+    1: fboss.FbossBaseError error,
+  );
+  map<i32, hardware_stats.CpuPortStats> getAllCpuPortStats() throws (
+    1: fboss.FbossBaseError error,
+  );
+  hardware_stats.FabricReachabilityStats getFabricReachabilityStats() throws (
+    1: fboss.FbossBaseError error,
+  );
+
+  map<
+    i16,
+    agent_stats.HwAgentEventSyncStatus
+  > getHwAgentConnectionStatus() throws (1: fboss.FbossBaseError error);
 
   /* Return running config */
   string getRunningConfig() throws (1: fboss.FbossBaseError error);
@@ -951,6 +1119,7 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
   list<ArpEntryThrift> getArpTable() throws (1: fboss.FbossBaseError error);
   list<NdpEntryThrift> getNdpTable() throws (1: fboss.FbossBaseError error);
   list<L2EntryThrift> getL2Table() throws (1: fboss.FbossBaseError error);
+  AclTableThrift getAclTableGroup() throws (1: fboss.FbossBaseError error);
   list<AclEntryThrift> getAclTable() throws (1: fboss.FbossBaseError error);
 
   AggregatePortThrift getAggregatePort(1: i32 aggregatePortID) throws (
@@ -1057,15 +1226,22 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
   string getCurrentStateJSON(1: string path);
 
   /*
-   * Apply patch at given path within the state tree. jsonPatch must  be
-   * a valid JSON object string
+   * Get live serialized switch state for provided paths
    */
-  void patchCurrentStateJSON(1: string jsonPointer, 2: string jsonPatch);
+  map<string, string> getCurrentStateJSONForPaths(1: list<string> paths);
+
+  /*
+   * Apply every json Patch to specified path.
+   * json Patch must be a valid JSON object string.
+   */
+  void patchCurrentStateJSONForPaths(1: map<string, string> pathToJsonPatch);
 
   /*
   * Switch run state
   */
   SwitchRunState getSwitchRunState();
+
+  MultiSwitchRunState getMultiSwitchRunState();
 
   SSLType getSSLPolicy() throws (1: fboss.FbossBaseError error);
 
@@ -1076,21 +1252,6 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
     1: i32 portNum,
     2: PortLedExternalState ledState,
   ) throws (1: fboss.FbossBaseError error);
-
-  /*
-   * Enables submitting diag cmds to the switch
-   */
-  fbstring diagCmd(
-    1: fbstring cmd,
-    2: ClientInformation client,
-    3: i16 serverTimeoutMsecs = 0,
-    4: bool bypassFilter = false,
-  );
-
-  /*
-   * Get formatted string for diag cmd filters configuration
-   */
-  fbstring cmdFiltersAsString() throws (1: fboss.FbossBaseError error);
 
   /*
   * Return the system's platform mapping (see platform_config.thrift)
@@ -1230,33 +1391,86 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
     1: list<switch_config.MacAndVlan> macAddrsToblock,
   ) throws (1: fboss.FbossBaseError error);
 
+  # Deprecated
   void addTeFlows(1: list<FlowEntry> teFlowEntries) throws (
     1: fboss.FbossBaseError error,
     2: FbossTeUpdateError teFlowError,
   );
 
+  # Deprecated
   void deleteTeFlows(1: list<TeFlow> teFlows) throws (
     1: fboss.FbossBaseError error,
     2: FbossTeUpdateError teFlowError,
   );
 
+  # Deprecated
   void syncTeFlows(1: list<FlowEntry> teFlowEntries) throws (
     1: fboss.FbossBaseError error,
     2: FbossTeUpdateError teFlowError,
   );
 
+  # Deprecated
   list<TeFlowDetails> getTeFlowTableDetails() throws (
     1: fboss.FbossBaseError error,
   );
+  map<string, FabricEndpoint> getFabricConnectivity() throws (
+    1: fboss.FbossBaseError error,
+  );
+  # Deprecated. To be deleted after migrating clients
   map<string, FabricEndpoint> getFabricReachability() throws (
     1: fboss.FbossBaseError error,
   );
+  map<string, list<string>> getSwitchReachability(
+    1: list<string> switchNames,
+  ) throws (1: fboss.FbossBaseError error);
   map<i64, switch_config.DsfNode> getDsfNodes() throws (
     1: fboss.FbossBaseError error,
   );
-  map<i64, common.SystemPortThrift> getSystemPorts() throws (
+  list<FsdbSubscriptionThrift> getDsfSubscriptions() throws (
     1: fboss.FbossBaseError error,
   );
+  string getDsfSubscriptionClientId() throws (1: fboss.FbossBaseError error);
+  /*
+   * Get bi-directional session status for dsf subscriptions.
+   */
+  list<DsfSessionThrift> getDsfSessions() throws (
+    1: fboss.FbossBaseError error,
+  );
+
+  map<i64, SystemPortThrift> getSystemPorts() throws (
+    1: fboss.FbossBaseError error,
+  );
+
+  /*
+   * Only applicable to DSF Fabric Switch
+   */
+  bool isSwitchDrained() throws (1: fboss.FbossBaseError error);
+
+  /*
+   * On VOQ switches, actual switch drain state is determined by the number of
+   * fabric ports UP and configured thresholds, so could be different from the
+   * configured desired switch drain state.
+   */
+  map<i64, switch_config.SwitchDrainState> getActualSwitchDrainState() throws (
+    1: fboss.FbossBaseError error,
+  );
+
+  /*
+   * Get all the ecmp object details in the HW
+   */
+  list<EcmpDetails> getAllEcmpDetails() throws (1: fboss.FbossBaseError error);
+
+  /*
+   * Get switch indices for interfaces
+   */
+  map<i16, list<string>> getSwitchIndicesForInterfaces(
+    1: list<string> interfaces,
+  ) throws (1: fboss.FbossBaseError error);
+
+  /*
+   * Get SwitchID to SwitchInfo for all SwitchIDs.
+   */
+  map<i64, switch_config.SwitchInfo> getSwitchIdToSwitchInfo();
 }
 
 service NeighborListenerClient extends fb303.FacebookService {

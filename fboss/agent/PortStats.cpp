@@ -11,7 +11,6 @@
 #include <fb303/ThreadCachedServiceData.h>
 #include <folly/String.h>
 #include "fboss/agent/SwitchStats.h"
-#include "fboss/agent/normalization/Normalizer.h"
 
 using facebook::fb303::SUM;
 
@@ -20,8 +19,14 @@ namespace facebook::fboss {
 const std::string kNameKeySeperator = ".";
 const std::string kUp = "up";
 const std::string kLinkStateFlap = "link_state.flap";
+const std::string kActive = "active";
+const std::string kLinkActiveStateFlap = "link_active_state.flap";
 const std::string kPfcDeadlockDetectionCount = "pfc_deadlock_detection";
 const std::string kPfcDeadlockRecoveryCount = "pfc_deadlock_recovery";
+const std::string kLoadBearingInErrors = "load_bearing_in_errors";
+const std::string kLoadBearingFecUncorrErrors =
+    "load_bearing_fec_uncorrectable_errors";
+const std::string kLoadBearingLinkStateFlap = "load_bearing_link_state.flap";
 
 PortStats::PortStats(
     PortID portID,
@@ -30,17 +35,18 @@ PortStats::PortStats(
     : portID_(portID), portName_(portName), switchStats_(switchStats) {
   if (!portName_.empty()) {
     tcData().addStatValue(getCounterKey(kLinkStateFlap), 0, SUM);
+    tcData().addStatValue(getCounterKey(kLinkActiveStateFlap), 0, SUM);
   }
 }
 
-PortStats::~PortStats() {
-  // clear counter
-  clearPortStatusCounter();
-}
+PortStats::~PortStats() {}
 
 void PortStats::setPortName(const std::string& portName) {
   // clear counter
   clearPortStatusCounter();
+  clearPortActiveStatusCounter();
+  tcData().clearCounter(getCounterKey(kLoadBearingInErrors));
+  tcData().clearCounter(getCounterKey(kLoadBearingFecUncorrErrors));
   portName_ = portName;
 }
 
@@ -145,7 +151,26 @@ void PortStats::dhcpV6DropPkt() {
   switchStats_->dhcpV6DropPkt();
 }
 
-void PortStats::linkStateChange(bool isUp) {
+void PortStats::updateLoadBearingTLStatValue(
+    const std::string& counter,
+    bool isDrained,
+    std::optional<bool> activeState,
+    int64_t val) const {
+  if (activeState.has_value()) {
+    if (!isDrained && *activeState) {
+      // not drained and active (peer not drained) - log value
+      tcData().addStatValue(getCounterKey(counter), val, SUM);
+    } else {
+      // local drain or peer drained. No load bearing impact
+      tcData().addStatValue(getCounterKey(counter), 0, SUM);
+    }
+  }
+}
+
+void PortStats::linkStateChange(
+    bool isUp,
+    bool isDrained,
+    std::optional<bool> activeState) {
   // We decided not to maintain the TLTimeseries in PortStats and use tcData()
   // to addStatValue based on the key name, because:
   // 1) each thread has its own SwitchStats and PortStats
@@ -158,11 +183,17 @@ void PortStats::linkStateChange(bool isUp) {
   // TLTimeseries and leave ThreadLocalStats do it for us.
   if (!portName_.empty()) {
     tcData().addStatValue(getCounterKey(kLinkStateFlap), 1, SUM);
-    if (auto normalizer = Normalizer::getInstance()) {
-      normalizer->processLinkStateChange(portName_, isUp);
-    }
+    updateLoadBearingTLStatValue(
+        kLoadBearingLinkStateFlap, isDrained, activeState, 1);
   }
   switchStats_->linkStateChange();
+}
+
+void PortStats::linkActiveStateChange(bool isActive) {
+  if (!portName_.empty()) {
+    tcData().addStatValue(getCounterKey(kLinkActiveStateFlap), 1, SUM);
+  }
+  switchStats_->linkActiveStateChange();
 }
 
 void PortStats::pfcDeadlockDetectionCount() {
@@ -196,6 +227,18 @@ void PortStats::setPortStatus(bool isUp) {
 void PortStats::clearPortStatusCounter() {
   if (!portName_.empty()) {
     tcData().clearCounter(getCounterKey(kUp));
+  }
+}
+
+void PortStats::setPortActiveStatus(bool isActive) {
+  if (!portName_.empty()) {
+    tcData().setCounter(getCounterKey(kActive), isActive);
+  }
+}
+
+void PortStats::clearPortActiveStatusCounter() {
+  if (!portName_.empty()) {
+    tcData().clearCounter(getCounterKey(kActive));
   }
 }
 
@@ -242,8 +285,29 @@ void PortStats::MKAServiceRecvSuccess() {
   switchStats_->MKAServiceRecvSuccess();
 }
 
-std::string PortStats::getCounterKey(const std::string& key) {
+std::string PortStats::getCounterKey(const std::string& key) const {
   return folly::to<std::string>(portName_, kNameKeySeperator, key);
+}
+
+void PortStats::inErrors(
+    int64_t inErrors,
+    bool isDrained,
+    std::optional<bool> activeState) {
+  updateLoadBearingTLStatValue(
+      kLoadBearingInErrors, isDrained, activeState, inErrors - curInErrors_);
+  curInErrors_ = inErrors;
+}
+
+void PortStats::fecUncorrectableErrors(
+    int64_t fecUncorrectableErrors,
+    bool isDrained,
+    std::optional<bool> activeState) {
+  updateLoadBearingTLStatValue(
+      kLoadBearingFecUncorrErrors,
+      isDrained,
+      activeState,
+      fecUncorrectableErrors - curFecUncorrectableErrors_);
+  curFecUncorrectableErrors_ = fecUncorrectableErrors;
 }
 
 } // namespace facebook::fboss

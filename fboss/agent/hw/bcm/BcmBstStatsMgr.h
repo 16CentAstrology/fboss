@@ -51,6 +51,15 @@ class BcmBstStatsMgr {
     return deviceWatermarkBytes_.load();
   }
 
+  const std::map<std::string, uint64_t>& getGlobalHeadroomWatermarkBytes()
+      const {
+    return globalHeadroomWatermarkBytes_;
+  }
+
+  const std::map<std::string, uint64_t>& getGlobalSharedWatermarkBytes() const {
+    return globalSharedWatermarkBytes_;
+  }
+
   void updateStats();
 
  private:
@@ -71,7 +80,7 @@ class BcmBstStatsMgr {
       const uint64_t& globalHeadroomBytes,
       const uint64_t& globalSharedBytes) const;
   void getAndPublishGlobalWatermarks(
-      const std::map<int, bcm_port_t>& itmToPortMap) const;
+      const std::map<int, bcm_port_t>& itmToPortMap);
   void createItmToPortMap(std::map<int, bcm_port_t>& itmToPortMap) const;
 
   BufferStatsLogger* getBufferStatsLogger() const {
@@ -87,6 +96,8 @@ class BcmBstStatsMgr {
    * maybe read from other threads
    */
   std::atomic<uint64_t> deviceWatermarkBytes_{0};
+  std::map<std::string, uint64_t> globalHeadroomWatermarkBytes_{};
+  std::map<std::string, uint64_t> globalSharedWatermarkBytes_{};
 };
 
 } // namespace facebook::fboss

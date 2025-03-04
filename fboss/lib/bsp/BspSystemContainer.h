@@ -1,8 +1,9 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #pragma once
-#include <folly/logging/xlog.h>
+#include <memory>
 #include <unordered_map>
+
 #include "fboss/lib/bsp/BspLedContainer.h"
 #include "fboss/lib/bsp/BspPimContainer.h"
 #include "fboss/lib/bsp/BspPlatformMapping.h"
@@ -21,26 +22,24 @@ class BspSystemContainer {
   // (BspSystemContainer) ctor will mmap the fpga which is required to do
   // read/write.
   explicit BspSystemContainer(std::unique_ptr<FpgaDevice> fpgaDevice);
-  explicit BspSystemContainer(BspPlatformMapping* bspMapping);
 
-  void initializePimContainers();
-
-  void setBspPlatformMapping(BspPlatformMapping* mapping) {
-    bspMapping_ = mapping;
-  }
+  // An expectation of this constructor is to initialize the Pim Containers
+  explicit BspSystemContainer(std::unique_ptr<BspPlatformMapping> bspMapping);
 
   BspPlatformMapping* getBspPlatformMapping() const {
-    return bspMapping_;
+    return bspMapping_.get();
   }
 
   FpgaDevice* getFpgaDevice() const {
     return fpgaDevice_.get();
   }
 
+  void createBspLedContainers();
+
   const BspPimContainer* getPimContainerFromPimID(int pimID) const;
   const BspPimContainer* getPimContainerFromTcvrID(int tcvrID) const;
   BspDeviceMdioController* getMdioController(int pimID, int controllerID) const;
-  LedIO* getLedController(int tcvrID) const;
+  std::map<uint32_t, LedIO*> getLedController(int tcvrID) const;
   int getNumTransceivers() const;
   int getPimIDFromTcvrID(int tcvrID) const;
   int getNumPims() const;
@@ -48,7 +47,9 @@ class BspSystemContainer {
   bool isTcvrPresent(int tcvrID) const;
   void initAllTransceivers() const;
   void clearAllTransceiverReset() const;
-  void triggerQsfpHardReset(int tcvrID) const;
+  void initTransceiver(int tcvrID) const;
+  void holdTransceiverReset(int tcvrID) const;
+  void releaseTransceiverReset(int tcvrID) const;
   const I2cControllerStats getI2cControllerStats(int tcvrID) const;
 
   void tcvrRead(
@@ -99,12 +100,25 @@ class BspSystemContainer {
     return phyMgr_->getExternalPhy(phyMgr_->getGlobalXphyID(info));
   }
 
+  void i2cTimeProfilingStart(unsigned int tcvrID) const;
+  void i2cTimeProfilingEnd(unsigned int tcvrID) const;
+  std::pair<uint64_t, uint64_t> getI2cTimeProfileMsec(
+      unsigned int tcvrID) const;
+
   virtual ~BspSystemContainer() {}
+
+ protected:
+  // Initialize the PIM Containers. Must be called during
+  // construction of the BspSystemContainer class if a BSP
+  // mapping is passed. The reason for this is that any derived
+  // class can assume the PIM containers to be initialized
+  // once the BspSystemContainer is constructed.
+  void initializePimContainers();
+  std::unique_ptr<BspPlatformMapping> bspMapping_;
 
  private:
   std::unordered_map<int, std::unique_ptr<BspPimContainer>> pimContainers_;
   std::unique_ptr<FpgaDevice> fpgaDevice_;
-  BspPlatformMapping* bspMapping_;
   PhyManager* phyMgr_;
 };
 

@@ -12,6 +12,8 @@
 namespace facebook {
 namespace fboss {
 
+using namespace facebook::fboss::phy;
+
 const std::optional<QsfpModule::LengthAndGauge> SffModule::getDACCableOverride()
     const {
   return std::nullopt;
@@ -55,13 +57,13 @@ const std::optional<phy::PrbsStats> SffModule::getPortPrbsStatsOverrideLocked(
 }
 
 void SffModule::readSffFr1Field(
-    SffFr1Field /* field */,
+    SffField /* field */,
     uint8_t* /* data */,
-    bool /* skipPageChange */){};
+    bool /* skipPageChange */) {};
 
 void SffModule::writeSffFr1Field(
-    SffFr1Field /* field */,
+    SffField /* field */,
     uint8_t* /* data */,
-    bool /* skipPageChange */){};
+    bool /* skipPageChange */) {};
 } // namespace fboss
 } // namespace facebook

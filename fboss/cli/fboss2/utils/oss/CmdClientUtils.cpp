@@ -10,6 +10,7 @@
 
 #include "fboss/cli/fboss2/utils/CmdClientUtils.h"
 #include "fboss/agent/if/gen-cpp2/FbossCtrl.h"
+#include "fboss/cli/fboss2/CmdGlobalOptions.h"
 #include "fboss/qsfp_service/if/gen-cpp2/QsfpService.h"
 
 namespace facebook::fboss::utils {
@@ -21,11 +22,47 @@ std::unique_ptr<facebook::fboss::FbossCtrlAsyncClient> createAgentClient(
       hostInfo, agentPort);
 }
 
+std::unique_ptr<apache::thrift::Client<FbossCtrl>> createAgentClient(
+    const HostInfo& hostInfo,
+    int switchIndex) {
+  auto agentPort =
+      CmdGlobalOptions::getInstance()->getHwAgentThriftPort(switchIndex);
+  return createPlaintextClient<apache::thrift::Client<FbossCtrl>>(
+      hostInfo, agentPort);
+}
+
+std::unique_ptr<facebook::fboss::FbossCtrlAsyncClient> createAgentClient(
+    const HostInfo& hostInfo,
+    const std::chrono::milliseconds& timeout) {
+  auto port = CmdGlobalOptions::getInstance()->getAgentThriftPort();
+
+  return createPlaintextClient<facebook::fboss::FbossCtrlAsyncClient>(
+      hostInfo, port);
+}
+
+std::unique_ptr<apache::thrift::Client<FbossHwCtrl>> createHwAgentClient(
+    const HostInfo& hostInfo,
+    int switchIndex) {
+  auto agentPort =
+      CmdGlobalOptions::getInstance()->getHwAgentThriftPort(switchIndex);
+  return createPlaintextClient<apache::thrift::Client<FbossHwCtrl>>(
+      hostInfo, agentPort);
+}
+
 std::unique_ptr<facebook::fboss::QsfpServiceAsyncClient> createQsfpClient(
     const HostInfo& hostInfo) {
   auto qsfpServicePort = CmdGlobalOptions::getInstance()->getQsfpThriftPort();
   return createPlaintextClient<facebook::fboss::QsfpServiceAsyncClient>(
       hostInfo, qsfpServicePort);
+}
+
+std::unique_ptr<
+    apache::thrift::Client<facebook::fboss::led_service::LedService>>
+createLedClient(const HostInfo& hostInfo) {
+  auto port = CmdGlobalOptions::getInstance()->getQsfpThriftPort();
+  return createPlaintextClient<
+      apache::thrift::Client<facebook::fboss::led_service::LedService>>(
+      hostInfo, port);
 }
 
 } // namespace facebook::fboss::utils

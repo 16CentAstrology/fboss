@@ -9,16 +9,17 @@
  */
 #pragma once
 
-#include <folly/dynamic.h>
-#include <folly/io/async/EventBase.h>
+#include <folly/json/dynamic.h>
 #include <gtest/gtest_prod.h>
 #include <optional>
+#include "fboss/agent/FbossEventBase.h"
 #include "fboss/agent/HwSwitch.h"
 #include "fboss/agent/L2Entry.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/hw/bcm/BcmPlatform.h"
 #include "fboss/agent/hw/bcm/BcmRxPacket.h"
 #include "fboss/agent/hw/bcm/types.h"
+#include "fboss/agent/state/FlowletSwitchingConfig.h"
 #include "fboss/agent/types.h"
 #include "fboss/lib/phy/gen-cpp2/prbs_types.h"
 
@@ -42,6 +43,7 @@ extern "C" {
 
 DECLARE_bool(flexports);
 DECLARE_bool(force_init_fp);
+DECLARE_bool(flowletSwitchingEnable);
 
 namespace facebook::fboss {
 
@@ -61,6 +63,7 @@ class BcmL3NextHop;
 class BcmLabeledHostKey;
 class BcmMplsNextHop;
 class BcmMultiPathNextHopTable;
+class BcmMultiPathNextHopStatsManager;
 class BcmNeighborTable;
 template <class K, class V>
 class BcmNextHopTable;
@@ -105,6 +108,8 @@ class UnsupportedFeatureManager;
 class BcmUdfManager;
 class UdfPacketMatcher;
 class UdfGroup;
+class MultiSwitchSettings;
+class SwitchSettings;
 
 /*
  * Virtual interface to BcmSwitch, primarily for mocking/testing
@@ -152,6 +157,12 @@ class BcmSwitchIf : public HwSwitch {
   virtual const BcmMultiPathNextHopTable* getMultiPathNextHopTable() const = 0;
 
   virtual BcmMultiPathNextHopTable* writableMultiPathNextHopTable() const = 0;
+
+  virtual const BcmMultiPathNextHopStatsManager*
+  getMultiPathNextHopStatsManager() const = 0;
+
+  virtual BcmMultiPathNextHopStatsManager*
+  writableMultiPathNextHopStatsManager() const = 0;
 
   virtual const BcmAclTable* getAclTable() const = 0;
 
@@ -211,6 +222,7 @@ class BcmSwitchIf : public HwSwitch {
 class BcmSwitch : public BcmSwitchIf {
  public:
   using HwSwitch::FeaturesDesired;
+  using HwSwitch::stateChanged;
   /*
    * Construct a new BcmSwitch.
    *
@@ -238,9 +250,8 @@ class BcmSwitch : public BcmSwitchIf {
    */
   HwInitResult initImpl(
       Callback* callback,
-      bool failHwCallsOnWarmboot,
-      cfg::SwitchType switchType,
-      std::optional<int64_t> switchId) override;
+      BootType bootType,
+      bool failHwCallsOnWarmboot) override;
 
   /*
    * Minimal initialization of the BcmSwitch. This is used for BcmReplayTest.
@@ -345,6 +356,15 @@ class BcmSwitch : public BcmSwitchIf {
     return multiPathNextHopTable_.get();
   }
 
+  const BcmMultiPathNextHopStatsManager* getMultiPathNextHopStatsManager()
+      const override {
+    return multiPathNextHopStatsManager_.get();
+  }
+  BcmMultiPathNextHopStatsManager* writableMultiPathNextHopStatsManager()
+      const override {
+    return multiPathNextHopStatsManager_.get();
+  }
+
   const BcmQosPolicyTable* getQosPolicyTable() const override {
     return qosPolicyTable_.get();
   }
@@ -375,17 +395,6 @@ class BcmSwitch : public BcmSwitchIf {
     return controlPlane_.get();
   }
 
-  // The following function will modify the object. In particular, the return
-  // state will be published (to indicate what has actually been applied). If
-  // everything from delta was successfully applied, then the "new" state in
-  // delta will be published.
-  //
-  // Lock has to be performed in the function.
-  std::shared_ptr<SwitchState> stateChanged(const StateDelta& delta) override;
-
-  std::shared_ptr<SwitchState> stateChangedTransaction(
-      const StateDelta& delta) override;
-
   /*
    * BcmSwitch state as folly::dynamic
    * For now we only dump Host table.
@@ -397,7 +406,26 @@ class BcmSwitch : public BcmSwitchIf {
     return {};
   }
 
+  FabricReachabilityStats getFabricReachabilityStats() const override {
+    return {};
+  }
+
+  CpuPortStats getCpuPortStats() const override;
+
   uint64_t getDeviceWatermarkBytes() const override;
+
+  TeFlowStats getTeFlowStats() const override;
+  HwSwitchDropStats getSwitchDropStats() const override {
+    // No HwSwitchDropStats collected
+    return HwSwitchDropStats{};
+  }
+
+  HwSwitchWatermarkStats getSwitchWatermarkStats() const override;
+  HwFlowletStats getHwFlowletStats() const override;
+
+  HwResourceStats getResourceStats() const override;
+
+  std::vector<EcmpDetails> getAllEcmpDetails() const override;
 
   /*
    * Wrapper functions to register and unregister a BCM event callbacks.  These
@@ -492,12 +520,6 @@ class BcmSwitch : public BcmSwitchIf {
    */
   void exitFatal() const override;
 
-  /*
-   * Returns true if the neighbor entry for the passed in ip
-   * has been hit.
-   */
-  bool getAndClearNeighborHit(RouterID vrf, folly::IPAddress& ip) override;
-
   phy::FecMode getPortFECMode(PortID port) const override;
 
   cfg::PortSpeed getPortMaxSpeed(PortID port) const override;
@@ -559,13 +581,8 @@ class BcmSwitch : public BcmSwitchIf {
   void clearPortStats(
       const std::unique_ptr<std::vector<int32_t>>& ports) override;
 
-  std::vector<phy::PrbsLaneStats> getPortAsicPrbsStats(int32_t portId) override;
-  void clearPortAsicPrbsStats(int32_t portId) override;
-
-  std::vector<phy::PrbsLaneStats> getPortGearboxPrbsStats(
-      int32_t portId,
-      phy::Side side) override;
-  void clearPortGearboxPrbsStats(int32_t portId, phy::Side side) override;
+  std::vector<phy::PrbsLaneStats> getPortAsicPrbsStats(PortID portId) override;
+  void clearPortAsicPrbsStats(PortID portId) override;
 
   std::vector<prbs::PrbsPolynomial> getPortPrbsPolynomials(
       int32_t /* portId */) override;
@@ -610,10 +627,30 @@ class BcmSwitch : public BcmSwitchIf {
 
   bool usePKTIO() const;
 
-  std::map<PortID, phy::PhyInfo> updateAllPhyInfo() override;
-  std::map<PortID, FabricEndpoint> getFabricReachability() const override {
+  std::map<PortID, phy::PhyInfo> updateAllPhyInfoImpl() override;
+  const std::map<PortID, FabricEndpoint>& getFabricConnectivity()
+      const override {
+    static const std::map<PortID, FabricEndpoint> kEmpty;
+    return kEmpty;
+  }
+  std::vector<PortID> getSwitchReachability(SwitchID switchId) const override {
     return {};
   }
+
+  void syncLinkStates() override;
+
+  // no concept of link active states in BcmSwitch
+  void syncLinkActiveStates() override {}
+  // no (fabric) link connectivity concept in BcmSwitch
+  void syncLinkConnectivity() override {}
+  // no switch reachability in BcmSwitch
+  void syncSwitchReachability() override {}
+
+  AclStats getAclStats() const override;
+
+  std::shared_ptr<SwitchState> reconstructSwitchState() const override;
+
+  void injectSwitchReachabilityChangeNotification() override {}
 
  private:
   enum Flags : uint32_t {
@@ -637,9 +674,7 @@ class BcmSwitch : public BcmSwitchIf {
    * state changes while we are calling cleanup
    * shutdown apis in the BCM sdk.
    */
-  void gracefulExitImpl(
-      folly::dynamic& follyWwitchState,
-      state::WarmbootState& thriftSwitchState) override;
+  void gracefulExitImpl() override;
   /*
    * Handle SwitchRunState changes
    */
@@ -648,7 +683,7 @@ class BcmSwitch : public BcmSwitchIf {
   /*
    * Update all statistics.
    */
-  void updateStatsImpl(SwitchStats* switchStats) override;
+  void updateStatsImpl() override;
 
   /*
    * Get default state switch is in on a cold boot
@@ -674,13 +709,14 @@ class BcmSwitch : public BcmSwitchIf {
   void processAddedIntf(const std::shared_ptr<Interface>& intf);
   void processRemovedIntf(const std::shared_ptr<Interface>& intf);
 
+  template <typename MapDeltaT>
   void processNeighborDelta(
-      const StateDelta& delta,
+      const MapDeltaT& mapDelta,
       std::shared_ptr<SwitchState>* appliedState,
       DeltaType optype);
-  template <typename AddrT>
+  template <typename MapDeltaT, typename AddrT>
   void processNeighborTableDelta(
-      const StateDelta& stateDelta,
+      const MapDeltaT& mapDelta,
       std::shared_ptr<SwitchState>* appliedState,
       DeltaType optype);
 
@@ -721,7 +757,7 @@ class BcmSwitch : public BcmSwitchIf {
       const std::shared_ptr<RouteT>& route);
   template <typename RouteT>
   void processRemovedRoute(
-      const RouterID id,
+      const RouterID& id,
       const std::shared_ptr<RouteT>& route);
   void processRemovedRoutes(const StateDelta& delta);
   void processAddedChangedRoutes(
@@ -761,6 +797,8 @@ class BcmSwitch : public BcmSwitchIf {
   void processRemovedAggregatePort(
       const std::shared_ptr<AggregatePort>& aggPort);
 
+  void processPortFlowletConfigAdd(const StateDelta& delta);
+
   void processLoadBalancerChanges(const StateDelta& delta);
   void processChangedLoadBalancer(
       const std::shared_ptr<LoadBalancer>& oldLoadBalancer,
@@ -779,7 +817,17 @@ class BcmSwitch : public BcmSwitchIf {
       const std::shared_ptr<UdfPacketMatcher>& udfPacketMatcher);
   void processRemovedUdfGroup(const std::shared_ptr<UdfGroup>& udfGroup);
 
-  std::shared_ptr<SwitchState> stateChangedImpl(const StateDelta& delta);
+  // The following function will modify the object. In particular, the return
+  // state will be published (to indicate what has actually been applied). If
+  // everything from delta was successfully applied, then the "new" state in
+  // delta will be published.
+  //
+  // Lock has to be performed in the function.
+  std::shared_ptr<SwitchState> stateChangedImpl(
+      const StateDelta& delta) override;
+  std::shared_ptr<SwitchState> stateChangedImplLocked(
+      const StateDelta& delta,
+      const std::lock_guard<std::mutex>& lock);
 
   void processSflowSamplingRateChanges(const StateDelta& delta);
   void processSflowCollectorChanges(const StateDelta& delta);
@@ -806,8 +854,50 @@ class BcmSwitch : public BcmSwitchIf {
   bool isValidLabelForwardingEntry(const Route<LabelID>* entry) const;
 
   void processSwitchSettingsChanged(const StateDelta& delta);
+  void processSwitchSettingsEntryChanged(
+      const std::shared_ptr<SwitchSettings>& oldSwitchSettings,
+      const std::shared_ptr<SwitchSettings>& newSwitchSettings,
+      const StateDelta& delta);
+
+  void processFlowletSwitchingConfigChanges(const StateDelta& delta);
 
   void processMacTableChanges(const StateDelta& delta);
+
+  void processDynamicEgressLoadExponentChanged(
+      const std::shared_ptr<FlowletSwitchingConfig>& oldFlowletSwitching,
+      const std::shared_ptr<FlowletSwitchingConfig>& newFlowletSwitching);
+
+  void processDynamicQueueExponentChanged(
+      const std::shared_ptr<FlowletSwitchingConfig>& oldFlowletSwitching,
+      const std::shared_ptr<FlowletSwitchingConfig>& newFlowletSwitching);
+
+  void processDynamicQueueMinThresholdBytesChanged(
+      const std::shared_ptr<FlowletSwitchingConfig>& oldFlowletSwitching,
+      const std::shared_ptr<FlowletSwitchingConfig>& newFlowletSwitching);
+
+  void processDynamicQueueMaxThresholdBytesChanged(
+      const std::shared_ptr<FlowletSwitchingConfig>& oldFlowletSwitching,
+      const std::shared_ptr<FlowletSwitchingConfig>& newFlowletSwitching);
+
+  void processDynamicSampleRateChanged(
+      const std::shared_ptr<FlowletSwitchingConfig>& oldFlowletSwitching,
+      const std::shared_ptr<FlowletSwitchingConfig>& newFlowletSwitching);
+
+  void processDynamicEgressMinThresholdBytesChanged(
+      const std::shared_ptr<FlowletSwitchingConfig>& oldFlowletSwitching,
+      const std::shared_ptr<FlowletSwitchingConfig>& newFlowletSwitching);
+
+  void processDynamicEgressMaxThresholdBytesChanged(
+      const std::shared_ptr<FlowletSwitchingConfig>& oldFlowletSwitching,
+      const std::shared_ptr<FlowletSwitchingConfig>& newFlowletSwitching);
+
+  void processDynamicPhysicalQueueExponentChanged(
+      const std::shared_ptr<FlowletSwitchingConfig>& oldFlowletSwitching,
+      const std::shared_ptr<FlowletSwitchingConfig>& newFlowletSwitching);
+
+  void setEgressEcmpEtherType(uint32_t etherTypeEligiblity);
+
+  void setEcmpDynamicRandomSeed(int ecmpRandomSeed);
 
   /*
    * linkStateChangedHwNotLocked is in the call chain started by link scan
@@ -841,7 +931,7 @@ class BcmSwitch : public BcmSwitchIf {
    * loss in case of back to back port up/down events.
    *
    */
-  void linkStateChanged(PortID port, bool up);
+  void linkStateChanged(PortID port, bool up, cfg::PortType portType);
 
   /*
    * Private callback called by the Broadcom API. Dispatches to
@@ -893,7 +983,8 @@ class BcmSwitch : public BcmSwitchIf {
   /*
    * Create ACL group
    */
-  void createAclGroup();
+  void createAclGroup(
+      const std::optional<std::set<bcm_udf_id_t>>& udfIds = std::nullopt);
   /*
    * Create slow protocols MAC group
    */
@@ -993,6 +1084,13 @@ class BcmSwitch : public BcmSwitchIf {
   void processEnabledPortQueues(const std::shared_ptr<Port>& port);
 
   /*
+   * Process changes in port flowlet config
+   */
+  bool processChangedPortFlowletCfg(
+      const std::shared_ptr<Port>& oldPort,
+      const std::shared_ptr<Port>& newPort);
+
+  /*
    * Returns true if a CPU queue name has changed, false otherwise.
    */
   bool isControlPlaneQueueNameChanged(
@@ -1033,8 +1131,19 @@ class BcmSwitch : public BcmSwitchIf {
   bool isL2EntryPending(const bcm_l2_addr_t* l2Addr);
 
   bool processChangedIngressPoolCfg(
-      std::optional<state::BufferPoolFields> oldBufferPoolCfgPtr,
-      std::optional<state::BufferPoolFields> newBufferPoolCfgPtr);
+      std::optional<BufferPoolFields> oldBufferPoolCfgPtr,
+      std::optional<BufferPoolFields> newBufferPoolCfgPtr);
+
+  void processControlPlaneEntryChanged(
+      const std::shared_ptr<ControlPlane>& oldCPU,
+      const std::shared_ptr<ControlPlane>& newCPU);
+  void processControlPlaneEntryAdded(
+      const std::shared_ptr<ControlPlane>& newCPU);
+  void processControlPlaneEntryRemoved(
+      const std::shared_ptr<ControlPlane>& oldCPU);
+
+  void processDefaultAclgroupForUdf(std::set<bcm_udf_id_t>& udfAclIds);
+  void initialStateApplied() override;
 
   /*
    * Member variables
@@ -1057,6 +1166,8 @@ class BcmSwitch : public BcmSwitchIf {
   std::unique_ptr<BcmNextHopTable<BcmLabeledHostKey, BcmMplsNextHop>>
       mplsNextHopTable_;
   std::unique_ptr<BcmMultiPathNextHopTable> multiPathNextHopTable_;
+  std::unique_ptr<BcmMultiPathNextHopStatsManager>
+      multiPathNextHopStatsManager_;
   std::unique_ptr<BcmLabelMap> labelMap_;
   std::unique_ptr<BcmRouteCounterTableBase> routeCounterTable_;
   std::unique_ptr<BcmRouteTable> routeTable_;
@@ -1073,7 +1184,7 @@ class BcmSwitch : public BcmSwitchIf {
   std::unique_ptr<BcmBstStatsMgr> bstStatsMgr_;
 
   std::unique_ptr<std::thread> linkScanBottomHalfThread_;
-  folly::EventBase linkScanBottomHalfEventBase_;
+  FbossEventBase linkScanBottomHalfEventBase_{"BcmLinkScanBottomHalfEventBase"};
 
   std::unique_ptr<BcmSwitchSettings> switchSettings_;
 

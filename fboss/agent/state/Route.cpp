@@ -68,8 +68,8 @@ RouteDetails RouteFields<AddrT>::toRouteDetails(
     rd.counterID() = *fwd().getCounterID();
   }
   // add class id
-  if (fwd().getClassID().has_value()) {
-    rd.classID() = *fwd().getClassID();
+  if (getClassID().has_value()) {
+    rd.classID() = *getClassID();
   }
   return rd;
 }
@@ -157,19 +157,6 @@ template struct RouteFields<LabelID>;
 template <typename AddrT>
 bool Route<AddrT>::isSame(const Route<AddrT>* rt) const {
   return *this == *rt;
-}
-
-template <typename AddrT>
-std::shared_ptr<Route<AddrT>> Route<AddrT>::fromFollyDynamic(
-    const folly::dynamic& json) {
-  auto fields = RouteFields<AddrT>::fromFollyDynamic(json);
-  return std::make_shared<Route<AddrT>>(fields.toThrift());
-}
-
-template <typename AddrT>
-folly::dynamic Route<AddrT>::toFollyDynamic() const {
-  auto fields = RouteFields<AddrT>::fromThrift(this->toThrift());
-  return fields.toFollyDynamic();
 }
 
 template <typename AddrT>
