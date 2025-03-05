@@ -23,15 +23,18 @@ class PollThread {
   PollThreadTime sleepTime_{5};
 
   void worker() {
-    std::unique_lock lk(eventMutex_);
     // Call once at start
     func_(obj_);
+    std::unique_lock lk(eventMutex_);
     while (started_.load()) {
       eventCV_.wait_for(lk, sleepTime_, [this]() {
         return !started_.load() || tick_.load();
       });
       if (started_.load()) {
+        // Do not call function with lock held.
+        lk.unlock();
         func_(obj_);
+        lk.lock();
       }
       if (tick_.load()) {
         tick_ = false;
@@ -66,11 +69,13 @@ class PollThread {
       threadID_.join();
     }
   }
-  void tick() {
+  void tick(bool nonBlocking = false) {
     std::unique_lock lk(eventMutex_);
     tick_ = true;
     eventCV_.notify_all();
-    ack_.wait(lk, [this]() { return !tick_.load(); });
+    if (!nonBlocking) {
+      ack_.wait(lk, [this]() { return !tick_.load(); });
+    }
   }
 };
 

@@ -3,6 +3,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 
 import sys
 import unittest
@@ -229,4 +231,4 @@ name = bar
     if sys.version_info < (3, 2):
 
         def assertRaisesRegex(self, *args, **kwargs):
-            return self.assertRaisesRegexp(*args, **kwargs)
+            return self.assertRaisesRegex(*args, **kwargs)

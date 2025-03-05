@@ -20,30 +20,39 @@ class Trident2Asic : public BroadcomXgsAsic {
   cfg::PortSpeed getMaxPortSpeed() const override {
     return cfg::PortSpeed::FORTYG;
   }
-  int getDefaultNumPortQueues(cfg::StreamType streamType, bool cpu)
-      const override;
+  int getDefaultNumPortQueues(
+      cfg::StreamType streamType,
+      cfg::PortType portType) const override;
   uint32_t getMaxLabelStackDepth() const override {
     return 2;
   }
   uint64_t getMMUSizeBytes() const override {
     return 16 * 1024 * 1024;
   }
+  uint64_t getSramSizeBytes() const override {
+    // No HBM!
+    return getMMUSizeBytes();
+  }
   uint32_t getMMUCellSize() const {
     return 208;
   }
-  cfg::PortLoopbackMode desiredLoopbackMode() const override {
+  const std::map<cfg::PortType, cfg::PortLoopbackMode>& desiredLoopbackModes()
+      const override {
     // Changing loopback mode to MAC on a 40G port on trident2 changes
     // the speed to 10G unexpectedly.
     //
     // Broadcom case: CS8832244
     //
-    return cfg::PortLoopbackMode::PHY;
+    static const std::map<cfg::PortType, cfg::PortLoopbackMode> kLoopbackMode =
+        {{cfg::PortType::INTERFACE_PORT, cfg::PortLoopbackMode::PHY}};
+    return kLoopbackMode;
   }
-  uint64_t getDefaultReservedBytes(cfg::StreamType /*streamType*/, bool cpu)
-      const override {
-    return cpu ? 1664 : 0;
+  std::optional<uint64_t> getDefaultReservedBytes(
+      cfg::StreamType /*streamType*/,
+      cfg::PortType portType) const override {
+    return portType == cfg::PortType::CPU_PORT ? 1664 : 0;
   }
-  cfg::MMUScalingFactor getDefaultScalingFactor(
+  std::optional<cfg::MMUScalingFactor> getDefaultScalingFactor(
       cfg::StreamType /*streamType*/,
       bool /*cpu*/) const override {
     return cfg::MMUScalingFactor::TWO;

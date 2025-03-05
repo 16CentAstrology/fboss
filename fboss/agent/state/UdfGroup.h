@@ -27,12 +27,17 @@ class UdfGroup : public ThriftStructNode<UdfGroup, cfg::UdfGroup> {
     return getName();
   }
   std::string getName() const;
+  std::optional<cfg::UdfGroupType> getUdfGroupType() const;
   cfg::UdfBaseHeaderType getUdfBaseHeader() const;
   int getStartOffsetInBytes() const;
   int getFieldSizeInBytes() const;
   std::vector<std::string> getUdfPacketMatcherIds() const;
-  static std::shared_ptr<UdfGroup> fromFollyDynamic(
-      const folly::dynamic& group);
+
+  void setUdfGroupType(std::optional<cfg::UdfGroupType> type);
+  void setUdfBaseHeader(cfg::UdfBaseHeaderType header);
+  void setStartOffsetInBytes(int offset);
+  void setFieldSizeInBytes(int size);
+  void setUdfPacketMatcherIds(const std::vector<std::string>& matcherIds);
 
  private:
   // Inherit the constructors required for clone()

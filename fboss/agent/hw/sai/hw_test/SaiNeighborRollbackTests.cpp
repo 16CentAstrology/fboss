@@ -12,7 +12,6 @@
 
 #include "fboss/agent/hw/test/HwTestEcmpUtils.h"
 #include "fboss/agent/hw/test/HwTestRouteUtils.h"
-#include "fboss/agent/state/Port.h"
 #include "fboss/agent/state/SwitchState.h"
 
 namespace facebook::fboss {
@@ -28,11 +27,11 @@ TEST_F(SaiRollbackTest, rollbackNeighborResolution) {
     v6EcmpHelper.resolveNextHops(getProgrammedState(), 1);
     auto resolvedNeighborsState = getProgrammedState();
     // Rollback resolved neighbors
-    rollback(origState);
+    rollback(StateDelta(origState, getProgrammedState()));
     // Bring back resolved neighboors
-    rollback(resolvedNeighborsState);
+    rollback(StateDelta(resolvedNeighborsState, getProgrammedState()));
     // Back to square 1
-    rollback(origState);
+    rollback(StateDelta(origState, getProgrammedState()));
 
     EXPECT_EQ(origState, getProgrammedState());
   };

@@ -81,7 +81,7 @@ void verifyResolvedMirror(
   ASSERT_EQ(mirror->isResolved(), true);
   BcmSwitch* bcmSwitch = static_cast<BcmSwitch*>(hwSwitch);
   const auto* bcmMirrorTable = bcmSwitch->getBcmMirrorTable();
-  auto* bcmMirror = bcmMirrorTable->getMirrorIf(mirror->getID());
+  auto* bcmMirror = bcmMirrorTable->getNodeIf(mirror->getID());
   ASSERT_NE(bcmMirror, nullptr);
   ASSERT_TRUE(bcmMirror->isProgrammed());
 
@@ -94,8 +94,8 @@ void verifyResolvedMirror(
 
   EXPECT_EQ(mirror_dest.mirror_dest_id, handle);
   bcm_gport_t gport;
-  BCM_GPORT_MODPORT_SET(
-      gport, bcmSwitch->getUnit(), mirror->getEgressPort().value());
+  auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
+  BCM_GPORT_MODPORT_SET(gport, bcmSwitch->getUnit(), egressPort);
   EXPECT_EQ(mirror_dest.gport, gport);
   EXPECT_EQ(mirror_dest.tos, mirror->getDscp());
   EXPECT_EQ(
@@ -118,7 +118,9 @@ void verifyResolvedMirror(
     EXPECT_EQ(udpPorts.value().udpDstPort, mirror_dest.udp_dst_port);
     EXPECT_NE(0, mirror_dest.flags & BCM_MIRROR_DEST_TUNNEL_SFLOW);
   } else {
-    EXPECT_EQ(tunnel->greProtocol, mirror_dest.gre_protocol);
+    EXPECT_EQ(
+        hwSwitch->getPlatform()->getAsic()->getGreProtocol(),
+        mirror_dest.gre_protocol);
     EXPECT_NE(0, mirror_dest.flags & BCM_MIRROR_DEST_TUNNEL_IP_GRE);
   }
   if (mirror->getDestinationIp()->isV4()) {
@@ -150,7 +152,7 @@ void verifyUnResolvedMirror(
   ASSERT_EQ(mirror->isResolved(), false);
   BcmSwitch* bcmSwitch = static_cast<BcmSwitch*>(hwSwitch);
   const auto* bcmMirrorTable = bcmSwitch->getBcmMirrorTable();
-  auto* bcmMirror = bcmMirrorTable->getMirrorIf(mirror->getID());
+  auto* bcmMirror = bcmMirrorTable->getNodeIf(mirror->getID());
   ASSERT_NE(bcmMirror, nullptr);
   ASSERT_FALSE(bcmMirror->isProgrammed());
 }

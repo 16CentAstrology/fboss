@@ -18,7 +18,7 @@
 #include "fboss/agent/hw/bcm/BcmWarmBootHelper.h"
 #include "fboss/lib/AlertLogger.h"
 
-#include <folly/experimental/StringKeyedUnorderedMap.h>
+#include <folly/container/F14Map.h>
 
 #include <folly/Memory.h>
 #include <folly/String.h>
@@ -205,8 +205,13 @@ BcmMmuState BcmAPI::getMmuState() {
     if (!lossless) {
       return BcmMmuState::UNKNOWN;
     }
-    return std::string(lossless) == "0x1" ? BcmMmuState::MMU_LOSSLESS
-                                          : BcmMmuState::MMU_LOSSY;
+    if (std::string(lossless) == "0x1") {
+      return BcmMmuState::MMU_LOSSLESS;
+    } else if (std::string(lossless) == "0x2") {
+      return BcmMmuState::MMU_LOSSY_AND_LOSSLESS;
+    } else {
+      return BcmMmuState::MMU_LOSSY;
+    }
   }
 }
 
@@ -356,6 +361,20 @@ bool BcmAPI::isHwInSimMode() {
   static const bool isSimMode_ = std::getenv("BCM_SIM_PATH");
   return isSimMode_;
 }
+
+#if defined(BCM_SDK_VERSION_GTE_6_5_29)
+void BcmAPI::bdeDestroy() {
+  int rv = 0;
+
+  if (!isHwInSimMode()) {
+    rv = linux_bde_destroy(bde);
+    bcmCheckError(rv, "failed to destroy BDE");
+  } else {
+    XLOG(DBG2) << "BCM running in SIM mode";
+    bdeDestroySim();
+  }
+}
+#endif
 
 std::unique_ptr<BcmUnit> BcmAPI::createOnlyUnit(BcmPlatform* platform) {
   auto numDevices = BcmAPI::getNumSwitches();

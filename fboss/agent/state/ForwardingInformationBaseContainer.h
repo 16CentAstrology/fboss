@@ -14,7 +14,7 @@
 #include "fboss/agent/state/Thrifty.h"
 #include "fboss/agent/types.h"
 
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 #include <memory>
 
 namespace facebook::fboss {
@@ -37,6 +37,7 @@ class ForwardingInformationBaseContainer
   using Base = ThriftStructNode<
       ForwardingInformationBaseContainer,
       state::FibContainerFields>;
+  using Base::modify;
   explicit ForwardingInformationBaseContainer(RouterID vrf);
   ~ForwardingInformationBaseContainer() override;
 

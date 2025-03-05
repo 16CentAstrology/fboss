@@ -13,7 +13,7 @@
 #include "fboss/agent/FbossError.h"
 
 #include <folly/FileUtil.h>
-#include <folly/json.h>
+#include <folly/json/json.h>
 
 #include <boost/algorithm/string.hpp>
 #include <re2/re2.h>
@@ -6508,11 +6508,9 @@ std::string updatePlatformMappingStr(const std::string& lcName) {
 }
 } // namespace
 
-namespace facebook {
-namespace fboss {
+namespace facebook::fboss {
 GalaxyFCPlatformMapping::GalaxyFCPlatformMapping(
     const std::string& linecardName)
     : PlatformMapping(updatePlatformMappingStr(linecardName)) {}
 
-} // namespace fboss
-} // namespace facebook
+} // namespace facebook::fboss

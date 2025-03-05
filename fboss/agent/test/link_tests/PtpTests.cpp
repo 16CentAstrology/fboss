@@ -1,35 +1,37 @@
 // (c) Facebook, Inc. and its affiliates. Confidential and proprietary.
 
+#include <folly/IPAddress.h>
 #include <gtest/gtest.h>
 #include "fboss/agent/PlatformPort.h"
 #include "fboss/agent/SwSwitch.h"
-#include "fboss/agent/hw/test/HwAgentTestPacketSnooper.h"
-#include "fboss/agent/hw/test/HwTestEcmpUtils.h"
-#include "fboss/agent/hw/test/HwTestPacketTrapEntry.h"
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
 #include "fboss/agent/packet/PTPHeader.h"
-#include "fboss/agent/packet/PktUtil.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/link_tests/LinkTest.h"
-#include "fboss/lib/CommonUtils.h"
+#include "fboss/agent/test/link_tests/LinkTestUtils.h"
+#include "fboss/agent/test/utils/PacketSnooper.h"
+#include "fboss/agent/test/utils/PacketTestUtils.h"
+#include "fboss/agent/test/utils/TrapPacketUtils.h"
 
 #include "common/process/Process.h"
 
 using namespace facebook::fboss;
 
-constexpr int kStartTtl = 2;
+constexpr int kStartTtl = 3;
 const folly::IPAddressV6 kIPv6Dst = folly::IPAddressV6("2::1"); // arbit
+const auto kSrcMac = folly::MacAddress{"00:00:00:00:01:03"}; // arbit
 
 class PtpTests : public LinkTest {
- public:
-  void createPtpTraffic(
-      const boost::container::flat_set<PortDescriptor>& ecmpPorts,
-      PTPMessageType ptpPkt) {
-    XLOG(DBG2) << "Create PTP traffic";
-    programDefaultRoute(ecmpPorts, sw()->getPlatform()->getLocalMac());
-    // pick the first port from the list
-    auto outputPort = *ecmpPorts.begin();
+ private:
+  std::vector<link_test_production_features::LinkTestProductionFeature>
+  getProductionFeatures() const override {
+    return {
+        link_test_production_features::LinkTestProductionFeature::L2_LINK_TEST};
+  }
 
+ public:
+  std::unique_ptr<facebook::fboss::TxPacket> createPtpPkt(
+      PTPMessageType ptpType) {
     // note: we are not creating flood here, but want routing
     // of packets so that TTL goes down from 255 -> 0
     auto vlan = utility::firstVlanID(sw()->getState());
@@ -38,24 +40,146 @@ class PtpTests : public LinkTest {
       throw FbossError("VLAN id unavailable for test");
     }
     auto vlanId = *vlan;
-    const auto dstMac = sw()->getPlatform()->getLocalMac();
-    const auto srcMac = folly::MacAddress{"00:00:00:00:01:03"}; // arbit
-
+    auto scope = sw()->getScopeResolver()->scope(
+        sw()->getState()->getVlans()->getNode(vlanId));
+    const auto dstMac = sw()->getLocalMac(scope.switchId());
     auto intf = sw()->getState()->getInterfaces()->getInterfaceInVlan(vlanId);
 
     auto srcIp = folly::IPAddressV6("1::1"); // arbit
-    auto txPacket = utility::makePTPTxPacket(
-        sw()->getHw(),
+    return utility::makePTPTxPacket(
+        platform()->getHwSwitch(),
         vlanId,
-        srcMac,
+        kSrcMac,
         dstMac,
         srcIp,
         kIPv6Dst,
         0 /* dscp */,
         kStartTtl,
-        ptpPkt);
-    sw()->getHw()->sendPacketOutOfPortSync(
-        std::move(txPacket), outputPort.phyPortID());
+        ptpType);
+  }
+
+  bool sendAndVerifyPtpPkts(
+      PTPMessageType ptpType,
+      const PortDescriptor& portDescriptor) {
+    utility::SwSwitchPacketSnooper snooper(sw(), "snooper-1");
+    XLOG(DBG2) << "Validating PTP packet fields on Port "
+               << portDescriptor.phyPortID();
+    auto matcher =
+        sw()->getScopeResolver()->scope(sw()->getState(), portDescriptor);
+    auto localMac = sw()->getLocalMac(matcher.switchId());
+    // Send out PTP packet
+    auto ptpPkt = createPtpPkt(ptpType);
+    platform()->getHwSwitch()->sendPacketOutOfPortSync(
+        std::move(ptpPkt), portDescriptor.phyPortID());
+
+    // Hop total should be equal to (kStartTtl + 1) * kStartTtl / 2
+    // In edge cases packets can come out-of-order. Wait for hopTotal to reach
+    // the expected total number of hops before moving to next port.
+    int hopTotal = 0;
+    while (hopTotal != (kStartTtl + 1) * kStartTtl / 2) {
+      auto pktBufOpt = snooper.waitForPacket(10 /* seconds */);
+      if (!pktBufOpt.has_value()) {
+        return true;
+      }
+
+      auto pktBuf = *pktBufOpt.value().get();
+      folly::io::Cursor pktCursor(&pktBuf);
+      if (!utility::isPtpEventPacket(pktCursor)) {
+        // if we continue to encounter non ptp packets
+        // and hit threshold of kMaxPktLimit, abort the test
+        // as something is wrong
+        continue;
+      }
+
+      XLOG(DBG2) << "PTP event packet found";
+      PTPHeader ptpHdr(&pktCursor);
+      auto correctionField = ptpHdr.getCorrectionField();
+      // Verify PTP fields unchanged.
+      EXPECT_EQ(ptpType, ptpHdr.getPtpType());
+      EXPECT_EQ(PTPVersion::PTP_V2, ptpHdr.getPtpVersion());
+      EXPECT_EQ(PTP_DELAY_REQUEST_MSG_SIZE, ptpHdr.getPtpMessageLength());
+
+      pktCursor.reset(&pktBuf);
+      auto hopLimit = utility::getIpHopLimit(pktCursor);
+
+      // On leaba devices, the trap we installed precedes drops for TTL=0.
+      // Therefore, we would still receive PTP packets here.
+      if (hopLimit == 0) {
+        XLOG(DBG2) << "Skipping checks on loopped back packets where TTL=0";
+        continue;
+      }
+      hopTotal += hopLimit;
+
+      // nano secs is first 48-bits, last 16 bits is subnano secs (remove it)
+      uint64_t cfInNsecs = (correctionField >> 16) & 0x0000ffffffffffff;
+      XLOG(DBG2) << "PTP packet found on port " << portDescriptor.phyPortID()
+                 << " with hop limit : " << hopLimit
+                 << " and CorrectionField (CF) set to " << std::hex
+                 << cfInNsecs;
+
+      pktCursor.reset(&pktBuf);
+      EthHdr ethHdr(pktCursor);
+      auto srcMac = ethHdr.getSrcMac();
+      auto dstMac = ethHdr.getDstMac();
+
+      if (hopLimit == kStartTtl) {
+        // this is the original pkt, and has no timestamp on it
+        EXPECT_EQ(correctionField, 0);
+
+        // Original packet should have the same src and dst mac as we sent out
+        EXPECT_EQ(srcMac, kSrcMac);
+        EXPECT_EQ(dstMac, localMac);
+      } else {
+        EXPECT_GT(correctionField, 0);
+        // CF for first pkt is ~800nsecs for BCM and ~1.7 msecs for Tajo
+        // Also account for loopback multiple times
+        EXPECT_LT(cfInNsecs, 2000 * (kStartTtl - hopLimit));
+
+        // Both src and mac address should be local mac
+        EXPECT_EQ(srcMac, localMac);
+        EXPECT_EQ(dstMac, localMac);
+      }
+    }
+    return false;
+  }
+
+  void verifyPtpTcOnPorts(
+      boost::container::flat_set<PortDescriptor>& ecmpPorts,
+      PTPMessageType ptpType) {
+    for (const auto& portDescriptor : ecmpPorts) {
+      // There are cases where a burst of other packets could occupy the CPU
+      // queue (e.g. NDP etc.) and force PTP packets to be dropped. In this
+      // case, retry 3 times on the same port.
+      int retries = 3;
+      bool retryable = true;
+      while (retries > 0 && retryable) {
+        retryable = sendAndVerifyPtpPkts(ptpType, portDescriptor);
+        retries--;
+      }
+      EXPECT_FALSE(retryable)
+          << "Failed to capture PTP packets on port "
+          << portDescriptor.phyPortID() << " after multiple retries";
+      break;
+    }
+  }
+
+  void setPtpTcEnable(bool enable) {
+    std::string updateMsg = enable ? "PTP enable" : "PTP disable";
+    sw()->updateStateBlocking(updateMsg, [=](auto state) {
+      auto newState = state->clone();
+      auto switchSettings =
+          utility::getFirstNodeIf(newState->getSwitchSettings())
+              ->modify(&newState);
+      switchSettings->setPtpTcEnable(enable);
+      return newState;
+    });
+  }
+
+  void trapPackets(const folly::CIDRNetwork& prefix) {
+    cfg::SwitchConfig cfg = sw()->getConfig();
+    auto asic = platform()->getHwSwitch()->getPlatform()->getAsic();
+    utility::addTrapPacketAcl(asic, &cfg, prefix);
+    sw()->applyConfig("trapPackets", cfg);
   }
 
  protected:
@@ -64,6 +188,8 @@ class PtpTests : public LinkTest {
     FLAGS_enable_lldp = false;
     // tunnel interface enable especially on fboss2000 results
     FLAGS_tun_intf = false;
+    // disable neighbor updates
+    FLAGS_disable_neighbor_updates = true;
     LinkTest::setCmdLineFlagOverrides();
   }
 };
@@ -85,55 +211,94 @@ class PtpTests : public LinkTest {
 //    else EXPECT_GT(CF_field, 0)
 // }
 TEST_F(PtpTests, verifyPtpTcDelayRequest) {
-  auto ecmpPorts = getVlanOwningCabledPorts();
+  auto ecmpPorts = getSingleVlanOrRoutedCabledPorts();
   // create ACL to trap any packets to CPU coming with given dst IP
   // Ideally we should have used the l4port (PTP_UDP_EVENT_PORT), but
   // SAI doesn't support this qualifier yet
   folly::CIDRNetwork dstPrefix = folly::CIDRNetwork{kIPv6Dst, 128};
-  auto entry = HwTestPacketTrapEntry(sw()->getHw(), dstPrefix);
-  HwAgentTestPacketSnooper snooper(sw()->getPacketObservers());
-  createPtpTraffic(
-      getVlanOwningCabledPorts(), PTPMessageType::PTP_DELAY_REQUEST);
+  this->trapPackets(dstPrefix);
+  programDefaultRoute(ecmpPorts, sw()->getLocalMac(scope(ecmpPorts)));
 
-  bool validated = false;
-  while (true) {
-    auto pktBufOpt = snooper.waitForPacket(10 /* seconds */);
-    ASSERT_TRUE(pktBufOpt.has_value());
+  verifyPtpTcOnPorts(ecmpPorts, PTPMessageType::PTP_DELAY_REQUEST);
+}
 
-    auto pktBuf = *pktBufOpt.value().get();
-    folly::io::Cursor pktCursor(&pktBuf);
-    if (!utility::isPtpEventPacket(pktCursor)) {
-      // if we continue to encounter non ptp packets
-      // and hit threshold of kMaxPktLimit, abort the test
-      // as something is wrong
-      continue;
-    }
-
-    XLOG(DBG2) << "PTP event packet found";
-    PTPHeader ptpHdr(&pktCursor);
-    auto correctionField = ptpHdr.getCorrectionField();
-
-    pktCursor.reset(&pktBuf);
-    auto hopLimit = utility::getIpHopLimit(pktCursor);
-
-    if (hopLimit == kStartTtl) {
-      // this is the original pkt, and has no timestamp on it
-      EXPECT_EQ(correctionField, 0);
-      XLOG(DBG2)
-          << "PTP packet found with CorrectionField (CF) set to 0 with hop limit : "
-          << kStartTtl;
-    } else {
-      EXPECT_GT(correctionField, 0);
-      // nano secs is first 48-bits, last 16 bits is subnano secs (remove it)
-      uint64_t cfInNsecs = (correctionField >> 16) & 0x0000ffffffffffff;
-      XLOG(DBG2) << "PTP packet found with CorrectionField (CF) set "
-                 << std::hex << cfInNsecs << ", ttl: " << hopLimit;
-      // CF for first pkt is ~800nsecs for BCM and ~1.7 msecs for Tajo
-      EXPECT_LT(cfInNsecs, 2000);
-      validated = true;
+TEST_F(PtpTests, verifyPtpTcAfterLinkFlap) {
+  folly::CIDRNetwork dstPrefix = folly::CIDRNetwork{kIPv6Dst, 128};
+  this->trapPackets(dstPrefix);
+  auto ecmpPorts = getSingleVlanOrRoutedCabledPorts();
+  std::vector<PortID> portVec;
+  boost::container::flat_set<PortDescriptor> portDescriptorSet;
+  // For the sake of time, use the first 5 ports.
+  const auto kNumPort = 5;
+  for (const auto& portDescriptor : ecmpPorts) {
+    portVec.push_back(portDescriptor.phyPortID());
+    portDescriptorSet.insert(portDescriptor);
+    if (portVec.size() >= kNumPort) {
       break;
     }
   }
+  programDefaultRoute(ecmpPorts, sw()->getLocalMac(scope(ecmpPorts)));
 
-  EXPECT_TRUE(validated);
+  // 1. Disable PTP
+  XLOG(DBG2) << "Disabling PTP";
+  setPtpTcEnable(false);
+
+  // 2. Flap links
+  XLOG(DBG2) << "Flapping ports the first time";
+  setLinkState(false, portVec);
+  setLinkState(true, portVec);
+
+  // 3. Enable PTP and ensure PTP TC is working properly. For now verify PTP on
+  // the first kNumPort ports.
+  XLOG(DBG2) << "Enabling PTP and verify PTP TC";
+  setPtpTcEnable(true);
+  verifyPtpTcOnPorts(portDescriptorSet, PTPMessageType::PTP_DELAY_REQUEST);
+
+  // 4. Flap links
+  XLOG(INFO) << "Flapping ports the second time";
+  setLinkState(false, portVec);
+  setLinkState(true, portVec);
+
+  // 5. Ensure PTP TC still works as expected.
+  XLOG(INFO) << "Ensure PTP TC still works as expected";
+  verifyPtpTcOnPorts(portDescriptorSet, PTPMessageType::PTP_DELAY_REQUEST);
+}
+
+// Validate PTP TC when PTP is enabled while port is down.
+TEST_F(PtpTests, enablePtpPortDown) {
+  folly::CIDRNetwork dstPrefix = folly::CIDRNetwork{kIPv6Dst, 128};
+  this->trapPackets(dstPrefix);
+  auto ecmpPorts = getSingleVlanOrRoutedCabledPorts();
+  std::vector<PortID> portVec;
+  boost::container::flat_set<PortDescriptor> portDescriptorSet;
+  // For the sake of time, use the first 5 ports.
+  const auto kNumPort = 5;
+  for (const auto& portDescriptor : ecmpPorts) {
+    portVec.push_back(portDescriptor.phyPortID());
+    portDescriptorSet.insert(portDescriptor);
+    if (portVec.size() >= kNumPort) {
+      break;
+    }
+  }
+  programDefaultRoute(ecmpPorts, sw()->getLocalMac(scope(ecmpPorts)));
+
+  // 1. Disable PTP
+  XLOG(DBG2) << "Disabling PTP";
+  setPtpTcEnable(false);
+
+  // 2. Bring ports down
+  XLOG(DBG2) << "Bringing port down";
+  setLinkState(false, portVec);
+
+  // 3. Enable PTP
+  XLOG(DBG2) << "Enabling PTP";
+  setPtpTcEnable(true);
+
+  // 4. Bring ports up
+  XLOG(DBG2) << "Bringing port up";
+  setLinkState(true, portVec);
+
+  // 5. Ensure PTP TC works.
+  XLOG(INFO) << "Ensure PTP TC still works after port up";
+  verifyPtpTcOnPorts(portDescriptorSet, PTPMessageType::PTP_DELAY_REQUEST);
 }

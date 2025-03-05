@@ -38,23 +38,6 @@ void BcmTestPort::linkStatusChanged(bool /*up*/, bool /*adminUp*/) {}
 
 void BcmTestPort::externalState(PortLedExternalState /* unused */) {}
 
-folly::Future<TransmitterTechnology> BcmTestPort::getTransmitterTech(
-    folly::EventBase* /*evb*/) const {
-  if (auto transceiver =
-          getPlatform()->getOverrideTransceiverInfo(getPortID())) {
-    // Override should always set media type
-    CHECK(transceiver->cable());
-    return *(transceiver->cable()->transmitterTech());
-  }
-  const auto& entry = getPlatformPortEntry();
-  if (entry.mapping()->name()->find("fab") == 0) {
-    return folly::makeFuture<TransmitterTechnology>(
-        TransmitterTechnology::COPPER);
-  }
-  return folly::makeFuture<TransmitterTechnology>(
-      TransmitterTechnology::UNKNOWN);
-}
-
 bool BcmTestPort::supportsTransceiver() const {
   return true;
 }
@@ -69,10 +52,12 @@ void BcmTestPort::statusIndication(
 
 void BcmTestPort::prepareForGracefulExit() {}
 
-folly::Future<TransceiverInfo> BcmTestPort::getFutureTransceiverInfo() const {
-  if (auto transceiver =
+std::shared_ptr<TransceiverSpec> BcmTestPort::getTransceiverSpec() const {
+  if (auto overrideTransceiverInfo =
           getPlatform()->getOverrideTransceiverInfo(getPortID())) {
-    return transceiver.value();
+    auto overrideTransceiverSpec = TransceiverSpec::createPresentTransceiver(
+        overrideTransceiverInfo.value());
+    return overrideTransceiverSpec;
   }
   throw FbossError("failed to get transceiver info for ", getPortID());
 }

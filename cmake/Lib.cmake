@@ -107,6 +107,14 @@ target_link_libraries(common_file_utils
   fboss_error
 )
 
+add_library(common_port_utils
+  fboss/lib/CommonPortUtils.cpp
+)
+
+target_link_libraries(common_port_utils
+  fboss_error
+)
+
 add_library(common_utils
   fboss/lib/CommonUtils.h
 )
@@ -151,5 +159,46 @@ target_link_libraries(fpga_device
   pci_device
   physical_memory
   fboss_types
+  Folly::folly
+)
+
+add_library(pci_access
+  fboss/lib/PciAccess.cpp
+)
+
+
+add_library(hw_write_behavior
+  fboss/lib/HwWriteBehavior.cpp
+)
+
+target_link_libraries(hw_write_behavior
+  common_cpp2
+)
+
+add_library(common_thrift_utils
+  fboss/lib/CommonThriftUtils.cpp
+)
+
+target_link_libraries(common_thrift_utils
+  Folly::folly
+  fb303::fb303
+)
+
+add_library(gpiod_line
+  fboss/lib/GpiodLine.cpp
+)
+
+target_link_libraries(gpiod_line
+  Folly::folly
+  ${LIBGPIOD}
+)
+
+add_library(restart_time_tracker
+  fboss/lib/restart_tracker/RestartTimeTracker.cpp
+)
+
+target_link_libraries(restart_time_tracker
+  utils
+  fb303::fb303
   Folly::folly
 )

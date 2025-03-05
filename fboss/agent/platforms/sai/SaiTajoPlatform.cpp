@@ -9,6 +9,7 @@
  */
 
 #include "fboss/agent/platforms/sai/SaiTajoPlatform.h"
+#include "fboss/agent/hw/sai/api/UdfApi.h"
 #include "fboss/agent/hw/switch_asics/TajoAsic.h"
 
 namespace facebook::fboss {
@@ -16,7 +17,7 @@ SaiTajoPlatform::SaiTajoPlatform(
     std::unique_ptr<PlatformProductInfo> productInfo,
     std::unique_ptr<PlatformMapping> platformMapping,
     folly::MacAddress localMac)
-    : SaiHwPlatform(
+    : SaiPlatform(
           std::move(productInfo),
           std::move(platformMapping),
           localMac) {}
@@ -26,6 +27,14 @@ SaiTajoPlatform::getAclFieldList() const {
   return std::nullopt;
 }
 
+const std::set<sai_api_t>& SaiTajoPlatform::getSupportedApiList() const {
+  return getDefaultSwitchAsicSupportedApis();
+}
+
 SaiTajoPlatform::~SaiTajoPlatform() {}
+
+std::string SaiTajoPlatform::getHwConfig() {
+  return *config()->thrift.platform()->get_chip().get_asic().config();
+}
 
 } // namespace facebook::fboss

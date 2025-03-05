@@ -18,25 +18,24 @@
 #include "fboss/agent/platforms/sai/SaiBcmDarwinPlatform.h"
 #include "fboss/agent/platforms/sai/SaiBcmElbertPlatform.h"
 #include "fboss/agent/platforms/sai/SaiBcmFujiPlatform.h"
-#include "fboss/agent/platforms/sai/SaiBcmGalaxyFCPlatform.h"
-#include "fboss/agent/platforms/sai/SaiBcmGalaxyLCPlatform.h"
 #include "fboss/agent/platforms/sai/SaiBcmMinipackPlatform.h"
 #include "fboss/agent/platforms/sai/SaiBcmMontblancPlatform.h"
 #include "fboss/agent/platforms/sai/SaiBcmWedge100Platform.h"
 #include "fboss/agent/platforms/sai/SaiBcmWedge400Platform.h"
-#include "fboss/agent/platforms/sai/SaiBcmWedge40Platform.h"
 #include "fboss/agent/platforms/sai/SaiBcmYampPlatform.h"
 #include "fboss/agent/platforms/sai/SaiCloudRipperPlatform.h"
-#include "fboss/agent/platforms/sai/SaiKametPlatform.h"
-#include "fboss/agent/platforms/sai/SaiLassenPlatform.h"
-#include "fboss/agent/platforms/sai/SaiMakaluPlatform.h"
-#include "fboss/agent/platforms/sai/SaiSandiaPlatform.h"
+#include "fboss/agent/platforms/sai/SaiFakePlatform.h"
+#include "fboss/agent/platforms/sai/SaiJanga800bicPlatform.h"
+#include "fboss/agent/platforms/sai/SaiMeru400bfuPlatform.h"
+#include "fboss/agent/platforms/sai/SaiMeru400biaPlatform.h"
+#include "fboss/agent/platforms/sai/SaiMeru400biuPlatform.h"
+#include "fboss/agent/platforms/sai/SaiMeru800bfaPlatform.h"
+#include "fboss/agent/platforms/sai/SaiMeru800biaPlatform.h"
+#include "fboss/agent/platforms/sai/SaiMinipack3NPlatform.h"
+#include "fboss/agent/platforms/sai/SaiMorgan800ccPlatform.h"
+#include "fboss/agent/platforms/sai/SaiTahan800bcPlatform.h"
 #include "fboss/agent/platforms/sai/SaiWedge400CPlatform.h"
-
-DEFINE_string(
-    platform_mapping_override_path,
-    "",
-    "The path to the Platform Mapping JSON file");
+#include "fboss/agent/platforms/sai/SaiYangraPlatform.h"
 
 namespace facebook::fboss {
 
@@ -44,73 +43,78 @@ std::unique_ptr<SaiPlatform> chooseSaiPlatform(
     std::unique_ptr<PlatformProductInfo> productInfo,
     folly::MacAddress localMac,
     const std::string& platformMappingStr) {
-  if (productInfo->getMode() == PlatformMode::WEDGE100) {
+  if (productInfo->getType() == PlatformType::PLATFORM_WEDGE100) {
     return std::make_unique<SaiBcmWedge100Platform>(
         std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::WEDGE) {
-    return std::make_unique<SaiBcmWedge40Platform>(
-        std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::GALAXY_FC) {
-    return std::make_unique<SaiBcmGalaxyFCPlatform>(
-        std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::GALAXY_LC) {
-    return std::make_unique<SaiBcmGalaxyLCPlatform>(
-        std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::WEDGE400) {
+  } else if (
+      productInfo->getType() == PlatformType::PLATFORM_WEDGE400 ||
+      productInfo->getType() == PlatformType::PLATFORM_WEDGE400_GRANDTETON) {
+    auto type = productInfo->getType();
     return std::make_unique<SaiBcmWedge400Platform>(
-        std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::DARWIN) {
+        std::move(productInfo), type, localMac, platformMappingStr);
+  } else if (
+      productInfo->getType() == PlatformType::PLATFORM_DARWIN ||
+      productInfo->getType() == PlatformType::PLATFORM_DARWIN48V) {
     return std::make_unique<SaiBcmDarwinPlatform>(
         std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::MINIPACK) {
+  } else if (productInfo->getType() == PlatformType::PLATFORM_MINIPACK) {
     return std::make_unique<SaiBcmMinipackPlatform>(
         std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::YAMP) {
+  } else if (productInfo->getType() == PlatformType::PLATFORM_YAMP) {
     return std::make_unique<SaiBcmYampPlatform>(
         std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::WEDGE400C) {
-    if (isLEB()) {
-      return getLEBPlatform(
-          std::move(productInfo), localMac, platformMappingStr);
-    }
+  } else if (productInfo->getType() == PlatformType::PLATFORM_WEDGE400C) {
     return std::make_unique<SaiWedge400CPlatform>(
         std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::WEDGE400C_VOQ) {
-    return std::make_unique<SaiWedge400CVoqPlatform>(
-        std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::WEDGE400C_FABRIC) {
-    return std::make_unique<SaiWedge400CFabricPlatform>(
-        std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::CLOUDRIPPER) {
+  } else if (productInfo->getType() == PlatformType::PLATFORM_CLOUDRIPPER) {
     return std::make_unique<SaiCloudRipperPlatform>(
         std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::CLOUDRIPPER_VOQ) {
-    return std::make_unique<SaiCloudRipperVoqPlatform>(
-        std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::CLOUDRIPPER_FABRIC) {
-    return std::make_unique<SaiCloudRipperFabricPlatform>(
-        std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::FUJI) {
+  } else if (productInfo->getType() == PlatformType::PLATFORM_FUJI) {
     return std::make_unique<SaiBcmFujiPlatform>(
         std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::LASSEN) {
-    return std::make_unique<SaiLassenPlatform>(
-        std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::SANDIA) {
-    return std::make_unique<SaiSandiaPlatform>(
-        std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::ELBERT) {
+  } else if (productInfo->getType() == PlatformType::PLATFORM_ELBERT) {
     return std::make_unique<SaiBcmElbertPlatform>(
         std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::MAKALU) {
-    return std::make_unique<SaiMakaluPlatform>(
+  } else if (productInfo->getType() == PlatformType::PLATFORM_MERU400BIU) {
+    return std::make_unique<SaiMeru400biuPlatform>(
         std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::KAMET) {
-    return std::make_unique<SaiKametPlatform>(
+  } else if (
+      productInfo->getType() == PlatformType::PLATFORM_MERU800BIA ||
+      productInfo->getType() == PlatformType::PLATFORM_MERU800BIAB) {
+    return std::make_unique<SaiMeru800biaPlatform>(
         std::move(productInfo), localMac, platformMappingStr);
-  } else if (productInfo->getMode() == PlatformMode::MONTBLANC) {
+  } else if (productInfo->getType() == PlatformType::PLATFORM_MERU800BFA) {
+    return std::make_unique<SaiMeru800bfaPlatform>(
+        std::move(productInfo), localMac, platformMappingStr);
+  } else if (productInfo->getType() == PlatformType::PLATFORM_MERU800BFA_P1) {
+    return std::make_unique<SaiMeru800P1bfaPlatform>(
+        std::move(productInfo), localMac, platformMappingStr);
+  } else if (productInfo->getType() == PlatformType::PLATFORM_MERU400BIA) {
+    return std::make_unique<SaiMeru400biaPlatform>(
+        std::move(productInfo), localMac, platformMappingStr);
+  } else if (productInfo->getType() == PlatformType::PLATFORM_MERU400BFU) {
+    return std::make_unique<SaiMeru400bfuPlatform>(
+        std::move(productInfo), localMac, platformMappingStr);
+  } else if (productInfo->getType() == PlatformType::PLATFORM_MONTBLANC) {
     return std::make_unique<SaiBcmMontblancPlatform>(
         std::move(productInfo), localMac, platformMappingStr);
+  } else if (productInfo->getType() == PlatformType::PLATFORM_MORGAN800CC) {
+    return std::make_unique<SaiMorgan800ccPlatform>(
+        std::move(productInfo), localMac, platformMappingStr);
+  } else if (productInfo->getType() == PlatformType::PLATFORM_YANGRA) {
+    return std::make_unique<SaiYangraPlatform>(
+        std::move(productInfo), localMac, platformMappingStr);
+  } else if (productInfo->getType() == PlatformType::PLATFORM_MINIPACK3N) {
+    return std::make_unique<SaiMinipack3NPlatform>(
+        std::move(productInfo), localMac, platformMappingStr);
+  } else if (productInfo->getType() == PlatformType::PLATFORM_JANGA800BIC) {
+    return std::make_unique<SaiJanga800bicPlatform>(
+        std::move(productInfo), localMac, platformMappingStr);
+  } else if (productInfo->getType() == PlatformType::PLATFORM_TAHAN800BC) {
+    return std::make_unique<SaiTahan800bcPlatform>(
+        std::move(productInfo), localMac, platformMappingStr);
+  } else if (productInfo->getType() == PlatformType::PLATFORM_FAKE_SAI) {
+    return std::make_unique<SaiFakePlatform>(std::move(productInfo));
   }
 
   return nullptr;
@@ -118,7 +122,8 @@ std::unique_ptr<SaiPlatform> chooseSaiPlatform(
 
 std::unique_ptr<Platform> initSaiPlatform(
     std::unique_ptr<AgentConfig> config,
-    uint32_t hwFeaturesDesired) {
+    uint32_t hwFeaturesDesired,
+    int16_t switchIndex) {
   auto productInfo =
       std::make_unique<PlatformProductInfo>(FLAGS_fruid_filepath);
   productInfo->initialize();
@@ -135,7 +140,7 @@ std::unique_ptr<Platform> initSaiPlatform(
   }
   auto platform =
       chooseSaiPlatform(std::move(productInfo), localMac, platformMappingStr);
-  platform->init(std::move(config), hwFeaturesDesired);
+  platform->init(std::move(config), hwFeaturesDesired, switchIndex);
   return std::move(platform);
 }
 

@@ -246,6 +246,42 @@ AnticipatedRouteScaleGenerator::AnticipatedRouteScaleGenerator(
           ecmpWidth,
           routerId) {}
 
+/*
+ * routes for system scale test, with total of 75K routes
+ */
+ScaleTestRouteScaleGenerator::ScaleTestRouteScaleGenerator(
+    const std::shared_ptr<SwitchState>& startingState,
+    unsigned int chunkSize,
+    unsigned int ecmpWidth,
+    RouterID routerId)
+    : RouteDistributionGenerator(
+          startingState,
+          // v6 distribution
+          {
+              {127, 256},
+              {128, 2452},
+              {24, 2},
+              {37, 74},
+              {44, 36},
+              {46, 2096},
+              {47, 16},
+              {48, 50},
+              {52, 608},
+              {54, 32},
+              {56, 1536},
+              {57, 272},
+              {59, 1540},
+              {60, 1566},
+              {61, 56},
+              {62, 480},
+              {63, 4182},
+              {64, 50786},
+          },
+          {},
+          chunkSize,
+          ecmpWidth,
+          routerId) {}
+
 TurboFSWRouteScaleGenerator::TurboFSWRouteScaleGenerator(
     const std::shared_ptr<SwitchState>& startingState,
     unsigned int chunkSize,
@@ -290,18 +326,22 @@ TurboFSWRouteScaleGenerator::TurboFSWRouteScaleGenerator(
       // 11 /26 for interpod + 3750 VIP routes
       v4PrefixLabelDistributionSpec_(
           {{26, {11, 1, 500}}, {32, {3761, 376, 600}}}) {
-  boost::container::flat_set<PortDescriptor> allPorts;
-  for (auto port : std::as_const(*startingState->getPorts())) {
-    if (!port.second->isEnabled()) {
-      continue;
+  std::set<PortDescriptor> allPorts;
+  for (auto portMap : std::as_const(*startingState->getPorts())) {
+    for (auto port : std::as_const(*portMap.second)) {
+      if (!port.second->isEnabled()) {
+        continue;
+      }
+      allPorts.insert(PortDescriptor(port.second->getID()));
     }
-    allPorts.insert(PortDescriptor(port.second->getID()));
   }
   CHECK_GE(allPorts.size(), ecmpWidth);
 
   size_t unlabeledPortsSize = ecmpWidth - 32;
   for (auto i = 0; i < ecmpWidth; i++) {
-    auto iPortId = *(allPorts.begin() + i);
+    auto iter = allPorts.begin();
+    std::advance(iter, i);
+    auto iPortId = *iter;
     if (i < unlabeledPortsSize) {
       unlabeledPorts_.insert(iPortId);
     } else {
@@ -409,9 +449,11 @@ std::shared_ptr<SwitchState> TurboFSWRouteScaleGenerator::resolveNextHops(
   return nhopsResolvedState;
 }
 
-bool TurboFSWRouteScaleGenerator::isSupported(PlatformMode mode) const {
+bool TurboFSWRouteScaleGenerator::isSupported(PlatformType type) const {
   return (
-      mode == PlatformMode::MINIPACK || mode == PlatformMode::YAMP ||
-      mode == PlatformMode::FUJI || mode == PlatformMode::ELBERT);
+      type == PlatformType::PLATFORM_MINIPACK ||
+      type == PlatformType::PLATFORM_YAMP ||
+      type == PlatformType::PLATFORM_FUJI ||
+      type == PlatformType::PLATFORM_ELBERT);
 }
 } // namespace facebook::fboss::utility

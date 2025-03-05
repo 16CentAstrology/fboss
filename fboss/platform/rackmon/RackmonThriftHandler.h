@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "fboss/platform/rackmon/PollThread.h"
 #include "fboss/platform/rackmon/Rackmon.h"
 #include "fboss/platform/rackmon/RackmonPlsManager.h"
 #include "fboss/platform/rackmon/if/gen-cpp2/RackmonCtrl.h"
@@ -38,8 +39,18 @@ class ThriftHandler : virtual public RackmonCtrlSvIf {
       const rackmon::RegisterValue& value);
   RackmonStatusCode exceptionToStatusCode(std::exception& baseException);
 
+  void transformMonitorDataFilter(
+      const MonitorDataFilter& filter,
+      rackmon::ModbusDeviceFilter& devFilter,
+      rackmon::ModbusRegisterFilter& regFilter,
+      bool& latestOnly);
+
+  std::shared_ptr<rackmon::PollThread<ThriftHandler>> monThread_;
+
  public:
   ThriftHandler();
+
+  void serviceMonitor();
 
   void listModbusDevices(
       std::vector<rackmonsvc::ModbusDeviceInfo>& devices) override;
@@ -50,6 +61,10 @@ class ThriftHandler : virtual public RackmonCtrlSvIf {
   void getMonitorDataEx(
       std::vector<rackmonsvc::RackmonMonitorData>& data,
       std::unique_ptr<rackmonsvc::MonitorDataFilter> filter) override;
+
+  void reload(
+      std::unique_ptr<rackmonsvc::MonitorDataFilter> filter,
+      bool synchronous = true) override;
 
   void readHoldingRegisters(
       rackmonsvc::ReadWordRegistersResponse& response,

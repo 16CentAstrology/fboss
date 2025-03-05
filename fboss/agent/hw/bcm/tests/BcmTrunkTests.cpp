@@ -10,11 +10,6 @@
 #include "fboss/agent/hw/bcm/tests/BcmTest.h"
 
 #include "fboss/agent/ApplyThriftConfig.h"
-#include "fboss/agent/packet/Ethertype.h"
-#include "fboss/agent/state/AggregatePort.h"
-#include "fboss/agent/state/Port.h"
-#include "fboss/agent/state/PortMap.h"
-#include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/TrunkUtils.h"
 
@@ -22,25 +17,17 @@
 #include "fboss/agent/hw/bcm/BcmError.h"
 #include "fboss/agent/hw/bcm/BcmTrunkTable.h"
 #include "fboss/agent/hw/bcm/tests/BcmLinkStateDependentTests.h"
-#include "fboss/agent/platforms/tests/utils/BcmTestPlatform.h"
 
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
-#include "fboss/agent/hw/test/HwTestTrunkUtils.h"
 
 #include "fboss/agent/hw/test/ConfigFactory.h"
 
 #include <folly/IPAddress.h>
 
-#include <condition_variable>
 #include <memory>
-#include <mutex>
-#include <numeric>
 #include <vector>
 
 extern "C" {
-#include <bcm/l3.h>
-#include <bcm/pkt.h>
-#include <bcm/port.h>
 #include <bcm/trunk.h>
 }
 
@@ -59,10 +46,12 @@ class BcmTrunkTest : public BcmLinkStateDependentTests {
  protected:
   cfg::SwitchConfig initialConfig() const override {
     return utility::oneL3IntfTwoPortConfig(
-        getHwSwitch(),
+        getHwSwitch()->getPlatform()->getPlatformMapping(),
+        getHwSwitch()->getPlatform()->getAsic(),
         masterLogicalPortIds()[0],
         masterLogicalPortIds()[1],
-        cfg::PortLoopbackMode::MAC);
+        getHwSwitch()->getPlatform()->supportsAddRemovePort(),
+        getHwSwitch()->getPlatform()->getAsic()->desiredLoopbackModes());
   }
 
   void applyConfigAndEnableTrunks(const cfg::SwitchConfig& switchCfg) {

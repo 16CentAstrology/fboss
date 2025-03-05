@@ -11,6 +11,16 @@ struct SystemPortEntry {
   4: i64 corePortIndex;
   5: string speed;
   6: i64 numVoqs;
-  7: string adminState;
+  7: string adminState_DEPRECATED;
   8: string qosPolicy;
+  9: SystemPortHwStatsEntry hwPortStats;
+  10: string remoteSystemPortType;
+  11: string remoteSystemPortLivenessStatus;
+  12: string scope;
+}
+
+struct SystemPortHwStatsEntry {
+  1: map<i16, i64> egressDiscardBytes;
+  2: map<i16, i64> egressOutBytes;
+  3: map<i16, i64> egressWatermarkBytes;
 }

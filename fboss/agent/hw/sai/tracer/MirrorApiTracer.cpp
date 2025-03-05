@@ -13,7 +13,6 @@
 #include <utility>
 
 #include "fboss/agent/hw/sai/api/MirrorApi.h"
-#include "fboss/agent/hw/sai/tracer/MirrorApiTracer.h"
 #include "fboss/agent/hw/sai/tracer/Utils.h"
 
 using folly::to;
@@ -32,9 +31,16 @@ std::map<int32_t, std::pair<std::string, std::size_t>> _MirrorSessionMap{
     SAI_ATTR_MAP(EnhancedRemoteMirror, SrcMacAddress),
     SAI_ATTR_MAP(EnhancedRemoteMirror, DstMacAddress),
     SAI_ATTR_MAP(EnhancedRemoteMirror, IpHeaderVersion),
+    SAI_ATTR_MAP(EnhancedRemoteMirror, SampleRate),
     SAI_ATTR_MAP(SflowMirror, UdpSrcPort),
     SAI_ATTR_MAP(SflowMirror, UdpDstPort),
 };
+
+void handleExtensionAttributes() {
+  SAI_EXT_ATTR_MAP_2(MirrorSession, EnhancedRemoteMirror, TcBufferLimit)
+  SAI_EXT_ATTR_MAP_2(MirrorSession, SflowMirror, TcBufferLimit)
+}
+
 } // namespace
 namespace facebook::fboss {
 
@@ -44,6 +50,7 @@ WRAP_SET_ATTR_FUNC(mirror_session, SAI_OBJECT_TYPE_MIRROR_SESSION, mirror);
 WRAP_GET_ATTR_FUNC(mirror_session, SAI_OBJECT_TYPE_MIRROR_SESSION, mirror);
 
 sai_mirror_api_t* wrappedMirrorApi() {
+  handleExtensionAttributes();
   static sai_mirror_api_t mirrorWrappers;
   mirrorWrappers.create_mirror_session = &wrap_create_mirror_session;
   mirrorWrappers.remove_mirror_session = &wrap_remove_mirror_session;

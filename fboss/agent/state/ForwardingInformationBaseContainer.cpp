@@ -13,12 +13,6 @@
 
 #include <folly/logging/xlog.h>
 
-namespace {
-constexpr auto kFibV4{"fibV4"};
-constexpr auto kFibV6{"fibV6"};
-constexpr auto kVrf{"vrf"};
-} // namespace
-
 namespace facebook::fboss {
 
 ForwardingInformationBaseContainer::ForwardingInformationBaseContainer(
@@ -26,7 +20,8 @@ ForwardingInformationBaseContainer::ForwardingInformationBaseContainer(
   set<switch_state_tags::vrf>(vrf);
 }
 
-ForwardingInformationBaseContainer::~ForwardingInformationBaseContainer() {}
+ForwardingInformationBaseContainer::~ForwardingInformationBaseContainer() =
+    default;
 
 RouterID ForwardingInformationBaseContainer::getID() const {
   return RouterID(get<switch_state_tags::vrf>()->cref());
@@ -49,15 +44,18 @@ ForwardingInformationBaseContainer* ForwardingInformationBaseContainer::modify(
   }
 
   auto fibMap = (*state)->getFibs()->modify(state);
+  auto [node, scope] = fibMap->getNodeAndScope(getID());
+  DCHECK_EQ(node.get(), this);
   auto newFibContainer = clone();
 
   auto* rtn = newFibContainer.get();
-  fibMap->updateForwardingInformationBaseContainer(std::move(newFibContainer));
+  fibMap->updateForwardingInformationBaseContainer(
+      std::move(newFibContainer), scope);
 
   return rtn;
 }
 
-template class ThriftStructNode<
+template struct ThriftStructNode<
     ForwardingInformationBaseContainer,
     state::FibContainerFields>;
 

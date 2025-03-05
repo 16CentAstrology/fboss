@@ -11,6 +11,7 @@
 #pragma once
 
 #include "fboss/agent/HwSwitch.h"
+#include "fboss/agent/test/utils/AclTestUtils.h"
 
 namespace facebook::fboss::utility {
 // TODO (skhare)
@@ -46,67 +47,17 @@ void checkAclEntryAndStatCount(
     int counterCount,
     const std::optional<std::string>& aclTableName = std::nullopt);
 
-std::optional<cfg::TrafficCounter> getAclTrafficCounter(
-    const std::shared_ptr<SwitchState> state,
-    const std::string& aclName);
-
 void checkAclStat(
     const HwSwitch* hwSwitch,
     std::shared_ptr<SwitchState> state,
     std::vector<std::string> acls,
     const std::string& statName,
-    std::vector<cfg::CounterType> counterTypes = {cfg::CounterType::PACKETS},
+    std::vector<cfg::CounterType> counterTypes,
     const std::optional<std::string>& aclTableName = std::nullopt);
 
 void checkAclStatDeleted(const HwSwitch* hwSwitch, const std::string& statName);
 
 void checkAclStatSize(const HwSwitch* hwSwitch, const std::string& statName);
-
-int getAclTableIndex(
-    cfg::SwitchConfig* cfg,
-    const std::optional<std::string>& tableName);
-
-cfg::AclEntry* addAcl(
-    cfg::SwitchConfig* cfg,
-    const std::string& aclName,
-    const cfg::AclActionType& aclActionType = cfg::AclActionType::PERMIT,
-    const std::optional<std::string>& tableName = std::nullopt);
-
-void delAcl(
-    cfg::SwitchConfig* cfg,
-    const std::string& aclName,
-    const std::optional<std::string>& tableName = std::nullopt);
-
-void addAclTableGroup(
-    cfg::SwitchConfig* cfg,
-    cfg::AclStage aclStage,
-    const std::string& aclTableGroupName = "AclTableGroup1");
-
-cfg::AclTable* addAclTable(
-    cfg::SwitchConfig* cfg,
-    const std::string& aclTableName,
-    const int aclTablePriority,
-    const std::vector<cfg::AclTableActionType>& actionTypes,
-    const std::vector<cfg::AclTableQualifier>& qualifiers);
-
-void delAclTable(cfg::SwitchConfig* cfg, const std::string& aclTableName);
-
-void addAclStat(
-    cfg::SwitchConfig* cfg,
-    const std::string& matcher,
-    const std::string& counterName,
-    std::vector<cfg::CounterType> counterTypes = {});
-
-void delAclStat(
-    cfg::SwitchConfig* cfg,
-    const std::string& matcher,
-    const std::string& counterName);
-
-void renameAclStat(
-    cfg::SwitchConfig* cfg,
-    const std::string& matcher,
-    const std::string& oldCounterName,
-    const std::string& newCounterName);
 
 uint64_t getAclInOutPackets(
     const HwSwitch* hwSwitch,
@@ -123,5 +74,11 @@ uint64_t getAclInOutBytes(
     const std::string& statName,
     cfg::AclStage aclStage = cfg::AclStage::INGRESS,
     const std::optional<std::string>& aclTableName = std::nullopt);
+
+void checkSwAclSendToQueue(
+    std::shared_ptr<SwitchState> state,
+    const std::string& aclName,
+    bool sendToCPU,
+    int queueId);
 
 } // namespace facebook::fboss::utility

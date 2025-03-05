@@ -11,18 +11,45 @@
 
 #include <folly/io/IOBuf.h>
 
+#include "fboss/agent/Platform.h"
 #include "fboss/agent/SwSwitch.h"
 #include "fboss/agent/types.h"
 
 namespace facebook::fboss {
 
+class Platform;
+
 class HwTestHandle {
  public:
-  explicit HwTestHandle(std::unique_ptr<SwSwitch> sw) : sw_(std::move(sw)) {}
+  HwTestHandle(
+      std::unique_ptr<SwSwitch> sw,
+      std::vector<std::unique_ptr<Platform>> platforms)
+      : platforms_(std::move(platforms)), sw_(std::move(sw)) {}
+
   virtual ~HwTestHandle() = default;
 
   SwSwitch* getSw() const {
     return sw_.get();
+  }
+
+  Platform* getPlatform() const {
+    return getPlatform(0);
+  }
+
+  Platform* getPlatform(int switchIndex) const {
+    return platforms_.at(switchIndex).get();
+  }
+
+  HwSwitch* getHwSwitch() const {
+    return getHwSwitch(0);
+  }
+
+  HwSwitch* getHwSwitch(int switchIndex) const {
+    return getPlatform(switchIndex)->getHwSwitch();
+  }
+
+  bool multiSwitch() const {
+    return platforms_.size() > 1;
   }
 
   virtual void prepareForTesting() {}
@@ -30,13 +57,14 @@ class HwTestHandle {
   // Useful helpers for testing low level events
   virtual void rxPacket(
       std::unique_ptr<folly::IOBuf> buf,
-      const PortID srcPort,
+      const PortDescriptor& srcPort,
       const std::optional<VlanID> srcVlan) = 0;
   virtual void forcePortDown(const PortID port) = 0;
   virtual void forcePortUp(const PortID port) = 0;
   virtual void forcePortFlap(const PortID port) = 0;
 
  private:
+  std::vector<std::unique_ptr<Platform>> platforms_;
   std::unique_ptr<SwSwitch> sw_{nullptr};
 };
 

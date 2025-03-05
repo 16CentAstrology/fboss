@@ -9,10 +9,10 @@ namespace facebook::fboss {
 class CredoPhyAsic : public HwAsic {
  public:
   CredoPhyAsic(
-      cfg::SwitchType type,
-      std::optional<int64_t> id,
-      std::optional<cfg::Range64> systemPortRange)
-      : HwAsic(type, id, systemPortRange, {cfg::SwitchType::PHY}) {}
+      std::optional<int64_t> switchId,
+      cfg::SwitchInfo switchInfo,
+      std::optional<cfg::SdkVersion> sdkVersion = std::nullopt)
+      : HwAsic(switchId, switchInfo, sdkVersion, {cfg::SwitchType::PHY}) {}
   bool isSupported(Feature feature) const override;
   cfg::AsicType getAsicType() const override {
     return cfg::AsicType::ASIC_TYPE_ELBERT_8DD;
@@ -31,14 +31,17 @@ class CredoPhyAsic : public HwAsic {
 
   std::set<cfg::StreamType> getQueueStreamTypes(
       cfg::PortType portType) const override;
-  int getDefaultNumPortQueues(cfg::StreamType streamType, bool cpu)
-      const override;
+  int getDefaultNumPortQueues(
+      cfg::StreamType streamType,
+      cfg::PortType portType) const override;
   uint32_t getMaxLabelStackDepth() const override;
   uint64_t getMMUSizeBytes() const override;
+  uint64_t getSramSizeBytes() const override;
   uint32_t getMaxMirrors() const override;
-  uint64_t getDefaultReservedBytes(cfg::StreamType streamType, bool cpu)
-      const override;
-  cfg::MMUScalingFactor getDefaultScalingFactor(
+  std::optional<uint64_t> getDefaultReservedBytes(
+      cfg::StreamType streamType,
+      cfg::PortType portType) const override;
+  std::optional<cfg::MMUScalingFactor> getDefaultScalingFactor(
       cfg::StreamType streamType,
       bool cpu) const override;
   int getMaxNumLogicalPorts() const override;
@@ -64,5 +67,7 @@ class CredoPhyAsic : public HwAsic {
       cfg::MMUScalingFactor scalingFactor) const override;
   uint32_t getStaticQueueLimitBytes() const override;
   uint32_t getNumMemoryBuffers() const override;
+  int getMidPriCpuQueueId() const override;
+  int getHiPriCpuQueueId() const override;
 };
 } // namespace facebook::fboss

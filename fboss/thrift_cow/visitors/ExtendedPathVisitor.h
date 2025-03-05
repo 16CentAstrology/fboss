@@ -4,13 +4,19 @@
 
 #include <type_traits>
 
+#include <fboss/thrift_cow/nodes/NodeUtils.h>
+#include <fboss/thrift_cow/nodes/Serializer.h>
+#include <fboss/thrift_cow/visitors/VisitorUtils.h>
 #include <re2/re2.h>
+#include <thrift/lib/cpp/util/EnumUtils.h>
 #include <thrift/lib/cpp2/Thrift.h>
 #include <thrift/lib/cpp2/TypeClass.h>
 #include <thrift/lib/cpp2/reflection/reflection.h>
 #include "fboss/fsdb/if/gen-cpp2/fsdb_oper_types.h"
 
 namespace facebook::fboss::thrift_cow {
+
+struct HybridNodeType;
 
 /*
  * This visitor takes a path object and a thrift type and is able to
@@ -26,23 +32,27 @@ struct ExtendedPathVisitor;
 struct NodeType;
 struct FieldsType;
 
+struct ExtPathVisitorOptions {
+  explicit ExtPathVisitorOptions(bool outputIdPaths = false)
+      : outputIdPaths(outputIdPaths) {}
+
+  bool outputIdPaths;
+};
+
 namespace epv_detail {
 
 using ExtPathIter = typename std::vector<fsdb::OperPathElem>::const_iterator;
 
-template <
-    typename TC,
-    typename Node,
-    typename Func,
-    // only enable for Node types
-    std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-        true>
+template <typename TC, typename Node, typename Func>
 void visitNode(
     std::vector<std::string>& path,
     Node& node,
     ExtPathIter begin,
     ExtPathIter end,
-    Func&& f) {
+    const ExtPathVisitorOptions& options,
+    Func&& f)
+  requires(std::is_same_v<typename Node::CowType, NodeType>)
+{
   if (begin == end) {
     f(path, node);
     return;
@@ -50,10 +60,15 @@ void visitNode(
 
   if constexpr (std::is_const_v<Node>) {
     ExtendedPathVisitor<TC>::visit(
-        path, *node.getFields(), begin, end, std::forward<Func>(f));
+        path, *node.getFields(), begin, end, options, std::forward<Func>(f));
   } else {
     ExtendedPathVisitor<TC>::visit(
-        path, *node.writableFields(), begin, end, std::forward<Func>(f));
+        path,
+        *node.writableFields(),
+        begin,
+        end,
+        options,
+        std::forward<Func>(f));
   }
 }
 
@@ -75,7 +90,7 @@ std::optional<std::string> matchingEnumToken(
     const Enum& e,
     const fsdb::OperPathElem& elem) {
   // TODO: should we allow regex/raw matching by int value?
-  auto enumName = fatal::enum_traits<Enum>::to_string(e);
+  auto enumName = apache::thrift::util::enumName(e);
   if (matchesStrToken(enumName, elem)) {
     return enumName;
   }
@@ -119,34 +134,56 @@ template <typename ValueTypeClass>
 struct ExtendedPathVisitor<apache::thrift::type_class::set<ValueTypeClass>> {
   using TC = apache::thrift::type_class::set<ValueTypeClass>;
 
-  template <
-      typename Node,
-      typename Func,
-      // only enable for Node types
-      std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-          true>
+  template <typename Node, typename Func>
   static inline void visit(
       std::vector<std::string>& path,
       Node& node,
       epv_detail::ExtPathIter begin,
       epv_detail::ExtPathIter end,
-      Func&& f) {
-    epv_detail::visitNode<TC>(path, node, begin, end, std::forward<Func>(f));
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Node::CowType, NodeType>)
+  {
+    epv_detail::visitNode<TC>(
+        path, node, begin, end, options, std::forward<Func>(f));
   }
 
-  template <
-      typename Fields,
-      typename Func,
-      // only enable for Fields types
-      std::enable_if_t<
-          std::is_same_v<typename Fields::CowType, FieldsType>,
-          bool> = true>
+  template <typename Node, typename Func>
+  static void visit(
+      std::vector<std::string>& path,
+      Node& node,
+      epv_detail::ExtPathIter begin,
+      epv_detail::ExtPathIter end,
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Node::CowType, HybridNodeType>)
+  {
+    throw std::runtime_error("Set: not implemented yet");
+  }
+
+  template <typename Node, typename Func>
+  static void visit(
+      std::vector<std::string>& path,
+      Node& node,
+      epv_detail::ExtPathIter begin,
+      epv_detail::ExtPathIter end,
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(!is_cow_type_v<Node> && !is_field_type_v<Node>)
+  {
+    throw std::runtime_error("Set: not implemented yet");
+  }
+
+  template <typename Fields, typename Func>
   static void visit(
       std::vector<std::string>& path,
       Fields& fields,
       epv_detail::ExtPathIter begin,
       epv_detail::ExtPathIter end,
-      Func&& f) {
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Fields::CowType, FieldsType>)
+  {
     const auto& elem = *begin++;
 
     for (auto& val : fields) {
@@ -155,7 +192,7 @@ struct ExtendedPathVisitor<apache::thrift::type_class::set<ValueTypeClass>> {
       if (matching) {
         path.push_back(*matching);
         ExtendedPathVisitor<ValueTypeClass>::visit(
-            path, *val, begin, end, std::forward<Func>(f));
+            path, *val, begin, end, options, std::forward<Func>(f));
         path.pop_back();
       }
     }
@@ -169,34 +206,81 @@ template <typename ValueTypeClass>
 struct ExtendedPathVisitor<apache::thrift::type_class::list<ValueTypeClass>> {
   using TC = apache::thrift::type_class::list<ValueTypeClass>;
 
-  template <
-      typename Node,
-      typename Func,
-      // only enable for Node types
-      std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-          true>
+  template <typename Node, typename Func>
   static inline void visit(
       std::vector<std::string>& path,
       Node& node,
       epv_detail::ExtPathIter begin,
       epv_detail::ExtPathIter end,
-      Func&& f) {
-    epv_detail::visitNode<TC>(path, node, begin, end, std::forward<Func>(f));
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Node::CowType, NodeType>)
+  {
+    epv_detail::visitNode<TC>(
+        path, node, begin, end, options, std::forward<Func>(f));
   }
 
-  template <
-      typename Fields,
-      typename Func,
-      // only enable for Fields types
-      std::enable_if_t<
-          std::is_same_v<typename Fields::CowType, FieldsType>,
-          bool> = true>
+  template <typename Node, typename Func>
+  static void visit(
+      std::vector<std::string>& path,
+      Node& node,
+      epv_detail::ExtPathIter begin,
+      epv_detail::ExtPathIter end,
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Node::CowType, HybridNodeType>)
+  {
+    const auto& tObj = node.ref();
+    const auto& elem = *begin++;
+    for (int i = 0; i < tObj.size(); ++i) {
+      auto matching =
+          epv_detail::matchingToken<apache::thrift::type_class::integral>(
+              i, elem);
+      if (matching) {
+        path.push_back(*matching);
+
+        ExtendedPathVisitor<ValueTypeClass>::visit(
+            path, tObj.at(i), begin, end, options, std::forward<Func>(f));
+        path.pop_back();
+      }
+    }
+  }
+
+  template <typename Node, typename Func>
+  static void visit(
+      std::vector<std::string>& path,
+      Node& node,
+      epv_detail::ExtPathIter begin,
+      epv_detail::ExtPathIter end,
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(!is_cow_type_v<Node> && !is_field_type_v<Node>)
+  {
+    const auto& elem = *begin++;
+    for (int i = 0; i < node.size(); ++i) {
+      auto matching =
+          epv_detail::matchingToken<apache::thrift::type_class::integral>(
+              i, elem);
+      if (matching) {
+        path.push_back(*matching);
+
+        ExtendedPathVisitor<ValueTypeClass>::visit(
+            path, node.at(i), begin, end, options, std::forward<Func>(f));
+        path.pop_back();
+      }
+    }
+  }
+
+  template <typename Fields, typename Func>
   static void visit(
       std::vector<std::string>& path,
       Fields& fields,
       epv_detail::ExtPathIter begin,
       epv_detail::ExtPathIter end,
-      Func&& f) {
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Fields::CowType, FieldsType>)
+  {
     const auto& elem = *begin++;
     for (int i = 0; i < fields.size(); ++i) {
       auto matching =
@@ -207,10 +291,10 @@ struct ExtendedPathVisitor<apache::thrift::type_class::list<ValueTypeClass>> {
         if constexpr (std::is_const_v<Fields>) {
           const auto& next = *fields.ref(i);
           ExtendedPathVisitor<ValueTypeClass>::visit(
-              path, next, begin, end, std::forward<Func>(f));
+              path, next, begin, end, options, std::forward<Func>(f));
         } else {
           ExtendedPathVisitor<ValueTypeClass>::visit(
-              path, *fields.ref(i), begin, end, std::forward<Func>(f));
+              path, *fields.ref(i), begin, end, options, std::forward<Func>(f));
         }
         path.pop_back();
       }
@@ -226,34 +310,78 @@ struct ExtendedPathVisitor<
     apache::thrift::type_class::map<KeyTypeClass, MappedTypeClass>> {
   using TC = apache::thrift::type_class::map<KeyTypeClass, MappedTypeClass>;
 
-  template <
-      typename Node,
-      typename Func,
-      // only enable for Node types
-      std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-          true>
+  template <typename Node, typename Func>
   static inline void visit(
       std::vector<std::string>& path,
       Node& node,
       epv_detail::ExtPathIter begin,
       epv_detail::ExtPathIter end,
-      Func&& f) {
-    epv_detail::visitNode<TC>(path, node, begin, end, std::forward<Func>(f));
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Node::CowType, NodeType>)
+  {
+    epv_detail::visitNode<TC>(
+        path, node, begin, end, options, std::forward<Func>(f));
   }
 
-  template <
-      typename Fields,
-      typename Func,
-      // only enable for Fields types
-      std::enable_if_t<
-          std::is_same_v<typename Fields::CowType, FieldsType>,
-          bool> = true>
+  template <typename Node, typename Func>
+  static void visit(
+      std::vector<std::string>& path,
+      Node& node,
+      epv_detail::ExtPathIter begin,
+      epv_detail::ExtPathIter end,
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(!is_cow_type_v<Node> && !is_field_type_v<Node>)
+  {
+    const auto& elem = *begin++;
+    for (auto& [key, val] : node) {
+      auto matching = epv_detail::matchingToken<KeyTypeClass>(key, elem);
+      if (matching) {
+        path.push_back(*matching);
+
+        ExtendedPathVisitor<MappedTypeClass>::visit(
+            path, val, begin, end, options, std::forward<Func>(f));
+
+        path.pop_back();
+      }
+    }
+  }
+
+  template <typename Node, typename Func>
+  static void visit(
+      std::vector<std::string>& path,
+      Node& node,
+      epv_detail::ExtPathIter begin,
+      epv_detail::ExtPathIter end,
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Node::CowType, HybridNodeType>)
+  {
+    const auto& elem = *begin++;
+    for (auto& [key, val] : node.ref()) {
+      auto matching = epv_detail::matchingToken<KeyTypeClass>(key, elem);
+      if (matching) {
+        path.push_back(*matching);
+
+        ExtendedPathVisitor<MappedTypeClass>::visit(
+            path, val, begin, end, options, std::forward<Func>(f));
+
+        path.pop_back();
+      }
+    }
+  }
+
+  template <typename Fields, typename Func>
   static void visit(
       std::vector<std::string>& path,
       Fields& fields,
       epv_detail::ExtPathIter begin,
       epv_detail::ExtPathIter end,
-      Func&& f) {
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Fields::CowType, FieldsType>)
+  {
     const auto& elem = *begin++;
     for (auto& [key, val] : fields) {
       auto matching = epv_detail::matchingToken<KeyTypeClass>(key, elem);
@@ -265,10 +393,10 @@ struct ExtendedPathVisitor<
         if constexpr (std::is_const_v<Fields>) {
           const auto& next = *val;
           ExtendedPathVisitor<MappedTypeClass>::visit(
-              path, next, begin, end, std::forward<Func>(f));
+              path, next, begin, end, options, std::forward<Func>(f));
         } else {
           ExtendedPathVisitor<MappedTypeClass>::visit(
-              path, *val, begin, end, std::forward<Func>(f));
+              path, *val, begin, end, options, std::forward<Func>(f));
         }
 
         path.pop_back();
@@ -284,34 +412,56 @@ template <>
 struct ExtendedPathVisitor<apache::thrift::type_class::variant> {
   using TC = apache::thrift::type_class::variant;
 
-  template <
-      typename Node,
-      typename Func,
-      // only enable for Node types
-      std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-          true>
+  template <typename Node, typename Func>
   static inline void visit(
       std::vector<std::string>& path,
       Node& node,
       epv_detail::ExtPathIter begin,
       epv_detail::ExtPathIter end,
-      Func&& f) {
-    epv_detail::visitNode<TC>(path, node, begin, end, std::forward<Func>(f));
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Node::CowType, NodeType>)
+  {
+    epv_detail::visitNode<TC>(
+        path, node, begin, end, options, std::forward<Func>(f));
   }
 
-  template <
-      typename Fields,
-      typename Func,
-      // only enable for Fields types
-      std::enable_if_t<
-          std::is_same_v<typename Fields::CowType, FieldsType>,
-          bool> = true>
+  template <typename Node, typename Func>
+  static void visit(
+      std::vector<std::string>& path,
+      Node& node,
+      epv_detail::ExtPathIter begin,
+      epv_detail::ExtPathIter end,
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Node::CowType, HybridNodeType>)
+  {
+    throw std::runtime_error("Variant: not implemented yet");
+  }
+
+  template <typename Node, typename Func>
+  static void visit(
+      std::vector<std::string>& path,
+      Node& node,
+      epv_detail::ExtPathIter begin,
+      epv_detail::ExtPathIter end,
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(!is_cow_type_v<Node> && !is_field_type_v<Node>)
+  {
+    throw std::runtime_error("Variant: not implemented yet");
+  }
+
+  template <typename Fields, typename Func>
   static void visit(
       std::vector<std::string>& path,
       Fields& fields,
       epv_detail::ExtPathIter begin,
       epv_detail::ExtPathIter end,
-      Func&& f) {
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Fields::CowType, FieldsType>)
+  {
     const auto& elem = *begin++;
     auto raw = elem.raw_ref();
     if (!raw) {
@@ -321,36 +471,36 @@ struct ExtendedPathVisitor<apache::thrift::type_class::variant> {
 
     // TODO: A lot of shared logic with PathVisitor. Could we share code?
     using MemberTypes = typename Fields::MemberTypes;
-    fatal::trie_find<MemberTypes, fatal::get_type::name>(
-        raw->begin(), raw->end(), [&](auto tag) {
-          using descriptor = typename decltype(fatal::tag_type(tag))::member;
-          using name = typename descriptor::metadata::name;
-          using tc = typename descriptor::metadata::type_class;
+    visitMember<MemberTypes>(*raw, [&](auto tag) {
+      using descriptor = typename decltype(fatal::tag_type(tag))::member;
+      using name = typename descriptor::metadata::name;
+      using tc = typename descriptor::metadata::type_class;
 
-          if (fields.type() != descriptor::metadata::id::value) {
-            // TODO: error handling
-            return;
-          }
+      if (fields.type() != descriptor::metadata::id::value) {
+        // TODO: error handling
+        return;
+      }
 
-          const std::string memberName =
-              std::string(fatal::z_data<name>(), fatal::size<name>::value);
+      std::string memberName = options.outputIdPaths
+          ? folly::to<std::string>(descriptor::metadata::id::value)
+          : std::string(fatal::z_data<name>(), fatal::size<name>::value);
 
-          path.push_back(memberName);
+      path.push_back(std::move(memberName));
 
-          // ensure we propagate constness, since children will have type
-          // const shared_ptr<T>, not shared_ptr<const T>.
-          auto& child = fields.template ref<name>();
-          if constexpr (std::is_const_v<Fields>) {
-            const auto& next = *child;
-            ExtendedPathVisitor<tc>::visit(
-                path, next, begin, end, std::forward<Func>(f));
-          } else {
-            ExtendedPathVisitor<tc>::visit(
-                path, *child, begin, end, std::forward<Func>(f));
-          }
+      // ensure we propagate constness, since children will have type
+      // const shared_ptr<T>, not shared_ptr<const T>.
+      auto& child = fields.template ref<name>();
+      if constexpr (std::is_const_v<Fields>) {
+        const auto& next = *child;
+        ExtendedPathVisitor<tc>::visit(
+            path, next, begin, end, options, std::forward<Func>(f));
+      } else {
+        ExtendedPathVisitor<tc>::visit(
+            path, *child, begin, end, options, std::forward<Func>(f));
+      }
 
-          path.pop_back();
-        });
+      path.pop_back();
+    });
   }
 };
 
@@ -361,49 +511,129 @@ template <>
 struct ExtendedPathVisitor<apache::thrift::type_class::structure> {
   using TC = apache::thrift::type_class::structure;
 
-  template <
-      typename Node,
-      typename Func,
-      // only enable for Node types
-      std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-          true>
+  template <typename Node, typename Func>
   static inline void visit(
       Node& node,
       epv_detail::ExtPathIter begin,
       epv_detail::ExtPathIter end,
-      Func&& f) {
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Node::CowType, NodeType>)
+  {
     std::vector<std::string> path;
-    visit(path, node, begin, end, std::forward<Func>(f));
+    visit(path, node, begin, end, options, std::forward<Func>(f));
   }
 
-  template <
-      typename Node,
-      typename Func,
-      // only enable for Node types
-      std::enable_if_t<std::is_same_v<typename Node::CowType, NodeType>, bool> =
-          true>
+  template <typename Node, typename Func>
   static inline void visit(
       std::vector<std::string>& path,
       Node& node,
       epv_detail::ExtPathIter begin,
       epv_detail::ExtPathIter end,
-      Func&& f) {
-    epv_detail::visitNode<TC>(path, node, begin, end, std::forward<Func>(f));
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Node::CowType, NodeType>)
+  {
+    epv_detail::visitNode<TC>(
+        path, node, begin, end, options, std::forward<Func>(f));
   }
 
-  template <
-      typename Fields,
-      typename Func,
-      // only enable for Fields types
-      std::enable_if_t<
-          std::is_same_v<typename Fields::CowType, FieldsType>,
-          bool> = true>
+  template <typename Node, typename Func>
+  static void visit(
+      std::vector<std::string>& path,
+      Node& node,
+      epv_detail::ExtPathIter begin,
+      epv_detail::ExtPathIter end,
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(!is_cow_type_v<Node> && !is_field_type_v<Node>)
+  {
+    using Members = typename apache::thrift::reflect_struct<Node>::members;
+
+    const auto& elem = *begin++;
+    auto raw = elem.raw_ref();
+    if (!raw) {
+      // Error! wildcards not supported for enum or struct
+      return;
+    }
+
+    // Perform trie search over all members for key
+    visitMember<Members>(*raw, [&](auto indexed) {
+      using member = decltype(fatal::tag_type(indexed));
+      using name = typename member::name;
+      using tc = typename member::type_class;
+      typename member::getter getter;
+
+      // Recurse further
+      auto& child = getter(node);
+
+      std::string memberName = options.outputIdPaths
+          ? folly::to<std::string>(member::id::value)
+          : std::string(fatal::z_data<name>(), fatal::size<name>::value);
+
+      path.push_back(std::move(memberName));
+
+      ExtendedPathVisitor<tc>::visit(
+          path, child, begin, end, options, std::forward<Func>(f));
+
+      path.pop_back();
+    });
+  }
+
+  template <typename Node, typename Func>
+  static void visit(
+      std::vector<std::string>& path,
+      Node& node,
+      epv_detail::ExtPathIter begin,
+      epv_detail::ExtPathIter end,
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Node::CowType, HybridNodeType>)
+  {
+    auto& tObj = node.ref();
+    using T = typename Node::ThriftType;
+    using Members = typename apache::thrift::reflect_struct<T>::members;
+
+    const auto& elem = *begin++;
+    auto raw = elem.raw_ref();
+    if (!raw) {
+      // Error! wildcards not supported for enum or struct
+      return;
+    }
+
+    // Perform trie search over all members for key
+    visitMember<Members>(*raw, [&](auto indexed) {
+      using member = decltype(fatal::tag_type(indexed));
+      using name = typename member::name;
+      using tc = typename member::type_class;
+      typename member::getter getter;
+
+      // Recurse further
+      auto& child = getter(tObj);
+
+      std::string memberName = options.outputIdPaths
+          ? folly::to<std::string>(member::id::value)
+          : std::string(fatal::z_data<name>(), fatal::size<name>::value);
+
+      path.push_back(std::move(memberName));
+
+      ExtendedPathVisitor<tc>::visit(
+          path, child, begin, end, options, std::forward<Func>(f));
+
+      path.pop_back();
+    });
+  }
+
+  template <typename Fields, typename Func>
   static void visit(
       std::vector<std::string>& path,
       Fields& fields,
       epv_detail::ExtPathIter begin,
       epv_detail::ExtPathIter end,
-      Func&& f) {
+      const ExtPathVisitorOptions& options,
+      Func&& f)
+    requires(std::is_same_v<typename Fields::CowType, FieldsType>)
+  {
     using Members = typename Fields::Members;
 
     const auto& elem = *begin++;
@@ -414,38 +644,37 @@ struct ExtendedPathVisitor<apache::thrift::type_class::structure> {
     }
 
     // Perform trie search over all members for key
-    fatal::trie_find<Members, fatal::get_type::name>(
-        raw->begin(), raw->end(), [&](auto indexed) {
-          using member = decltype(fatal::tag_type(indexed));
-          using name = typename member::name;
-          using tc = typename member::type_class;
+    visitMember<Members>(*raw, [&](auto indexed) {
+      using member = decltype(fatal::tag_type(indexed));
+      using name = typename member::name;
+      using tc = typename member::type_class;
 
-          // Recurse further
-          auto& child = fields.template ref<name>();
+      // Recurse further
+      auto& child = fields.template ref<name>();
 
-          if (!child) {
-            // child is unset, cannot traverse through missing optional child
-            return;
-          }
+      if (!child) {
+        // child is unset, cannot traverse through missing optional child
+        return;
+      }
+      std::string memberName = options.outputIdPaths
+          ? folly::to<std::string>(member::id::value)
+          : std::string(fatal::z_data<name>(), fatal::size<name>::value);
 
-          const std::string memberName =
-              std::string(fatal::z_data<name>(), fatal::size<name>::value);
+      path.push_back(std::move(memberName));
 
-          path.push_back(memberName);
+      // ensure we propagate constness, since children will have type
+      // const shared_ptr<T>, not shared_ptr<const T>.
+      if constexpr (std::is_const_v<Fields>) {
+        const auto& next = *child;
+        ExtendedPathVisitor<tc>::visit(
+            path, next, begin, end, options, std::forward<Func>(f));
+      } else {
+        ExtendedPathVisitor<tc>::visit(
+            path, *child, begin, end, options, std::forward<Func>(f));
+      }
 
-          // ensure we propagate constness, since children will have type
-          // const shared_ptr<T>, not shared_ptr<const T>.
-          if constexpr (std::is_const_v<Fields>) {
-            const auto& next = *child;
-            ExtendedPathVisitor<tc>::visit(
-                path, next, begin, end, std::forward<Func>(f));
-          } else {
-            ExtendedPathVisitor<tc>::visit(
-                path, *child, begin, end, std::forward<Func>(f));
-          }
-
-          path.pop_back();
-        });
+      path.pop_back();
+    });
   }
 };
 
@@ -470,6 +699,7 @@ struct ExtendedPathVisitor {
       Node& node,
       epv_detail::ExtPathIter begin,
       epv_detail::ExtPathIter end,
+      const ExtPathVisitorOptions& /* options */,
       Func&& f) {
     f(path, node);
   }

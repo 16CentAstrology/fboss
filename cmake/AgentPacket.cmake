@@ -8,6 +8,7 @@ add_library(packet
   fboss/agent/packet/DHCPv4Packet.cpp
   fboss/agent/packet/DHCPv6Packet.cpp
   fboss/agent/packet/EthHdr.cpp
+  fboss/agent/packet/ICMPExtHdr.cpp
   fboss/agent/packet/ICMPHdr.cpp
   fboss/agent/packet/IPv4Hdr.cpp
   fboss/agent/packet/IPv6Hdr.cpp
@@ -46,7 +47,12 @@ target_link_libraries(pktutil
 )
 
 add_library(packet_factory
+  fboss/agent/packet/EthFrame.cpp
+  fboss/agent/packet/IPPacket.cpp
+  fboss/agent/packet/MPLSPacket.cpp
   fboss/agent/packet/PktFactory.cpp
+  fboss/agent/packet/TCPPacket.cpp
+  fboss/agent/packet/UDPDatagram.cpp
 )
 
 target_link_libraries(packet_factory
@@ -54,4 +60,5 @@ target_link_libraries(packet_factory
   ctrl_cpp2
   switch_config_cpp2
   Folly::folly
+  sflow_structs
 )

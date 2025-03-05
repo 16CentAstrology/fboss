@@ -11,12 +11,18 @@
 #include "fboss/agent/PlatformPort.h"
 
 #include "fboss/agent/FbossError.h"
+#include "fboss/agent/FbossEventBase.h"
 #include "fboss/agent/Platform.h"
 #include "fboss/lib/config/PlatformConfigUtils.h"
 
 #include <folly/logging/xlog.h>
 #include <re2/re2.h>
 #include <thrift/lib/cpp/util/EnumUtils.h>
+
+DEFINE_bool(
+    led_controlled_through_led_service,
+    false,
+    "LED is controlled through led_service");
 
 namespace facebook::fboss {
 
@@ -46,6 +52,9 @@ std::ostream& operator<<(std::ostream& os, PortLedExternalState lfs) {
     case PortLedExternalState::CABLING_ERROR:
       os << "Cabling Error";
       break;
+    case PortLedExternalState::CABLING_ERROR_LOOP_DETECTED:
+      os << "Cabling Error loop detected";
+      break;
     case PortLedExternalState::EXTERNAL_FORCE_ON:
       os << "Turned ON externally by a Thrift call";
       break;
@@ -74,6 +83,20 @@ std::optional<int> PlatformPort::getCorePortIndex() const {
   return corePortIndex;
 }
 
+std::optional<int> PlatformPort::getVirtualDeviceId() const {
+  const auto& mapping = getPlatformPortEntry().mapping();
+  std::optional<int> virtualDeviceId;
+  if (mapping->virtualDeviceId()) {
+    virtualDeviceId = *mapping->virtualDeviceId();
+  }
+  return virtualDeviceId;
+}
+
+cfg::Scope PlatformPort::getScope() const {
+  const auto& mapping = getPlatformPortEntry().mapping();
+  return *mapping->scope();
+}
+
 const cfg::PlatformPortEntry& PlatformPort::getPlatformPortEntry() const {
   const auto& platformPorts = platform_->getPlatformPorts();
   if (auto itPlatformPort = platformPorts.find(id_);
@@ -92,14 +115,13 @@ PlatformPort::getTransceiverPinConfigs(cfg::PortProfileID profileID) const {
 phy::PortPinConfig PlatformPort::getPortXphyPinConfig(
     cfg::PortProfileID profileID) const {
   if (platform_->needTransceiverInfo()) {
-    folly::EventBase evb;
-    auto transceiverInfo = getTransceiverInfo(&evb);
-    if (transceiverInfo) {
+    auto transceiverSpec = getTransceiverInfo();
+    if (transceiverSpec) {
       return platform_->getPlatformMapping()->getPortXphyPinConfig(
           PlatformPortProfileConfigMatcher(
               profileID,
               id_,
-              buildPlatformPortConfigOverrideFactor(*transceiverInfo)));
+              buildPlatformPortConfigOverrideFactorBySpec(*transceiverSpec)));
     }
   }
   return platform_->getPlatformMapping()->getPortXphyPinConfig(
@@ -179,9 +201,35 @@ std::optional<cfg::PortProfileID> PlatformPort::getProfileIDBySpeedIf(
           apache::thrift::util::enumNameSafe(profileID));
     }
   }
-  XLOG(WARN) << "Can't find supported profile for port=" << getPortID()
+  XLOG(DBG5) << "Can't find supported profile for port=" << getPortID()
              << ", speed=" << apache::thrift::util::enumNameSafe(speed);
   return std::nullopt;
+}
+
+std::vector<cfg::PortProfileID> PlatformPort::getAllProfileIDsForSpeed(
+    cfg::PortSpeed speed) const {
+  if (speed == cfg::PortSpeed::DEFAULT) {
+    return {cfg::PortProfileID::PROFILE_DEFAULT};
+  }
+
+  std::vector<cfg::PortProfileID> profiles;
+  const auto& platformPortEntry = getPlatformPortEntry();
+  for (auto profile : *platformPortEntry.supportedProfiles()) {
+    auto profileID = profile.first;
+    if (auto profileCfg = platform_->getPortProfileConfig(
+            PlatformPortProfileConfigMatcher(profileID, getPortID()))) {
+      if (*profileCfg->speed() == speed) {
+        profiles.push_back(profileID);
+      }
+    } else {
+      throw FbossError(
+          "Platform port ",
+          getPortID(),
+          " has invalid profile ",
+          apache::thrift::util::enumNameSafe(profileID));
+    }
+  }
+  return profiles;
 }
 
 const phy::PortProfileConfig PlatformPort::getPortProfileConfig(
@@ -200,13 +248,12 @@ const phy::PortProfileConfig PlatformPort::getPortProfileConfig(
 const std::optional<phy::PortProfileConfig>
 PlatformPort::getPortProfileConfigIf(cfg::PortProfileID profileID) const {
   if (platform_->needTransceiverInfo()) {
-    folly::EventBase evb;
-    std::optional<TransceiverInfo> transceiverInfo = getTransceiverInfo(&evb);
-    if (transceiverInfo.has_value()) {
+    auto transceiverSpec = getTransceiverInfo();
+    if (transceiverSpec) {
       return platform_->getPortProfileConfig(PlatformPortProfileConfigMatcher(
           profileID,
           id_,
-          buildPlatformPortConfigOverrideFactor(*transceiverInfo)));
+          buildPlatformPortConfigOverrideFactorBySpec(*transceiverSpec)));
     }
   }
   return platform_->getPortProfileConfig(
@@ -254,15 +301,14 @@ std::optional<int32_t> PlatformPort::getExternalPhyID() {
   }
 }
 
-std::optional<TransceiverInfo> PlatformPort::getTransceiverInfo(
-    folly::EventBase* evb) const {
+std::shared_ptr<TransceiverSpec> PlatformPort::getTransceiverInfo() const {
   auto transID = getTransceiverID();
   try {
-    return std::optional(getFutureTransceiverInfo().getVia(evb));
+    return getTransceiverSpec();
   } catch (const std::exception& e) {
     XLOG(DBG3) << "Error retrieving TransceiverInfo for transceiver "
                << *transID << " Exception: " << folly::exceptionStr(e);
-    return std::nullopt;
+    return nullptr;
   }
 }
 
@@ -279,6 +325,25 @@ std::vector<phy::PinID> PlatformPort::getTransceiverLanes(
 
 cfg::PortType PlatformPort::getPortType() const {
   return *getPlatformPortEntry().mapping()->portType();
+}
+
+cfg::PlatformPortConfigOverrideFactor
+PlatformPort::buildPlatformPortConfigOverrideFactorBySpec(
+    const TransceiverSpec& transceiverSpec) const {
+  cfg::PlatformPortConfigOverrideFactor factor;
+  if (auto cable = transceiverSpec.getCableLength(); cable.has_value()) {
+    factor.cableLengths() = {cable.value()};
+  }
+  if (auto mediaInterface = transceiverSpec.getMediaInterface();
+      mediaInterface.has_value()) {
+    // Use the first lane mediaInterface
+    factor.mediaInterfaceCode() = mediaInterface.value();
+  }
+  if (auto interface = transceiverSpec.getManagementInterface();
+      interface.has_value()) {
+    factor.transceiverManagementInterface() = interface.value();
+  }
+  return factor;
 }
 
 namespace {

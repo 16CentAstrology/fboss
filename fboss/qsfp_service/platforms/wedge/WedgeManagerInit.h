@@ -27,23 +27,49 @@ std::shared_ptr<FbossMacsecHandler> createFbossMacsecHandler(
  * This function should return derived WedgeManager which is still in dev.
  */
 std::unique_ptr<WedgeManager> createFBWedgeManager(
-    std::unique_ptr<PlatformProductInfo> productInfo);
+    std::unique_ptr<PlatformProductInfo> productInfo,
+    const std::string& platformMappingStr);
 
-std::unique_ptr<WedgeManager> createYampWedgeManager();
+std::unique_ptr<WedgeManager> createYampWedgeManager(
+    const std::string& platformMappingStr);
 
-std::unique_ptr<WedgeManager> createDarwinWedgeManager();
+std::unique_ptr<WedgeManager> createDarwinWedgeManager(
+    const std::string& platformMappingStr);
 
-std::unique_ptr<WedgeManager> createLassenWedgeManager();
-
-std::unique_ptr<WedgeManager> createElbertWedgeManager();
+std::unique_ptr<WedgeManager> createElbertWedgeManager(
+    const std::string& platformMappingStr);
 
 bool isElbert8DD();
 
-std::unique_ptr<WedgeManager> createSandiaWedgeManager();
+std::string getDeviceDatacenter();
+std::string getDeviceHostnameScheme();
 
-std::unique_ptr<WedgeManager> createKametWedgeManager();
+std::unique_ptr<WedgeManager> createMeru400bfuWedgeManager(
+    const std::string& platformMappingStr);
 
-std::unique_ptr<WedgeManager> createMakaluWedgeManager();
+std::unique_ptr<WedgeManager> createMeru400biaWedgeManager(
+    const std::string& platformMappingStr);
+std::unique_ptr<WedgeManager> createMeru400biuWedgeManager(
+    const std::string& platformMappingStr);
+std::unique_ptr<WedgeManager> createMeru800biaWedgeManager(
+    const std::string& platformMappingStr);
+std::unique_ptr<WedgeManager> createMeru800bfaWedgeManager(
+    const std::string& platformMappingStr);
+
+std::unique_ptr<WedgeManager> createMontblancWedgeManager(
+    const std::string& platformMappingStr);
+
+std::unique_ptr<WedgeManager> createMinipack3NWedgeManager(
+    const std::string& platformMappingStr);
+
+std::unique_ptr<WedgeManager> createMorgan800ccWedgeManager(
+    const std::string& platformMappingStr);
+
+std::unique_ptr<WedgeManager> createJanga800bicWedgeManager(
+    const std::string& platformMappingStr);
+
+std::unique_ptr<WedgeManager> createTahan800bcWedgeManager(
+    const std::string& platformMappingStr);
 
 } // namespace fboss
 } // namespace facebook

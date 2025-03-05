@@ -4,7 +4,8 @@
 
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
-#include "fboss/agent/hw/test/HwPortUtils.h"
+
+#include "fboss/agent/test/utils/PortTestUtils.h"
 #include "fboss/qsfp_service/if/gen-cpp2/transceiver_types.h"
 
 #include <thrift/lib/cpp/util/EnumUtils.h>
@@ -13,8 +14,8 @@ namespace facebook::fboss::utility {
 
 TransceiverInfo getTransceiverInfo(cfg::PortProfileID profileID) {
   TransceiverInfo info;
-  info.present() = true;
-  info.transceiver() = TransceiverType::QSFP;
+  info.tcvrState()->present() = true;
+  info.tcvrState()->transceiver() = TransceiverType::QSFP;
 
   Cable cable;
   auto mediaType = getMediaType(profileID);
@@ -24,13 +25,16 @@ TransceiverInfo getTransceiverInfo(cfg::PortProfileID profileID) {
   } else if (mediaType == TransmitterTechnology::OPTICAL) {
     cable.length() = 2000;
   }
-  info.cable() = cable;
+  info.tcvrState()->cable() = cable;
 
   // Prepare mediaInterface and managementInterface
   auto speed = getSpeed(profileID);
   MediaInterfaceCode mediaInterface;
   TransceiverManagementInterface mgmtInterface;
-  if (speed == cfg::PortSpeed::FOURHUNDREDG) {
+  if (speed == cfg::PortSpeed::EIGHTHUNDREDG) {
+    mediaInterface = MediaInterfaceCode::FR4_2x400G;
+    mgmtInterface = TransceiverManagementInterface::CMIS;
+  } else if (speed == cfg::PortSpeed::FOURHUNDREDG) {
     mediaInterface = MediaInterfaceCode::FR4_400G;
     mgmtInterface = TransceiverManagementInterface::CMIS;
   } else if (speed == cfg::PortSpeed::TWOHUNDREDG) {
@@ -47,7 +51,7 @@ TransceiverInfo getTransceiverInfo(cfg::PortProfileID profileID) {
         apache::thrift::util::enumNameSafe(speed));
   }
 
-  info.transceiverManagementInterface() = mgmtInterface;
+  info.tcvrState()->transceiverManagementInterface() = mgmtInterface;
   TransceiverSettings settings;
   std::vector<MediaInterfaceId> mediaInterfaces;
   for (auto i = 0; i < 4; i++) {
@@ -57,7 +61,7 @@ TransceiverInfo getTransceiverInfo(cfg::PortProfileID profileID) {
     mediaInterfaces.push_back(lane);
   }
   settings.mediaInterface() = mediaInterfaces;
-  info.settings() = settings;
+  info.tcvrState()->settings() = settings;
 
   return info;
 }

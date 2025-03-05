@@ -24,14 +24,10 @@ class SimSwitch : public HwSwitch {
 
   HwInitResult initImpl(
       Callback* callback,
-      bool failHwCallsOnWarmboot,
-      cfg::SwitchType switchType,
-      std::optional<int64_t> switchId) override;
-  std::shared_ptr<SwitchState> stateChanged(const StateDelta& delta) override;
-  std::shared_ptr<SwitchState> stateChangedTransaction(
-      const StateDelta& delta) override {
-    return stateChanged(delta);
-  }
+      BootType bootType,
+      bool failHwCallsOnWarmboot) override;
+  std::shared_ptr<SwitchState> stateChangedImpl(
+      const StateDelta& delta) override;
   std::unique_ptr<TxPacket> allocatePacket(uint32_t size) const override;
   bool sendPacketSwitchedAsync(std::unique_ptr<TxPacket> pkt) noexcept override;
   bool sendPacketOutOfPortAsync(
@@ -59,6 +55,37 @@ class SimSwitch : public HwSwitch {
   std::map<std::string, HwSysPortStats> getSysPortStats() const override {
     return {};
   }
+  CpuPortStats getCpuPortStats() const override {
+    return {};
+  }
+  FabricReachabilityStats getFabricReachabilityStats() const override {
+    return {};
+  }
+
+  TeFlowStats getTeFlowStats() const override {
+    return TeFlowStats();
+  }
+  HwSwitchDropStats getSwitchDropStats() const override {
+    return HwSwitchDropStats{};
+  }
+  HwFlowletStats getHwFlowletStats() const override {
+    return HwFlowletStats{};
+  }
+  AclStats getAclStats() const override {
+    return AclStats{};
+  }
+
+  HwSwitchWatermarkStats getSwitchWatermarkStats() const override {
+    return HwSwitchWatermarkStats{};
+  }
+
+  HwResourceStats getResourceStats() const override {
+    return HwResourceStats{};
+  }
+
+  std::vector<EcmpDetails> getAllEcmpDetails() const override {
+    return {};
+  }
 
   void fetchL2Table(std::vector<L2EntryThrift>* /*l2Table*/) const override {
     return;
@@ -76,12 +103,6 @@ class SimSwitch : public HwSwitch {
 
   void unregisterCallbacks() override {
     // TODO
-  }
-
-  bool getAndClearNeighborHit(RouterID /*vrf*/, folly::IPAddress& /*ip*/)
-      override {
-    // TODO
-    return false;
   }
 
   bool isPortUp(PortID /*port*/) const override {
@@ -120,10 +141,15 @@ class SimSwitch : public HwSwitch {
     return "";
   }
 
-  std::map<PortID, phy::PhyInfo> updateAllPhyInfo() override {
+  std::map<PortID, phy::PhyInfo> updateAllPhyInfoImpl() override {
     return {};
   }
-  std::map<PortID, FabricEndpoint> getFabricReachability() const override {
+  const std::map<PortID, FabricEndpoint>& getFabricConnectivity()
+      const override {
+    static const std::map<PortID, FabricEndpoint> kEmpty;
+    return kEmpty;
+  }
+  std::vector<PortID> getSwitchReachability(SwitchID switchId) const override {
     return {};
   }
 
@@ -133,21 +159,30 @@ class SimSwitch : public HwSwitch {
     return 0;
   }
 
+  void injectSwitchReachabilityChangeNotification() override {}
+
  private:
   void switchRunStateChangedImpl(SwitchRunState newState) override {}
   // TODO
-  void updateStatsImpl(SwitchStats* /*switchStats*/) override {}
+  void updateStatsImpl() override {}
 
-  void gracefulExitImpl(
-      folly::dynamic& /*switchState*/,
-      state::WarmbootState& /*thriftSwitchState*/) override {}
+  void gracefulExitImpl() override {}
+
+  void initialStateApplied() override {}
+
+  void syncLinkStates() override {}
+  void syncLinkActiveStates() override {}
+  void syncLinkConnectivity() override {}
+  void syncSwitchReachability() override {}
+
+  std::shared_ptr<SwitchState> reconstructSwitchState() const override;
 
   // Forbidden copy constructor and assignment operator
   SimSwitch(SimSwitch const&) = delete;
   SimSwitch& operator=(SimSwitch const&) = delete;
 
   SimPlatform* platform_;
-  HwSwitch::Callback* callback_{nullptr};
+  HwSwitchCallback* callback_{nullptr};
   uint32_t numPorts_{0};
   uint64_t txCount_{0};
   BootType bootType_{BootType::UNINITIALIZED};

@@ -22,6 +22,8 @@
 #include "fboss/agent/state/PortDescriptor.h"
 #include "fboss/agent/types.h"
 
+DECLARE_bool(disable_neighbor_updates);
+
 namespace facebook::fboss {
 
 class SwitchState;
@@ -47,6 +49,10 @@ using NeighborUpdaterVariant =
  * thread.
  */
 class NeighborUpdater : public StateObserver {
+  // Enable access to caches from NeighborUpdater to help imitate neighbor
+  // learning during Agent HW testing.
+  friend class AgentHwTest;
+
  private:
   std::shared_ptr<NeighborUpdaterVariant> impl_;
   SwSwitch* sw_{nullptr};
@@ -60,16 +66,18 @@ class NeighborUpdater : public StateObserver {
 
   void stateUpdated(const StateDelta& delta) override;
 
+  void processInterfaceUpdates(const StateDelta& stateDelta);
+  void processVlanUpdates(const StateDelta& stateDelta);
+
   // Zero-cost forwarders. See comment in NeighborUpdater-defs.h.
 #define ARG_TEMPLATE_PARAMETER(TYPE, NAME) typename T_##NAME
 #define ARG_RVALUE_REF_TYPE(TYPE, NAME) T_##NAME&& NAME
 #define ARG_FORWARDER(TYPE, NAME) std::forward<T_##NAME>(NAME)
 #define ARG_NAME_ONLY(TYPE, NAME) NAME
 #define NEIGHBOR_UPDATER_METHOD(VISIBILITY, NAME, RETURN_TYPE, ...)           \
-  VISIBILITY:                                                                 \
-  template <ARG_LIST(ARG_TEMPLATE_PARAMETER, ##__VA_ARGS__)>                  \
-  folly::Future<folly::lift_unit_t<RETURN_TYPE>> NAME(                        \
-      ARG_LIST(ARG_RVALUE_REF_TYPE, ##__VA_ARGS__)) {                         \
+  VISIBILITY : template <ARG_LIST(ARG_TEMPLATE_PARAMETER, ##__VA_ARGS__)>     \
+               folly::Future<folly::lift_unit_t<RETURN_TYPE>>                 \
+               NAME(ARG_LIST(ARG_RVALUE_REF_TYPE, ##__VA_ARGS__)) {           \
     return folly::via(sw_->getNeighborCacheEvb(), [=, impl = this->impl_]() { \
       return std::visit(                                                      \
           [&](auto&& arg) {                                                   \
@@ -80,8 +88,7 @@ class NeighborUpdater : public StateObserver {
   }
 
 #define NEIGHBOR_UPDATER_METHOD_NO_ARGS(VISIBILITY, NAME, RETURN_TYPE)     \
-  VISIBILITY:                                                              \
-  folly::Future<folly::lift_unit_t<RETURN_TYPE>> NAME() {                  \
+  VISIBILITY : folly::Future<folly::lift_unit_t<RETURN_TYPE>> NAME() {     \
     return folly::via(sw_->getNeighborCacheEvb(), [impl = this->impl_]() { \
       return std::visit([&](auto&& arg) { return arg.NAME(); }, *impl);    \
     });                                                                    \
@@ -95,10 +102,17 @@ class NeighborUpdater : public StateObserver {
       VlanID vlan,
       AddrT ip,
       std::optional<cfg::AclLookupClass> classID = std::nullopt) {
+    // This is invoked by LookupClassUpdater which uses Vlans today.
+    // However, VlanID always numerically equals the InterfaceID. Thus, cast
+    // VlanID as InterfaceID and use it.
     if constexpr (std::is_same_v<AddrT, folly::IPAddressV4>) {
-      updateArpEntryClassID(vlan, ip, classID);
+      FLAGS_intf_nbr_tables ? updateArpEntryClassIDForIntf(
+                                  static_cast<InterfaceID>(vlan), ip, classID)
+                            : updateArpEntryClassID(vlan, ip, classID);
     } else {
-      updateNdpEntryClassID(vlan, ip, classID);
+      FLAGS_intf_nbr_tables ? updateNdpEntryClassIDForIntf(
+                                  static_cast<InterfaceID>(vlan), ip, classID)
+                            : updateNdpEntryClassID(vlan, ip, classID);
     }
   }
 
@@ -109,7 +123,11 @@ class NeighborUpdater : public StateObserver {
   void aggregatePortChanged(
       const std::shared_ptr<AggregatePort>& oldAggPort,
       const std::shared_ptr<AggregatePort>& newAggPort);
+
+  // TODO(skhare) Remove after completely migrating to intfCaches_
   void sendNeighborUpdates(const VlanDelta& delta);
+
+  void sendNeighborUpdatesForIntf(const InterfaceDelta& delta);
 
   // Forbidden copy constructor and assignment operator
   NeighborUpdater(NeighborUpdater const&) = delete;

@@ -24,6 +24,10 @@ using std::shared_ptr;
 
 namespace {
 
+HwSwitchMatcher scope() {
+  return HwSwitchMatcher{std::unordered_set<SwitchID>{SwitchID(0)}};
+}
+
 cfg::Range getRange(uint32_t minimum, uint32_t maximum) {
   cfg::Range range;
   range.minimum() = minimum;
@@ -162,7 +166,8 @@ PortQueue* generateDefaultPortQueue() {
 constexpr int kStateTestNumPortQueues = 4;
 std::shared_ptr<SwitchState> applyInitConfig() {
   auto stateV0 = make_shared<SwitchState>();
-  stateV0->registerPort(PortID(1), "port1");
+  registerPort(stateV0, PortID(1), "port1", scope());
+
   auto port0 = stateV0->getPort(PortID(1));
   QueueConfig initialQueues;
   for (uint8_t i = 0; i < kStateTestNumPortQueues; i++) {
@@ -212,7 +217,7 @@ TEST(PortQueue, stateDelta) {
   auto queues1 = stateV1->getPort(PortID(1))->getPortQueues();
   EXPECT_EQ(
       platform->getAsic()->getDefaultNumPortQueues(
-          cfg::StreamType::UNICAST, false),
+          cfg::StreamType::UNICAST, cfg::PortType::INTERFACE_PORT),
       queues1->size());
   // The first kStateTestNumPortQueues should have weight changed
   for (int i = 0; i < kStateTestNumPortQueues; i++) {
@@ -221,7 +226,7 @@ TEST(PortQueue, stateDelta) {
   // The rest queue should be default
   for (int i = kStateTestNumPortQueues;
        i < platform->getAsic()->getDefaultNumPortQueues(
-               cfg::StreamType::UNICAST, false);
+               cfg::StreamType::UNICAST, cfg::PortType::INTERFACE_PORT);
        i++) {
     auto defaultQ = std::make_shared<PortQueue>(static_cast<uint8_t>(i));
     defaultQ->setStreamType(cfg::StreamType::UNICAST);
@@ -235,7 +240,7 @@ TEST(PortQueue, stateDelta) {
   auto queues2 = stateV2->getPort(PortID(1))->getPortQueues();
   EXPECT_EQ(
       platform->getAsic()->getDefaultNumPortQueues(
-          cfg::StreamType::UNICAST, false),
+          cfg::StreamType::UNICAST, cfg::PortType::INTERFACE_PORT),
       queues2->size());
   EXPECT_EQ(5, queues2->at(0)->getWeight());
 
@@ -244,14 +249,17 @@ TEST(PortQueue, stateDelta) {
   auto queues3 = stateV3->getPort(PortID(1))->getPortQueues();
   EXPECT_EQ(
       platform->getAsic()->getDefaultNumPortQueues(
-          cfg::StreamType::UNICAST, false),
+          cfg::StreamType::UNICAST, cfg::PortType::INTERFACE_PORT),
       queues3->size());
   EXPECT_EQ(1, queues3->at(3)->getWeight());
 
-  cfg::PortQueue queueExtra;
-  queueExtra.id() = 11;
-  queueExtra.weight() = 5;
-  config.portQueueConfigs()["queue_config"].push_back(queueExtra);
+  for (auto i = kStateTestNumPortQueues; i <= MockAsic::kDefaultNumPortQueues;
+       i++) {
+    cfg::PortQueue queueExtra;
+    queueExtra.id() = 11 + i;
+    queueExtra.weight() = 5;
+    config.portQueueConfigs()["queue_config"].push_back(queueExtra);
+  }
   EXPECT_THROW(
       publishAndApplyConfig(stateV3, &config, platform.get()), FbossError);
 }
@@ -277,7 +285,7 @@ TEST(PortQueue, aqmState) {
   // change one queue, won't affect the other queues
   EXPECT_EQ(
       platform->getAsic()->getDefaultNumPortQueues(
-          cfg::StreamType::UNICAST, false),
+          cfg::StreamType::UNICAST, cfg::PortType::INTERFACE_PORT),
       queues1->size());
   std::vector<cfg::ActiveQueueManagement> aqms{};
   aqms.resize(1);

@@ -3,9 +3,11 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/fboss/platform/rackmon/configs/interface/rackmon.conf fboss/platform/rackmon/configs/interface/rackmon.conf
   COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/fboss/platform/rackmon/configs/interface/rackmon_pls.conf fboss/platform/rackmon/configs/interface/rackmon_pls.conf
   COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/fboss/platform/rackmon/configs/register_map/orv2_psu.json fboss/platform/rackmon/configs/register_map/orv2_psu.json
+  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/fboss/platform/rackmon/configs/register_map/orv3_psu.json fboss/platform/rackmon/configs/register_map/orv3_psu.json
+  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/fboss/platform/rackmon/configs/register_map/orv3_bbu.json fboss/platform/rackmon/configs/register_map/orv3_bbu.json
   COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/fboss/platform/rackmon/generate_rackmon_config.sh fboss/platform/rackmon/generate_rackmon_config.sh
   COMMAND fboss/platform/rackmon/generate_rackmon_config.sh --install_dir=fboss/platform/rackmon/
-  DEPENDS fboss/platform/rackmon/configs/interface/rackmon.conf fboss/platform/rackmon/configs/interface/rackmon_pls.conf fboss/platform/rackmon/configs/register_map/orv2_psu.json
+  DEPENDS fboss/platform/rackmon/configs/interface/rackmon.conf fboss/platform/rackmon/configs/interface/rackmon_pls.conf fboss/platform/rackmon/configs/register_map/orv2_psu.json fboss/platform/rackmon/configs/register_map/orv3_psu.json fboss/platform/rackmon/configs/register_map/orv3_bbu.json
 )
 
 add_fbthrift_cpp_library(
@@ -57,6 +59,8 @@ target_link_libraries(rackmon
   fb303::fb303
 )
 
+install(TARGETS rackmon)
+
 add_executable(rackmon_test
   fboss/platform/rackmon/tests/DeviceTest.cpp
   fboss/platform/rackmon/tests/TempDir.h
@@ -88,3 +92,5 @@ target_include_directories(rackmon_test PRIVATE
 )
 
 target_compile_definitions(rackmon_test PRIVATE __TEST__=1)
+
+install(TARGETS rackmon_test)

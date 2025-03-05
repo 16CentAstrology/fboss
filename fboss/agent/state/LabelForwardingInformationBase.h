@@ -7,7 +7,6 @@
 #include <fboss/agent/state/LabelForwardingEntry.h>
 #include <cstdint>
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
-#include "fboss/agent/state/LabelForwardingEntry.h"
 #include "fboss/agent/state/NodeMap.h"
 #include "fboss/agent/state/Route.h"
 
@@ -32,45 +31,54 @@ class LabelForwardingInformationBase
     : public ThriftMapNode<
           LabelForwardingInformationBase,
           LabelForwardingInformationBaseTraits> {
+ public:
   using Base = ThriftMapNode<
       LabelForwardingInformationBase,
       LabelForwardingInformationBaseTraits>;
+  using Traits = LabelForwardingInformationBaseTraits;
+  using Base::modify;
 
- public:
   LabelForwardingInformationBase();
 
   virtual ~LabelForwardingInformationBase() override;
 
-  const std::shared_ptr<LabelForwardingEntry>& getLabelForwardingEntry(
-      Label topLabel) const;
+ private:
+  // Inherit the constructors required for clone()
+  using Base::Base;
+  friend class CloneAllocator;
+};
 
-  std::shared_ptr<LabelForwardingEntry> getLabelForwardingEntryIf(
-      Label topLabel) const;
+using MultiLabelForwardingInformationBaseTypeClass =
+    apache::thrift::type_class::map<
+        apache::thrift::type_class::string,
+        LabelForwardingInformationBaseTypeClass>;
+using MultiLabelForwardingInformationBaseThriftType =
+    std::map<std::string, LabelForwardingInformationBaseThriftType>;
 
-  std::shared_ptr<LabelForwardingEntry> cloneLabelEntry(
-      std::shared_ptr<LabelForwardingEntry> entry);
+class MultiLabelForwardingInformationBase;
 
-  LabelForwardingInformationBase* modify(std::shared_ptr<SwitchState>* state);
+using MultiLabelForwardingInformationBaseTraits =
+    ThriftMultiSwitchMapNodeTraits<
+        MultiLabelForwardingInformationBase,
+        MultiLabelForwardingInformationBaseTypeClass,
+        MultiLabelForwardingInformationBaseThriftType,
+        LabelForwardingInformationBase>;
 
-  LabelForwardingEntry* modifyLabelEntry(
-      std::shared_ptr<SwitchState>* state,
-      std::shared_ptr<LabelForwardingEntry> entry);
+class HwSwitchMatcher;
 
-  LabelForwardingInformationBase* programLabel(
-      std::shared_ptr<SwitchState>* state,
-      Label label,
-      ClientID client,
-      AdminDistance distance,
-      LabelNextHopSet nexthops);
+class MultiLabelForwardingInformationBase
+    : public ThriftMultiSwitchMapNode<
+          MultiLabelForwardingInformationBase,
+          MultiLabelForwardingInformationBaseTraits> {
+ public:
+  using Traits = MultiLabelForwardingInformationBaseTraits;
+  using BaseT = ThriftMultiSwitchMapNode<
+      MultiLabelForwardingInformationBase,
+      MultiLabelForwardingInformationBaseTraits>;
+  using BaseT::modify;
 
-  LabelForwardingInformationBase* unprogramLabel(
-      std::shared_ptr<SwitchState>* state,
-      Label label,
-      ClientID client);
-
-  LabelForwardingInformationBase* purgeEntriesForClient(
-      std::shared_ptr<SwitchState>* state,
-      ClientID client);
+  MultiLabelForwardingInformationBase() = default;
+  virtual ~MultiLabelForwardingInformationBase() = default;
 
   static bool isValidNextHopSet(const LabelNextHopSet& nexthops);
 
@@ -79,19 +87,13 @@ class LabelForwardingInformationBase
     entry->setResolved(*(entry->getBestEntry().second));
   }
 
-  // For backward compatibility with old format
-  static std::shared_ptr<LabelForwardingEntry> labelEntryFromFollyDynamic(
-      folly::dynamic entry);
-
-  static void noRibToRibEntryConvertor(
-      std::shared_ptr<LabelForwardingEntry>& entry);
+  MultiLabelForwardingInformationBase* modify(
+      std::shared_ptr<SwitchState>* state);
 
  private:
   // Inherit the constructors required for clone()
-  using Base::Base;
+  using BaseT::BaseT;
   friend class CloneAllocator;
-  static std::shared_ptr<LabelForwardingEntry> fromFollyDynamicOldFormat(
-      folly::dynamic entry);
 };
 
 } // namespace facebook::fboss

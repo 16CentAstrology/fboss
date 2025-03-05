@@ -9,7 +9,7 @@ namespace facebook::fboss {
 FbFpgaPimQsfpController::FbFpgaPimQsfpController(
     std::unique_ptr<FpgaMemoryRegion> io,
     unsigned int portsPerPim)
-    : memoryRegion_(move(io)),
+    : memoryRegion_(std::move(io)),
       portsPerPim_(portsPerPim),
       registerOffsetToMutex_(setupRegisterOffsetToMutex()) {}
 
@@ -35,7 +35,7 @@ folly::SharedMutex& FbFpgaPimQsfpController::getMutex(
 }
 
 bool FbFpgaPimQsfpController::isQsfpPresent(int qsfp) {
-  folly::SharedMutex::ReadHolder g(getMutex(kFacebookFpgaQsfpPresentRegOffset));
+  std::shared_lock g(getMutex(kFacebookFpgaQsfpPresentRegOffset));
   uint32_t qsfpPresentReg =
       memoryRegion_->read(kFacebookFpgaQsfpPresentRegOffset);
   // From the lower end, each bit of this register represent the presence of a
@@ -45,7 +45,7 @@ bool FbFpgaPimQsfpController::isQsfpPresent(int qsfp) {
 }
 
 std::vector<bool> FbFpgaPimQsfpController::scanQsfpPresence() {
-  folly::SharedMutex::ReadHolder g(getMutex(kFacebookFpgaQsfpPresentRegOffset));
+  std::shared_lock g(getMutex(kFacebookFpgaQsfpPresentRegOffset));
   uint32_t qsfpPresentReg =
       memoryRegion_->read(kFacebookFpgaQsfpPresentRegOffset);
   // From the lower end, each bit of this register represent the presence of a
@@ -60,7 +60,7 @@ std::vector<bool> FbFpgaPimQsfpController::scanQsfpPresence() {
 
 // Trigger the QSFP hard reset for a given QSFP module.
 void FbFpgaPimQsfpController::triggerQsfpHardReset(unsigned int port) {
-  folly::SharedMutex::WriteHolder g(getMutex(kFacebookFpgaQsfpResetRegOffset));
+  std::unique_lock g(getMutex(kFacebookFpgaQsfpResetRegOffset));
   uint32_t originalResetReg =
       memoryRegion_->read(kFacebookFpgaQsfpResetRegOffset);
 
@@ -87,7 +87,7 @@ void FbFpgaPimQsfpController::triggerQsfpHardReset(unsigned int port) {
 }
 
 void FbFpgaPimQsfpController::ensureQsfpOutOfReset(int qsfp) {
-  folly::SharedMutex::WriteHolder g(getMutex(kFacebookFpgaQsfpResetRegOffset));
+  std::unique_lock g(getMutex(kFacebookFpgaQsfpResetRegOffset));
   uint32_t currentResetReg =
       memoryRegion_->read(kFacebookFpgaQsfpResetRegOffset);
   // 1 to hold QSFP reset active. 0 to release QSFP reset.
@@ -107,7 +107,7 @@ void FbFpgaPimQsfpController::ensureQsfpOutOfReset(int qsfp) {
  * reset bits of all the transceivers through FPGA.
  */
 void FbFpgaPimQsfpController::clearAllTransceiverReset() {
-  folly::SharedMutex::WriteHolder g(getMutex(kFacebookFpgaQsfpResetRegOffset));
+  std::unique_lock g(getMutex(kFacebookFpgaQsfpResetRegOffset));
   XLOG(DBG5) << "Clearing all transceiver out of reset.";
   // For each bit, 1 to hold QSFP reset active. 0 to release QSFP reset.
   memoryRegion_->write(kFacebookFpgaQsfpResetRegOffset, 0x0);

@@ -12,6 +12,10 @@ bool CredoPhyAsic::isSupported(Feature feature) const {
     case HwAsic::Feature::PORT_EYE_VALUES:
     case HwAsic::Feature::FEC:
     case HwAsic::Feature::XPHY_PORT_STATE_TOGGLE:
+    case HwAsic::Feature::PMD_RX_SIGNAL_DETECT:
+    case HwAsic::Feature::PMD_RX_LOCK_STATUS:
+    case HwAsic::Feature::FEC_AM_LOCK_STATUS:
+    case HwAsic::Feature::PCS_RX_LINK_STATUS:
       return true;
     default:
       return false;
@@ -25,15 +29,15 @@ std::set<cfg::StreamType> CredoPhyAsic::getQueueStreamTypes(
 }
 int CredoPhyAsic::getDefaultNumPortQueues(
     cfg::StreamType /* streamType */,
-    bool /* cpu */) const {
+    cfg::PortType /*portType*/) const {
   throw FbossError("CredoPhyAsic doesn't support queue feature");
 }
-uint64_t CredoPhyAsic::getDefaultReservedBytes(
+std::optional<uint64_t> CredoPhyAsic::getDefaultReservedBytes(
     cfg::StreamType /* streamType */,
-    bool /* cpu */) const {
+    cfg::PortType /* portType */) const {
   throw FbossError("CredoPhyAsic doesn't support queue feature");
 }
-cfg::MMUScalingFactor CredoPhyAsic::getDefaultScalingFactor(
+std::optional<cfg::MMUScalingFactor> CredoPhyAsic::getDefaultScalingFactor(
     cfg::StreamType /* streamType */,
     bool /* cpu */) const {
   throw FbossError("CredoPhyAsic doesn't support queue feature");
@@ -52,6 +56,9 @@ uint32_t CredoPhyAsic::getMaxLabelStackDepth() const {
 uint64_t CredoPhyAsic::getMMUSizeBytes() const {
   throw FbossError("CredoPhyAsic doesn't support MMU feature");
 };
+uint64_t CredoPhyAsic::getSramSizeBytes() const {
+  throw FbossError("CredoPhyAsic doesn't support MMU feature");
+}
 int CredoPhyAsic::getMaxNumLogicalPorts() const {
   throw FbossError("CredoPhyAsic doesn't support logical ports feature");
 }
@@ -90,5 +97,11 @@ uint32_t CredoPhyAsic::getStaticQueueLimitBytes() const {
 }
 uint32_t CredoPhyAsic::getNumMemoryBuffers() const {
   throw FbossError("CredoPhyAsic doesn't support MMU feature");
+}
+int CredoPhyAsic::getMidPriCpuQueueId() const {
+  throw FbossError("Credo ASIC does not support cpu queue");
+}
+int CredoPhyAsic::getHiPriCpuQueueId() const {
+  throw FbossError("Credo ASIC does not support cpu queue");
 }
 }; // namespace facebook::fboss

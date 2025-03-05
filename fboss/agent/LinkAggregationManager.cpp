@@ -10,11 +10,12 @@
 #include "fboss/agent/LinkAggregationManager.h"
 
 #include "fboss/agent/AggregatePortStats.h"
+#include "fboss/agent/HwAsicTable.h"
 #include "fboss/agent/LacpController.h"
 #include "fboss/agent/LacpTypes-defs.h"
 #include "fboss/agent/LacpTypes.h"
-#include "fboss/agent/Platform.h"
 #include "fboss/agent/SwSwitch.h"
+#include "fboss/agent/SwitchIdScopeResolver.h"
 #include "fboss/agent/SwitchStats.h"
 #include "fboss/agent/TxPacket.h"
 #include "fboss/agent/state/AggregatePortMap.h"
@@ -73,15 +74,14 @@ ProgramForwardingAndPartnerState::ProgramForwardingAndPartnerState(
 std::shared_ptr<SwitchState> ProgramForwardingAndPartnerState::operator()(
     const std::shared_ptr<SwitchState>& state) {
   std::shared_ptr<SwitchState> nextState(state);
-  auto* aggPort = nextState->getAggregatePorts()
-                      ->getAggregatePortIf(aggregatePortID_)
-                      .get();
+  auto* aggPort =
+      nextState->getAggregatePorts()->getNodeIf(aggregatePortID_).get();
   if (!aggPort) {
     return nullptr;
   }
 
   XLOG(DBG2) << "Updating " << aggPort->getName() << ": ForwardingState["
-             << nextState->getPorts()->getPort(portID_)->getName() << "] --> "
+             << nextState->getPorts()->getNodeIf(portID_)->getName() << "] --> "
              << (forwardingState_ == AggregatePort::Forwarding::ENABLED
                      ? "ENABLED"
                      : "DISABLED")
@@ -109,7 +109,7 @@ void LinkAggregationManager::handlePacket(
     std::unique_ptr<RxPacket> pkt,
     folly::io::Cursor c) {
   // TODO(samank): check this is running in RX thread?
-  folly::SharedMutexWritePriority::ReadHolder g(&controllersLock_);
+  std::shared_lock g(controllersLock_);
   auto ingressPort = pkt->getSrcPort();
 
   auto it = portToController_.find(ingressPort);
@@ -130,7 +130,7 @@ void LinkAggregationManager::handlePacket(
 void LinkAggregationManager::stateUpdated(const StateDelta& delta) {
   CHECK(sw_->getUpdateEvb()->inRunningEventBaseThread());
 
-  folly::SharedMutexWritePriority::WriteHolder writeGuard(&controllersLock_);
+  std::unique_lock writeGuard(controllersLock_);
 
   DeltaFunctions::forEachChanged(
       delta.getAggregatePortsDelta(),
@@ -140,7 +140,8 @@ void LinkAggregationManager::stateUpdated(const StateDelta& delta) {
       this);
 
   // Downgrade to a reader lock
-  folly::SharedMutexWritePriority::ReadHolder readGuard(std::move(writeGuard));
+  std::shared_lock readGuard(
+      folly::transition_lock<std::shared_lock>(writeGuard));
 
   DeltaFunctions::forEachChanged(
       delta.getPortsDelta(), &LinkAggregationManager::portChanged, this);
@@ -281,7 +282,7 @@ void LinkAggregationManager::populatePartnerPair(
 
   std::shared_ptr<LacpController> controller;
   {
-    folly::SharedMutexWritePriority::ReadHolder g(&controllersLock_);
+    std::shared_lock g(controllersLock_);
 
     auto it = portToController_.find(portID);
     if (it == portToController_.end()) {
@@ -301,7 +302,7 @@ void LinkAggregationManager::populatePartnerPairs(
 
   partnerPairs.clear();
 
-  folly::SharedMutexWritePriority::ReadHolder g(&controllersLock_);
+  std::shared_lock g(controllersLock_);
 
   partnerPairs.reserve(
       std::distance(portToController_.begin(), portToController_.end()));
@@ -327,9 +328,11 @@ bool LinkAggregationManager::transmit(LACPDU lacpdu, PortID portID) {
 
   folly::io::RWPrivateCursor writer(pkt->buf());
 
-  folly::MacAddress cpuMac = sw_->getPlatform()->getLocalMac();
+  auto switchId = sw_->getScopeResolver()->scope(portID).switchId();
+  MacAddress cpuMac =
+      sw_->getHwAsicTable()->getHwAsicIf(switchId)->getAsicMac();
 
-  auto port = sw_->getState()->getPorts()->getPortIf(portID);
+  auto port = sw_->getState()->getPorts()->getNodeIf(portID);
   CHECK(port);
 
   TxPacket::writeEthHeader(
@@ -394,7 +397,7 @@ LinkAggregationManager::getControllersFor(
   std::vector<std::shared_ptr<LacpController>> controllers(
       std::distance(ports.begin(), ports.end()));
 
-  folly::SharedMutexWritePriority::ReadHolder g(&controllersLock_);
+  std::shared_lock g(controllersLock_);
 
   // TODO(samank): Rerwite as an O(N + M) algorithm
   for (auto i = 0; i < controllers.size(); ++i) {

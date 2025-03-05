@@ -18,19 +18,19 @@
 
 #include "fboss/agent/hw/test/HwSwitchEnsemble.h"
 
-#include <folly/logging/xlog.h>
 #include <memory>
 
 namespace facebook::fboss {
 
 std::shared_ptr<SwitchState> hwSwitchEnsembleFibUpdate(
+    const SwitchIdScopeResolver* resolver,
     facebook::fboss::RouterID vrf,
     const facebook::fboss::IPv4NetworkToRouteMap& v4NetworkToRoute,
     const facebook::fboss::IPv6NetworkToRouteMap& v6NetworkToRoute,
     const facebook::fboss::LabelToRouteMap& labelToRoute,
     void* cookie) {
   facebook::fboss::ForwardingInformationBaseUpdater fibUpdater(
-      vrf, v4NetworkToRoute, v6NetworkToRoute, labelToRoute);
+      resolver, vrf, v4NetworkToRoute, v6NetworkToRoute, labelToRoute);
 
   auto hwEnsemble = static_cast<facebook::fboss::HwSwitchEnsemble*>(cookie);
   hwEnsemble->getHwSwitch()->transactionsSupported()
@@ -43,23 +43,19 @@ std::shared_ptr<SwitchState> hwSwitchEnsembleFibUpdate(
 HwSwitchEnsembleRouteUpdateWrapper::HwSwitchEnsembleRouteUpdateWrapper(
     HwSwitchEnsemble* hwEnsemble,
     RoutingInformationBase* rib)
-    : RouteUpdateWrapper(
+    : HwSwitchRouteUpdateWrapper(
+          hwEnsemble->getHwSwitch(),
           rib,
-          rib ? hwSwitchEnsembleFibUpdate : std::optional<FibUpdateFunction>(),
-          rib ? hwEnsemble : nullptr),
+          [hwEnsemble, rib](const StateDelta& delta) {
+            if (!rib) {
+              return delta.newState();
+            }
+            hwEnsemble->getHwSwitch()->transactionsSupported()
+                ? hwEnsemble->applyNewStateTransaction(delta.newState())
+                : hwEnsemble->applyNewState(delta.newState());
+            return hwEnsemble->getProgrammedState();
+          }),
       hwEnsemble_(hwEnsemble) {}
-
-AdminDistance HwSwitchEnsembleRouteUpdateWrapper::clientIdToAdminDistance(
-    ClientID clientId) const {
-  static const std::map<ClientID, AdminDistance> kClient2Admin = {
-      {ClientID::BGPD, AdminDistance::EBGP},
-      {ClientID::OPENR, AdminDistance::OPENR},
-      {ClientID::STATIC_ROUTE, AdminDistance::STATIC_ROUTE},
-  };
-  auto itr = kClient2Admin.find(clientId);
-  return itr == kClient2Admin.end() ? AdminDistance::MAX_ADMIN_DISTANCE
-                                    : itr->second;
-}
 
 void HwSwitchEnsembleRouteUpdateWrapper::programRoutesImpl(
     RouterID rid,

@@ -22,34 +22,38 @@ using namespace rackmon;
 //--------------------------------------------------------
 
 TEST(AddrRangeTest, Basic) {
-  AddrRange a(10, 20);
+  AddrRange a({{10, 20}, {25, 30}});
   EXPECT_TRUE(a.contains(10));
   EXPECT_TRUE(a.contains(11));
   EXPECT_TRUE(a.contains(20));
   EXPECT_TRUE(a.contains(19));
+  EXPECT_TRUE(a.contains(25));
+  EXPECT_TRUE(a.contains(30));
   EXPECT_FALSE(a.contains(9));
   EXPECT_FALSE(a.contains(21));
+  EXPECT_FALSE(a.contains(24));
+  EXPECT_FALSE(a.contains(31));
 }
 
 TEST(RegisterMapTest, JSONCoversion) {
   std::string inp = R"({
     "name": "orv2_psu",
-    "address_range": [160, 191],
+    "address_range": [[160, 191]],
     "probe_register": 104,
-    "default_baudrate": 19200,
-    "preferred_baudrate": 19200,
+    "baudrate": 19200,
+    "max_span_length": 4,
     "registers": [
       {
         "begin": 0,
         "length": 8,
-        "format": "string",
+        "format": "STRING",
         "name": "MFG_MODEL"
       },
       {
           "begin": 127,
           "length": 1,
           "keep": 10,
-          "format": "float",
+          "format": "FLOAT",
           "precision": 6,
           "name": "BBU Absolute State of Charge"
       }
@@ -57,12 +61,14 @@ TEST(RegisterMapTest, JSONCoversion) {
   })";
   nlohmann::json j = nlohmann::json::parse(inp);
   RegisterMap rmap = j;
-  EXPECT_EQ(rmap.applicableAddresses.range.first, 160);
-  EXPECT_EQ(rmap.applicableAddresses.range.second, 191);
+  EXPECT_TRUE(std::any_of(
+      rmap.applicableAddresses.range.cbegin(),
+      rmap.applicableAddresses.range.cend(),
+      [](auto const& ent) { return (ent.first == 160 && ent.second == 191); }));
   EXPECT_EQ(rmap.probeRegister, 104);
-  EXPECT_EQ(rmap.defaultBaudrate, 19200);
-  EXPECT_EQ(rmap.preferredBaudrate, 19200);
+  EXPECT_EQ(rmap.baudrate, 19200);
   EXPECT_EQ(rmap.name, "orv2_psu");
+  EXPECT_EQ(rmap.maxRegisterSpanLength, 4);
   EXPECT_EQ(rmap.registerDescriptors.size(), 2);
   EXPECT_EQ(rmap.specialHandlers.size(), 0);
   EXPECT_EQ(rmap.at(0).begin, 0);
@@ -84,52 +90,40 @@ TEST(RegisterMapTest, JSONCoversion) {
 TEST(RegisterMapTest, JSONCoversionBaudrate) {
   std::string inp = R"({
     "name": "orv2_psu",
-    "address_range": [160, 191],
+    "address_range": [[160, 191]],
     "probe_register": 104,
-    "default_baudrate": 19200,
-    "preferred_baudrate": 19200,
-    "baud_config": {
-      "reg": 163,
-      "baud_value_map": [
-        [19200, 1],
-        [38400, 2],
-        [115200, 3]
-      ]
-    },
+    "baudrate": 19200,
     "registers": [
       {
         "begin": 0,
         "length": 8,
-        "format": "string",
+        "format": "STRING",
         "name": "MFG_MODEL"
       }
     ]
   })";
   nlohmann::json j = nlohmann::json::parse(inp);
   RegisterMap rmap = j;
-  EXPECT_EQ(rmap.applicableAddresses.range.first, 160);
-  EXPECT_EQ(rmap.applicableAddresses.range.second, 191);
+  EXPECT_TRUE(std::any_of(
+      rmap.applicableAddresses.range.cbegin(),
+      rmap.applicableAddresses.range.cend(),
+      [](auto const& ent) { return (ent.first == 160 && ent.second == 191); }));
+  EXPECT_EQ(
+      rmap.maxRegisterSpanLength,
+      RegisterStoreSpan::kDefaultMaxRegisterSpanLength);
   EXPECT_EQ(rmap.probeRegister, 104);
-  EXPECT_EQ(rmap.defaultBaudrate, 19200);
-  EXPECT_EQ(rmap.preferredBaudrate, 19200);
+  EXPECT_EQ(rmap.baudrate, 19200);
   EXPECT_EQ(rmap.name, "orv2_psu");
   EXPECT_EQ(rmap.registerDescriptors.size(), 1);
   EXPECT_EQ(rmap.specialHandlers.size(), 0);
-  EXPECT_TRUE(rmap.baudConfig.isSet);
-  EXPECT_EQ(rmap.baudConfig.reg, 163);
-  EXPECT_EQ(rmap.baudConfig.baudValueMap.size(), 3);
-  EXPECT_EQ(rmap.baudConfig.baudValueMap[19200], 1);
-  EXPECT_EQ(rmap.baudConfig.baudValueMap[38400], 2);
-  EXPECT_EQ(rmap.baudConfig.baudValueMap[115200], 3);
 }
 
 TEST(RegisterMapTest, JSONCoversionSpecial) {
   std::string inp = R"({
     "name": "orv2_psu",
-    "address_range": [160, 191],
+    "address_range": [[160, 191]],
     "probe_register": 104,
-    "default_baudrate": 19200,
-    "preferred_baudrate": 19200,
+    "baudrate": 19200,
     "special_handlers": [
       {
         "reg": 298,
@@ -137,7 +131,7 @@ TEST(RegisterMapTest, JSONCoversionSpecial) {
         "period": 3600,
         "action": "write",
         "info": {
-          "interpret": "integer",
+          "interpret": "INTEGER",
           "shell": "date +%s"
         }
       }
@@ -146,14 +140,14 @@ TEST(RegisterMapTest, JSONCoversionSpecial) {
       {
         "begin": 0,
         "length": 8,
-        "format": "string",
+        "format": "STRING",
         "name": "MFG_MODEL"
       },
       {
           "begin": 127,
           "length": 1,
           "keep": 10,
-          "format": "float",
+          "format": "FLOAT",
           "precision": 6,
           "name": "BBU Absolute State of Charge"
       }
@@ -161,11 +155,12 @@ TEST(RegisterMapTest, JSONCoversionSpecial) {
   })";
   nlohmann::json j = nlohmann::json::parse(inp);
   RegisterMap rmap = j;
-  EXPECT_EQ(rmap.applicableAddresses.range.first, 160);
-  EXPECT_EQ(rmap.applicableAddresses.range.second, 191);
+  EXPECT_TRUE(std::any_of(
+      rmap.applicableAddresses.range.cbegin(),
+      rmap.applicableAddresses.range.cend(),
+      [](auto const& ent) { return (ent.first == 160 && ent.second == 191); }));
   EXPECT_EQ(rmap.probeRegister, 104);
-  EXPECT_EQ(rmap.defaultBaudrate, 19200);
-  EXPECT_EQ(rmap.preferredBaudrate, 19200);
+  EXPECT_EQ(rmap.baudrate, 19200);
   EXPECT_EQ(rmap.name, "orv2_psu");
   EXPECT_EQ(rmap.registerDescriptors.size(), 2);
   EXPECT_EQ(rmap.specialHandlers.size(), 1);
@@ -192,30 +187,29 @@ class RegisterMapDatabaseTest : public ::testing::Test {
     mkdir(r_test_dir.c_str(), 0755);
     json1 = R"({
         "name": "orv2_psu",
-        "address_range": [160, 191],
+        "address_range": [[160, 191], [10, 10]],
         "probe_register": 104,
-        "default_baudrate": 19200,
-        "preferred_baudrate": 19200,
+        "baudrate": 19200,
         "registers": [
           {
             "begin": 0,
             "length": 8,
-            "format": "string",
-            "name": "MFG_MODEL"
+            "format": "STRING",
+            "name": "MFG_MODEL",
+            "interval": 40
           }
         ]
       })";
     json2 = R"({
         "name": "orv3_psu",
-        "address_range": [110, 140],
+        "address_range": [[110, 140], [10, 10]],
         "probe_register": 104,
-        "default_baudrate": 19200,
-        "preferred_baudrate": 19200,
+        "baudrate": 115200,
         "registers": [
           {
             "begin": 0,
             "length": 8,
-            "format": "string",
+            "format": "STRING",
             "name": "MFG_MODEL"
           }
         ]
@@ -261,4 +255,16 @@ TEST_F(RegisterMapDatabaseTest, Load) {
   EXPECT_EQ(m6.name, "orv3_psu");
   const auto& m7 = db.at(120);
   EXPECT_EQ(m7.name, "orv3_psu");
+  EXPECT_EQ(db.minMonitorInterval(), 40);
+  auto it = db.find(10);
+  EXPECT_NE(it, db.end());
+  const auto& m8 = *it;
+  EXPECT_EQ(m8.name, "orv2_psu");
+  ++it;
+  EXPECT_NE(it, db.end());
+  const auto& m9 = *it;
+  EXPECT_EQ(m9.name, "orv3_psu");
+  ++it;
+  EXPECT_EQ(it, db.end());
+  EXPECT_THROW(*it, std::out_of_range);
 }

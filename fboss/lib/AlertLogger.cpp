@@ -9,8 +9,6 @@
  */
 #include "fboss/lib/AlertLogger.h"
 
-#include <folly/logging/xlog.h>
-
 namespace facebook::fboss {
 
 // Prefix for fboss alert tag
@@ -28,27 +26,29 @@ constexpr auto kFbossBmcAlert("BMC");
 constexpr auto kFbossKernelAlert("KERNEL");
 constexpr auto kFbossPortAlert("PORT");
 constexpr auto kFbossRouteAlert("ROUTE");
-constexpr auto kFbossBGPAlert("BGP");
 constexpr auto kFbossLinkSnapshotAlert("LINK_SNAPSHOT");
+constexpr auto kFbossQsfpTransceiverValidationAlert("TRANSCEIVER_VALIDATION");
 
 // Alert tag by type
 AlertTag::AlertTag(std::string prefix, std::string sub_type)
-    : prefix_(std::move(prefix)), sub_type_(std::move(sub_type)){};
+    : prefix_(std::move(prefix)), sub_type_(std::move(sub_type)) {}
 
-MiscAlert::MiscAlert() : AlertTag(kFbossAlertPrefix, kFbossMiscAlert){};
-AsicAlert::AsicAlert() : AlertTag(kFbossAlertPrefix, kFbossAsicAlert){};
+MiscAlert::MiscAlert() : AlertTag(kFbossAlertPrefix, kFbossMiscAlert) {}
+AsicAlert::AsicAlert() : AlertTag(kFbossAlertPrefix, kFbossAsicAlert) {}
 ServiceAlert::ServiceAlert()
-    : AlertTag(kFbossAlertPrefix, kFbossServiceAlert){};
+    : AlertTag(kFbossAlertPrefix, kFbossServiceAlert) {}
 PlatformAlert::PlatformAlert()
-    : AlertTag(kFbossAlertPrefix, kFbossPlatformAlert){};
-BmcAlert::BmcAlert() : AlertTag(kFbossAlertPrefix, kFbossBmcAlert){};
-KernelAlert::KernelAlert() : AlertTag(kFbossAlertPrefix, kFbossKernelAlert){};
-PortAlert::PortAlert() : AlertTag(kFbossAlertPrefix, kFbossPortAlert){};
-RouteAlert::RouteAlert() : AlertTag(kFbossAlertPrefix, kFbossRouteAlert){};
-BGPAlert::BGPAlert() : AlertTag(kBgpAlertPrefix){};
-MKAAlert::MKAAlert() : AlertTag(kMkaAlertPrefix){};
+    : AlertTag(kFbossAlertPrefix, kFbossPlatformAlert) {}
+BmcAlert::BmcAlert() : AlertTag(kFbossAlertPrefix, kFbossBmcAlert) {}
+KernelAlert::KernelAlert() : AlertTag(kFbossAlertPrefix, kFbossKernelAlert) {}
+PortAlert::PortAlert() : AlertTag(kFbossAlertPrefix, kFbossPortAlert) {}
+RouteAlert::RouteAlert() : AlertTag(kFbossAlertPrefix, kFbossRouteAlert) {}
+BGPAlert::BGPAlert() : AlertTag(kBgpAlertPrefix) {}
+MKAAlert::MKAAlert() : AlertTag(kMkaAlertPrefix) {}
 LinkSnapshotAlert::LinkSnapshotAlert()
-    : AlertTag(kLinkSnapshotAlertPrefix, kFbossLinkSnapshotAlert){};
+    : AlertTag(kLinkSnapshotAlertPrefix, kFbossLinkSnapshotAlert) {}
+TransceiverValidationAlert::TransceiverValidationAlert()
+    : AlertTag(kFbossAlertPrefix, kFbossQsfpTransceiverValidationAlert) {}
 
 // Alert param types
 constexpr auto kFbossPort("port");
@@ -60,14 +60,14 @@ constexpr auto kFbossLinkSnapshot("linkSnapshot");
 
 // Alert parameter types
 AlertParam::AlertParam(std::string type, std::string value)
-    : type_(std::move(type)), value_(std::move(value)){};
+    : type_(std::move(type)), value_(std::move(value)) {}
 
-PortParam::PortParam(std::string value) : AlertParam(kFbossPort, value){};
-VlanParam::VlanParam(std::string value) : AlertParam(kFbossVlan, value){};
-Ipv4Param::Ipv4Param(std::string value) : AlertParam(kFbossIpv4Addr, value){};
-Ipv6Param::Ipv6Param(std::string value) : AlertParam(kFbossIpv6Addr, value){};
-MacParam::MacParam(std::string value) : AlertParam(kFbossMacAddr, value){};
+PortParam::PortParam(std::string value) : AlertParam(kFbossPort, value) {}
+VlanParam::VlanParam(std::string value) : AlertParam(kFbossVlan, value) {}
+Ipv4Param::Ipv4Param(std::string value) : AlertParam(kFbossIpv4Addr, value) {}
+Ipv6Param::Ipv6Param(std::string value) : AlertParam(kFbossIpv6Addr, value) {}
+MacParam::MacParam(std::string value) : AlertParam(kFbossMacAddr, value) {}
 LinkSnapshotParam::LinkSnapshotParam(std::string value)
-    : AlertParam(kFbossLinkSnapshot, value){};
+    : AlertParam(kFbossLinkSnapshot, value) {}
 
 } // namespace facebook::fboss

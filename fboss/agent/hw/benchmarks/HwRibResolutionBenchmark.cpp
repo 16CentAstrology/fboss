@@ -19,7 +19,6 @@
 #include "fboss/agent/benchmarks/AgentBenchmarks.h"
 
 #include <folly/Benchmark.h>
-#include <folly/logging/xlog.h>
 
 namespace facebook::fboss {
 
@@ -28,26 +27,30 @@ BENCHMARK(RibResolutionBenchmark) {
   std::unique_ptr<AgentEnsemble> ensemble{};
 
   AgentEnsembleSwitchConfigFn initialConfigFn =
-      [](HwSwitch* hwSwitch, const std::vector<PortID>& ports) {
+      [](const AgentEnsemble& ensemble) {
+        auto ports = ensemble.masterLogicalPortIds();
         CHECK_GT(ports.size(), 0);
-        return utility::onePortPerInterfaceConfig(hwSwitch, ports);
+        return utility::onePortPerInterfaceConfig(ensemble.getSw(), ports);
       };
-  ensemble = createAgentEnsemble(initialConfigFn);
+  ensemble =
+      createAgentEnsemble(initialConfigFn, false /*disableLinkStateToggler*/);
   auto ports = ensemble->masterLogicalPortIds();
 
   utility::THAlpmRouteScaleGenerator gen(ensemble->getSw()->getState());
   const auto& routeChunks = gen.getThriftRoutes();
   // Create a dummy rib since we don't want to go through
   // HwSwitchEnsemble and write to HW
-  auto rib = RoutingInformationBase::fromFollyDynamic(
-      ensemble->getSw()->getRib()->toFollyDynamic(), nullptr, nullptr);
+  auto rib = RoutingInformationBase::fromThrift(
+      ensemble->getSw()->getRib()->toThrift(), nullptr, nullptr);
   auto switchState = ensemble->getProgrammedState();
   suspender.dismiss();
   std::for_each(
       routeChunks.begin(),
       routeChunks.end(),
-      [&switchState, &rib](const auto& routeChunk) {
+      [&switchState, &rib, resolver = ensemble->getSw()->getScopeResolver()](
+          const auto& routeChunk) {
         rib->update(
+            resolver,
             RouterID(0),
             ClientID::BGPD,
             AdminDistance::EBGP,

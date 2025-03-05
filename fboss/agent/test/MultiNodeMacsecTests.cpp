@@ -13,18 +13,17 @@
 #include "fboss/agent/hw/test/ConfigFactory.h"
 #include "fboss/agent/hw/test/LoadBalancerUtils.h"
 #include "fboss/agent/test/MultiNodeTest.h"
-#include "fboss/agent/test/ResourceLibUtil.h"
 #include "fboss/agent/test/link_tests/facebook/MacsecTestUtils.h"
-#include "fboss/facebook/mka_service/mka_module/MKAStructs.h"
 #include "fboss/lib/CommonUtils.h"
 #include "fboss/mka_service/if/facebook/gen-cpp2/mka_config_constants.h"
 #include "fboss/mka_service/if/facebook/gen-cpp2/mka_config_types.h"
 
 using namespace facebook::fboss;
+using namespace std::chrono;
 
 using mka::Cak;
 using mka::MACSecCapability;
-using mka::mka_config_constants;
+namespace mka_config_constants = mka::mka_config_constants;
 using mka::MKAConfig;
 using mka::MKAServiceConfig;
 using mka::MKASessionInfo;
@@ -58,21 +57,18 @@ class MultiNodeMacsecTest : public MultiNodeTest {
     auto config = utility::onePortPerInterfaceConfig(
         platform()->getHwSwitch(),
         testPorts(),
-        cfg::PortLoopbackMode::NONE,
+        utility::kDefaultLoopbackMap(),
         true /*interfaceHasSubnet*/,
         false /*setInterfaceMac*/);
     config.loadBalancers()->push_back(
-        facebook::fboss::utility::getEcmpFullHashConfig(sw()->getPlatform()));
+        facebook::fboss::utility::getEcmpFullHashConfig(
+            {platform()->getAsic()}));
     return config;
   }
 
   void setCmdLineFlagOverrides() const override {
     FLAGS_enable_macsec = true;
     MultiNodeTest::setCmdLineFlagOverrides();
-  }
-
-  folly::MacAddress getLocalMac() {
-    return sw()->getPlatform()->getLocalMac();
   }
 
   void setupMkaClient() {
@@ -132,15 +128,18 @@ TEST_F(MultiNodeMacsecTest, verifyMkaSession) {
     auto secondaryCak = utils::makeCak(utils::getCak2(), utils::getCkn2());
     std::optional<MKATimers> timers = std::nullopt;
     bool dropUnencrypted = true;
-    for (auto p : ports) {
+    for (auto portName : ports) {
+      auto portId = getPortID(portName);
+      auto port = sw()->getState()->getPorts()->getNode(portId);
+      auto scope = sw()->getScopeResolver()->scope(port);
       auto config = utils::makeMKAConfig(
-          p,
+          portName,
           primaryCak,
           secondaryCak,
           timers,
           dropUnencrypted,
           isDUT(),
-          getLocalMac());
+          sw()->getLocalMac(scope.switchId()));
       mkaClient_->sync_updateKey(config);
     }
   };

@@ -13,7 +13,6 @@
 #include <utility>
 
 #include "fboss/agent/hw/sai/api/NeighborApi.h"
-#include "fboss/agent/hw/sai/tracer/NeighborApiTracer.h"
 #include "fboss/agent/hw/sai/tracer/Utils.h"
 
 using folly::to;
@@ -24,6 +23,7 @@ std::map<int32_t, std::pair<std::string, std::size_t>> _NeighborEntryMap{
     SAI_ATTR_MAP(Neighbor, Metadata),
     SAI_ATTR_MAP(Neighbor, EncapIndex),
     SAI_ATTR_MAP(Neighbor, IsLocal),
+    SAI_ATTR_MAP(Neighbor, NoHostRoute),
 };
 } // namespace
 

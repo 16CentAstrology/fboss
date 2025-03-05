@@ -11,8 +11,21 @@ namespace php fboss_switch_config
 
 include "fboss/agent/if/common.thrift"
 include "fboss/agent/if/mpls.thrift"
+include "fboss/lib/if/fboss_common.thrift"
+include "thrift/annotation/cpp.thrift"
+include "thrift/annotation/python.thrift"
+include "thrift/annotation/thrift.thrift"
 
-typedef i64 (cpp.type = "uint64_t") u64
+@cpp.Type{name = "uint64_t"}
+typedef i64 u64
+
+const i16 defaultVlanId = 0;
+const i64 arpTimeoutDefault = 60;
+const i64 ndpTimeoutDefault = 60;
+const i32 arpAgerIntervalDefault = 5;
+const i32 arpRefreshSecondsDefault = 20;
+const i32 maxNeighborProbesDefault = 300;
+const i64 staleEntryIntervalDefault = 10;
 
 enum PortDescriptorType {
   Physical = 0,
@@ -99,6 +112,7 @@ enum PortSpeed {
   FIFTYG = 50000, // 50G
   FIFTYTHREEPOINTONETWOFIVEG = 53125, //53.125G
   HUNDREDG = 100000, // 100G
+  HUNDREDANDSIXPOINTTWOFIVEG = 106250, //106.25G
   TWOHUNDREDG = 200000, // 200G
   FOURHUNDREDG = 400000, // 400G
   EIGHTHUNDREDG = 800000, // 800G
@@ -149,6 +163,21 @@ enum PortProfileID {
   PROFILE_53POINT125G_1_PAM4_RS545_OPTICAL = 37,
   PROFILE_400G_4_PAM4_RS544X2N_OPTICAL = 38,
   PROFILE_800G_8_PAM4_RS544X2N_OPTICAL = 39,
+  PROFILE_100G_2_PAM4_RS544X2N_OPTICAL = 40,
+  PROFILE_106POINT25G_1_PAM4_RS544_COPPER = 41,
+  PROFILE_106POINT25G_1_PAM4_RS544_OPTICAL = 42,
+  PROFILE_50G_1_PAM4_RS544_COPPER = 43,
+  PROFILE_50G_1_PAM4_RS544_OPTICAL = 44,
+  PROFILE_400G_4_PAM4_RS544X2N_COPPER = 45,
+  PROFILE_100G_2_PAM4_RS544X2N_COPPER = 46,
+  PROFILE_100G_1_PAM4_RS544_OPTICAL = 47,
+  PROFILE_50G_2_NRZ_RS528_OPTICAL = 48,
+  PROFILE_100G_1_PAM4_NOFEC_COPPER = 49,
+}
+
+enum Scope {
+  LOCAL = 0,
+  GLOBAL = 1,
 }
 
 /**
@@ -195,6 +224,9 @@ enum IpType {
   IP = 1,
   IP4 = 2,
   IP6 = 3,
+  ARP_REQUEST = 4,
+  ARP_REPLY = 5,
+  NON_IP = 6,
 }
 
 enum EtherType {
@@ -204,6 +236,8 @@ enum EtherType {
   EAPOL = 0x888E,
   MACSEC = 0x88E5,
   LLDP = 0x88CC,
+  ARP = 0x0806,
+  LACP = 0x8809,
 }
 
 struct Ttl {
@@ -249,7 +283,8 @@ struct MirrorTunnel {
 }
 
 union MirrorEgressPort {
-  1: string name (py3.name = "name_");
+  @python.Name{name = "name_"}
+  1: string name;
   2: i32 logicalID;
 }
 
@@ -327,6 +362,81 @@ struct Mirror {
   2: MirrorDestination destination;
   3: byte dscp = DEFAULT_MIRROR_DSCP;
   4: bool truncate = false;
+  /*
+   * 0 - no sampling
+   * 1 - sample all packets
+   * Any other integer value represent the 1 out of samplingRate
+   * packets will be mirrored.
+   */
+  5: optional i32 samplingRate;
+}
+
+/*
+ * Aggregation of mirror-on-drop reasons. The exact drop reasons corresponding to each
+ * enum is platform-specific and is converted in the platform-specific SaiTamManagers.
+ */
+enum MirrorOnDropReasonAggregation {
+  UNEXPECTED_REASON_DISCARDS = 0,
+
+  INGRESS_MISC_DISCARDS = 1,
+  INGRESS_PACKET_PROCESSING_DISCARDS = 2,
+  INGRESS_QUEUE_RESOLUTION_DISCARDS = 3,
+  INGRESS_SOURCE_CONGESTION_DISCARDS = 4, // e.g. VSQ
+  INGRESS_DESTINATION_CONGESTION_DISCARDS = 5, // e.g. VOQ
+  INGRESS_GLOBAL_CONGESTION_DISCARDS = 6,
+}
+
+/**
+ * Aging group of an event, which controls the granularity at which MOD packets
+ * are sent:
+ * - At most one packet per interval will be generated for GLOBAL events
+ * - At most one packet per port pre interval will be generated for PORT events
+ * - ...and so on
+ */
+enum MirrorOnDropAgingGroup {
+  GLOBAL = 0,
+  PORT = 1,
+  PRIORITY_GROUP = 2,
+  VOQ = 3,
+}
+
+/**
+ * Configuration for each event ID under a MirrorOnDropReport. An event can have its own
+ * aging granularity setting and associated drop reasons.
+ */
+struct MirrorOnDropEventConfig {
+  1: list<MirrorOnDropReasonAggregation> dropReasonAggregations;
+  2: optional MirrorOnDropAgingGroup agingGroup; // defaults to 0 i.e. GLOBAL
+}
+
+struct MirrorOnDropReport {
+  1: string name;
+  /*
+   * Possible options as below:
+   * 1. Recycle port: MOD packets will be injected back into the pipeline via recycle port.
+   * 2. Eventor port: MOD packets will be injected back into the pipeline via eventor port. Provides the option to pack multiple MOD packets.
+   * 3. Front panel Ethernet port: MOD packets will be forwarded out of the specified port.
+   */
+  2: i32 mirrorPortId;
+  // Source IP will be populated based on switch IP at runtime, so not configurable.
+  3: i16 localSrcPort;
+  4: string collectorIp;
+  5: i16 collectorPort;
+  6: i16 mtu;
+  // Contents of the dropped packet will be truncated when mirroring.
+  7: i16 truncateSize = 128;
+  8: byte dscp = 0;
+  @thrift.DeprecatedUnvalidatedAnnotations{items = {"deprecated": "1"}}
+  9: optional i32 agingIntervalUsecs_DEPRECATED;
+  @thrift.DeprecatedUnvalidatedAnnotations{items = {"deprecated": "1"}}
+  10: map<
+    byte,
+    list<MirrorOnDropReasonAggregation>
+  > eventIdToDropReasons_DEPRECATED;
+  // Configuration for each event ID.
+  11: map<byte, MirrorOnDropEventConfig> modEventToConfigMap;
+  // Aging interval (how often to send packets) for each aging group in usecs.
+  12: map<MirrorOnDropAgingGroup, i32> agingGroupAgingIntervalUsecs;
 }
 
 /**
@@ -341,8 +451,23 @@ enum AclActionType {
  * The look up class for an acl
  */
 enum AclLookupClass {
-  DST_CLASS_L3_LOCAL_IP4 = 1,
-  DST_CLASS_L3_LOCAL_IP6 = 2,
+  /*
+   * Use cases:
+   * 1. on sai switches: class ID for my ip /32 /128 routes pointing to cpu
+   * 2. on native bcm switches: ipv4 routes point to cpu
+   */
+  DST_CLASS_L3_LOCAL_1 = 1,
+
+  /*
+   * Use cases:
+   * 1. on sai switches: routes that uses single nexthop and are unresolved points to
+   * cpu port as the nexthop to trigger neighbor resolution. Associate
+   * a class ID for those routes which will be matched against an ACL
+   * to send the packet to default queue. Refer to S390808 for more details.
+   * 2. on sai switches: class ID for connected subnet routes pointing to router interface.
+   * 3. on native bcm switches: ipv6 routes point to cpu
+   */
+  DST_CLASS_L3_LOCAL_2 = 2,
 
   // Class for DROP ACL
   CLASS_DROP = 9,
@@ -364,10 +489,22 @@ enum AclLookupClass {
 
   // set by BGP for deterministic path routes
   DST_CLASS_L3_DPR = 20,
+
+  // will be replaced by DST_CLASS_L3_LOCAL_1 and DST_CLASS_L3_LOCAL_2
+  DEPRECATED_CLASS_UNRESOLVED_ROUTE_TO_CPU = 21,
+  DEPRECATED_CLASS_CONNECTED_ROUTE_TO_INTF = 22,
 }
 
 enum PacketLookupResultType {
   PACKET_LOOKUP_RESULT_MPLS_NO_MATCH = 1,
+}
+
+struct AclUdfEntry {
+  1: string udfGroup;
+
+  2: list<byte> roceBytes;
+
+  3: list<byte> roceMask;
 }
 
 /**
@@ -472,6 +609,17 @@ struct AclEntry {
   29: optional EtherType etherType;
 
   30: optional i32 vlanID;
+
+  /* 31-34 not to be used for SAI */
+  31: optional list<string> udfGroups;
+
+  32: optional byte roceOpcode;
+
+  33: optional list<byte> roceBytes;
+
+  34: optional list<byte> roceMask;
+
+  35: optional list<AclUdfEntry> udfTable;
 }
 
 enum AclTableActionType {
@@ -481,6 +629,8 @@ enum AclTableActionType {
   SET_DSCP = 3,
   MIRROR_INGRESS = 4,
   MIRROR_EGRESS = 5,
+  SET_USER_DEFINED_TRAP = 6,
+  DISABLE_ARS_FORWARDING = 7,
 }
 
 enum AclTableQualifier {
@@ -490,7 +640,7 @@ enum AclTableQualifier {
   DST_IPV4 = 3,
   L4_SRC_PORT = 4,
   L4_DST_PORT = 5,
-  IP_PROTOCOL = 6,
+  IP_PROTOCOL_NUMBER = 6,
   TCP_FLAGS = 7,
   SRC_PORT = 8,
   OUT_PORT = 9,
@@ -508,6 +658,9 @@ enum AclTableQualifier {
   LOOKUP_CLASS_ROUTE = 21,
   ETHER_TYPE = 22,
   OUTER_VLAN = 23,
+  UDF = 24,
+  BTH_OPCODE = 25,
+  IPV6_NEXT_HEADER = 26,
 }
 
 struct AclTable {
@@ -516,19 +669,23 @@ struct AclTable {
   3: list<AclEntry> aclEntries = [];
   4: list<AclTableActionType> actionTypes = [];
   5: list<AclTableQualifier> qualifiers = [];
+  6: list<string> udfGroups = [];
 }
 
 enum AclStage {
   INGRESS = 0,
   INGRESS_MACSEC = 1,
   EGRESS_MACSEC = 2,
+  EGRESS = 3,
 }
 
+// startdocs_AclTableGroup_struct
 struct AclTableGroup {
   1: string name;
   2: list<AclTable> aclTables = [];
   3: AclStage stage = AclStage.INGRESS;
 }
+// enddocs_AclTableGroup_struct
 
 /*
  * We only support unicast in FBOSS, but for completeness sake
@@ -540,7 +697,15 @@ enum StreamType {
   FABRIC_TX = 3,
 }
 
+// Bcm native SDK supports directly setting action send to queue.
+// SAI translates queueId to tc and then do action set tc.
+// So, need to convert SAI to use action SetTcAction.
 struct QueueMatchAction {
+  1: i16 queueId;
+}
+
+// used by SAI ACL action send to cpu queue
+struct UserDefinedTrapAction {
   1: i16 queueId;
 }
 
@@ -550,6 +715,10 @@ struct PacketCounterMatchAction {
 
 struct SetDscpMatchAction {
   1: byte dscpValue;
+}
+
+struct SetTcAction {
+  1: byte tcValue;
 }
 
 enum ToCpuAction {
@@ -588,6 +757,13 @@ struct RedirectToNextHopAction {
   2: list<RedirectNextHop> redirectNextHops;
 }
 
+enum FlowletAction {
+  /**
+  * Forward the packet to DLB engine.
+  */
+  FORWARD = 1,
+}
+
 struct MatchAction {
   1: optional QueueMatchAction sendToQueue;
   2: optional PacketCounterMatchAction packetCounter_DEPRECATED;
@@ -598,6 +774,9 @@ struct MatchAction {
   7: optional ToCpuAction toCpuAction;
   8: optional MacsecFlowAction macsecFlow;
   9: optional RedirectToNextHopAction redirectToNextHop;
+  10: optional SetTcAction setTc;
+  11: optional UserDefinedTrapAction userDefinedTrap;
+  12: optional FlowletAction flowletAction;
 }
 
 struct MatchToAction {
@@ -618,6 +797,7 @@ enum MMUScalingFactor {
   ONE_HALF = 8,
   TWO = 9,
   FOUR = 10,
+  ONE_32768TH = 11,
 }
 
 // This determines how packets are scheduled on a per queue basis
@@ -720,6 +900,7 @@ struct PortQueue {
    * pps as well as kbps.
    */
   9: optional i32 packetsPerSec_DEPRECATED;
+  // this specifies the static max threshold in buffer profile
   10: optional i32 sharedBytes;
   // Only Unicast queue supports aqms
   11: optional list<ActiveQueueManagement> aqms;
@@ -727,6 +908,12 @@ struct PortQueue {
 
   13: optional i32 bandwidthBurstMinKbits;
   14: optional i32 bandwidthBurstMaxKbits;
+  // this specifies the dynamic max threshold in buffer profile,
+  // e.g. when scalingFactor/alpha is used
+  15: optional i32 maxDynamicSharedBytes;
+  // Specifies the buffer pool that should be used for this queue.
+  // An option to force a queue to use a non-default buffer pool.
+  16: optional string bufferPoolName;
 }
 
 struct DscpQosMap {
@@ -744,6 +931,7 @@ struct ExpQosMap {
 struct QosMap {
   1: list<DscpQosMap> dscpMaps;
   2: list<ExpQosMap> expMaps;
+  // TC to egress queue (EGQ) mapping
   3: map<i16, i16> trafficClassToQueueId;
   // for rx PFC, map the incoming PFC pkts
   // priority to the corresponding queueId
@@ -755,6 +943,14 @@ struct QosMap {
   // to PG id. Used mainly for TX of PFC where
   // PG is mapped to outgoing PFC priority
   6: optional map<i16, i16> pfcPriorityToPgId;
+  // TC to VOQ mapping, only used on VOQ platforms.
+  // On J3 CPU/RCY ports: 8 VOQs map to WRR scheduler with only 2 EGQs.
+  // So, different from trafficClassToQueueId that contains 2 EGQs.
+  // On J3 NIF ports: same as trafficClassToQueueId, since
+  // there is a 1:1 mapping between VOQ and EGQ. For cleanliness,
+  // we still generate config for NIF ports on VOQ  platforms even
+  // when they are the same as trafficClassToQueueId.
+  7: optional map<i16, i16> trafficClassToVoqId;
 }
 
 struct QosRule {
@@ -809,12 +1005,15 @@ enum PacketRxReason {
   DHCPV6 = 17, // DHCPv6
   SAMPLEPACKET = 18, // Sample Packet
   TTL_0 = 19, // Packets with TTL as 0
+  EAPOL = 20, // EAPOL for Macsec
+  PORT_MTU_ERROR = 21, // Packet size exceeds port MTU, should not use together with L3_MTU_ERROR
 }
 
 enum PortLoopbackMode {
   NONE = 0,
   PHY = 1,
   MAC = 2,
+  NIF = 3,
 }
 
 enum LLDPTag {
@@ -841,13 +1040,23 @@ typedef string PortPgConfigName
 
 typedef string BufferPoolConfigName
 
+typedef string PortFlowletConfigName
+
+typedef string FirmwareName
+
 const i32 DEFAULT_PORT_MTU = 9412;
+
+const string DEFAULT_INGRESS_ACL_TABLE_GROUP = "ingress-ACL-Table-Group";
+
+const string DEFAULT_INGRESS_ACL_TABLE = "AclTable1";
 
 enum PortType {
   INTERFACE_PORT = 0,
   FABRIC_PORT = 1,
   CPU_PORT = 2,
   RECYCLE_PORT = 3,
+  MANAGEMENT_PORT = 4,
+  EVENTOR_PORT = 5,
 }
 
 struct PortNeighbor {
@@ -1017,6 +1226,24 @@ struct Port {
    * Represents if this port is drained in DSF
    */
   29: PortDrainState drainState = PortDrainState.UNDRAINED;
+
+  /*
+   * PortFlowletConfigName to covey the flowlet config profile used for DLB
+   */
+  30: optional PortFlowletConfigName flowletConfigName;
+
+  31: Scope scope = Scope.LOCAL;
+  32: optional PortQueueConfigName portVoqConfigName;
+
+  /*
+   * DSF Interface node to enable conditional entropy, rotating hash seed periodically to increase entropy.
+   */
+  33: bool conditionalEntropyRehash = false;
+
+  /*
+   * DSF Interface node to enable SHEL messages - port UP/DOWN notification to other interface nodes.
+   */
+  34: optional bool selfHealingECMPLagEnable;
 }
 
 enum LacpPortRate {
@@ -1189,6 +1416,7 @@ struct NdpConfig {
 enum InterfaceType {
   VLAN = 1,
   SYSTEM_PORT = 2,
+  PORT = 3,
 }
 
 enum AsicType {
@@ -1202,9 +1430,13 @@ enum AsicType {
   ASIC_TYPE_EBRO = 8,
   ASIC_TYPE_GARONNE = 9,
   ASIC_TYPE_SANDIA_PHY = 10,
-  ASIC_TYPE_INDUS = 11,
-  ASIC_TYPE_BEAS = 12,
+  ASIC_TYPE_JERICHO2 = 11,
+  ASIC_TYPE_RAMON = 12,
   ASIC_TYPE_TOMAHAWK5 = 13,
+  ASIC_TYPE_JERICHO3 = 14,
+  ASIC_TYPE_YUBA = 15,
+  ASIC_TYPE_RAMON3 = 16,
+  ASIC_TYPE_CHENAB = 17,
 }
 /**
  * The configuration for an interface
@@ -1255,6 +1487,19 @@ struct Interface {
   10: bool isStateSyncDisabled = 0;
 
   11: InterfaceType type = InterfaceType.VLAN;
+
+  /* V4 DHCP relay address */
+  12: optional string dhcpRelayAddressV4;
+  /* V6 DHCP relay address */
+  13: optional string dhcpRelayAddressV6;
+
+  /* Override DHCPv4/6 relayer on a per host basis */
+  14: optional map<string, string> dhcpRelayOverridesV4;
+  15: optional map<string, string> dhcpRelayOverridesV6;
+  16: Scope scope = Scope.LOCAL;
+
+  /* valid only for port type of interface */
+  17: optional i32 portID;
 }
 
 struct StaticRouteWithNextHops {
@@ -1371,6 +1616,12 @@ enum L2LearningMode {
   SOFTWARE = 1,
 }
 
+enum SwitchDrainState {
+  UNDRAINED = 0,
+  DRAINED = 1,
+  DRAINED_DUE_TO_ASIC_ERROR = 2,
+}
+
 /*
  * Used for QCM. Weight factors used to compute interest
  * function to evaluate flows which  are source of congestion
@@ -1456,6 +1707,80 @@ struct ExactMatchTableConfig {
 }
 
 const i16 DEFAULT_FLOWLET_TABLE_SIZE = 4096;
+const i64 DEFAULT_PORT_ID_RANGE_MIN = 0;
+const i64 DEFAULT_PORT_ID_RANGE_MAX = 2047;
+const i64 DEFAULT_DUAL_STAGE_3Q_2Q_PORT_ID_RANGE_MIN = 0;
+const i64 DEFAULT_DUAL_STAGE_3Q_2Q_PORT_ID_RANGE_MAX = 65536;
+
+struct SystemPortRanges {
+  1: list<Range64> systemPortRanges;
+}
+
+enum FirmwareLoadType {
+  FIRMWARE_LOAD_TYPE_START = 0,
+  FIRMWARE_LOAD_TYPE_STOP = 1,
+}
+
+struct FirmwareInfo {
+  1: i32 coreToUse;
+  2: string path;
+  3: string logPath;
+  4: FirmwareLoadType firmwareLoadType;
+}
+
+struct SelfHealingEcmpLagConfig {
+  1: string shelSrcIp;
+  2: string shelDstIp;
+  3: i32 shelPeriodicIntervalMS;
+}
+
+struct SwitchInfo {
+  1: SwitchType switchType;
+  2: AsicType asicType;
+  // local switch identifier
+  3: i16 switchIndex;
+  4: Range64 portIdRange;
+  5: optional Range64 systemPortRange_DEPRECATED;
+  6: optional string switchMac;
+  7: optional string connectionHandle;
+  8: SystemPortRanges systemPortRanges;
+  // Offset from where to start local system port
+  // ID allocation from
+  9: optional i32 localSystemPortOffset;
+  // Offset from where to start global system port
+  // ID allocation from
+  10: optional i32 globalSystemPortOffset;
+  // Inband port ID - port used by this DSF node
+  // for inband communication. This must be known
+  // as part of config for other nodes to bootstrap
+  // communication to this node
+  11: optional i32 inbandPortId;
+  12: map<FirmwareName, FirmwareInfo> firmwareNameToFirmwareInfo;
+
+  /*
+   * VOQ switch may use these thresholds as below:
+   *  - During init, create switch device Isolated.
+   *  - When numActiveLinks > minLinksToJoinVOQDomain => Unisolate device.
+   *  - When numActiveLinks < minLinksToRemainInVOQDomain => Isolate device.
+   *
+   * In practice, these thresholds will be configured to provide hysteresis:
+   *  - 0 < minLinksToRemainInVOQDomain < minLinksToJoinVOQDomain < maxActiveLinks
+   *  - numActiveLinks in [0, minLinksToRemainInVOQDomain) => device isolated.
+   *  - numActiveLinks in (minLinksToJoinVOQDomain, maxActiveLinks] => device unisolated
+   *  - numActiveLinks in [minLinksToRemainInVOQDomain, minLinksToJoinVOQDomain]
+   *    => Whether or not the device is isolated depends on how we got to this state.
+   *    => For example, during init, as links gradually turn active, the device
+   *       will be isolated for these numActiveLinks as minLinksToJoinVOQDomain is not
+   *       yet hit.
+   *    => On the other hand, if the links are active but start turning inactive,
+   *       the device will be unisolated for these numActiveLinks since
+   *       minLinksToRemainInVOQDomain is not yet thit.
+   *
+   * TODO: This will be enhanced to work for Fabric switches as well.
+   */
+  13: optional i32 minLinksPerDeviceToRemainInVOQDomain;
+  14: optional i32 minLinksPerDeviceToJoinVOQDomain;
+}
 
 /*
  * Switch specific settings: global to the switch
@@ -1484,12 +1809,74 @@ struct SwitchSettings {
   // Switch id (only applicable for VOQ based systems)
   9: optional i64 switchId;
   10: list<ExactMatchTableConfig> exactMatchTableConfigs = [];
+  11: map<i64, SwitchType> switchIdToSwitchType_DEPRECATED;
+  12: SwitchDrainState switchDrainState = SwitchDrainState.UNDRAINED;
+  13: map<i64, SwitchInfo> switchIdToSwitchInfo;
+
+  /*
+   * VOQ switch may use these thresholds as below:
+   *  - During init, create switch device Isolated.
+   *  - When numActiveLinks > minLinksToJoinVOQDomain => Unisolate device.
+   *  - When numActiveLinks < minLinksToRemainInVOQDomain => Isolate device.
+   *
+   * In practice, these thresholds will be configured to provide hysteresis:
+   *  - 0 < minLinksToRemainInVOQDomain < minLinksToJoinVOQDomain < maxActiveLinks
+   *  - numActiveLinks in [0, minLinksToRemainInVOQDomain) => device isolated.
+   *  - numActiveLinks in (minLinksToJoinVOQDomain, maxActiveLinks] => device unisolated
+   *  - numActiveLinks in [minLinksToRemainInVOQDomain, minLinksToJoinVOQDomain]
+   *    => Whether or not the device is isolated depends on how we got to this state.
+   *    => For example, during init, as links gradually turn active, the device
+   *       will be isolated for these numActiveLinks as minLinksToJoinVOQDomain is not
+   *       yet hit.
+   *    => On the other hand, if the links are active but start turning inactive,
+   *       the device will be unisolated for these numActiveLinks since
+   *       minLinksToRemainInVOQDomain is not yet thit.
+   */
+  14: optional i32 minLinksToRemainInVOQDomain;
+  15: optional i32 minLinksToJoinVOQDomain;
+  // MAC OUIs (24-bit MAC address prefix) used by vendor NICs.
+  // When queue-per-host is enabled, MACs matching any OUI from this list will get a dedicated queue.
+  16: list<string> vendorMacOuis = [];
+  // MAC OUIs used by meta for VM purpose.
+  // When queue-per-host is enabled, MACs matching any OUI from this list could get any queue.
+  17: list<string> metaMacOuis = [];
+  18: optional bool needL2EntryForNeighbor;
+  // Once the SRAM free buffers fall below this threshold,
+  // specified as a percent of total SRAM buffers, send XOFF.
+  19: optional byte sramGlobalFreePercentXoffThreshold;
+  // Once the SRAM free buffers goes above this threshold,
+  // specified as a percent of total SRAM buffers, send XON.
+  20: optional byte sramGlobalFreePercentXonThreshold;
+  // Fabric side threshold tracking the minimum needed
+  // fifo free space on the peer device fifo.
+  21: optional i16 linkFlowControlCreditThreshold;
+  // SRAM2DRAM threshold on VOQ. Single parameter as of now
+  // controlling both bounds and recovery thresholds.
+  22: optional i32 voqDramBoundThreshold;
+  // Conditional Entropy Rehash Period for VOQ devices
+  23: optional i32 conditionalEntropyRehashPeriodUS;
+  24: optional string firmwarePath;
+  // SHEL attributes to configure 1. SHEL message SrcIP, 2. DstIp, and 3. Interval for SHEL periodic messages
+  25: optional SelfHealingEcmpLagConfig selfHealingEcmpLagConfig;
+  // Specify the maximum expected latency for local, remote l1,
+  // remote l2 VOQs. Any latency exceeding the specified latency
+  // will be flagged in the VoQ latency watermark counters with
+  // the out of bounds latency value configured.
+  26: optional i32 localVoqMaxExpectedLatencyNsec;
+  27: optional i32 remoteL1VoqMaxExpectedLatencyNsec;
+  28: optional i32 remoteL2VoqMaxExpectedLatencyNsec;
+  29: optional i32 voqOutOfBoundsLatencyNsec;
+  // Number of sflow samples to pack in a single packet being sent out
+  30: optional byte numberOfSflowSamplesPerPacket;
 }
 
-// Global buffer pool shared by {port, pgs}
+// Global buffer pool
+//  (1) shared by {port, pgs} at ingress
+//  (2) shared by {port, queues} at egress
 struct BufferPoolConfig {
   1: i32 sharedBytes;
-  2: i32 headroomBytes;
+  2: optional i32 headroomBytes;
+  3: optional i32 reservedBytes;
 }
 
 // max PG/port supported
@@ -1513,14 +1900,26 @@ struct PortPgConfig {
   6: optional i32 resumeOffsetBytes;
   // global buffer pool as used by this PG
   7: string bufferPoolName;
+  // Shared buffer min/max threshold range at which to trigger PFC
+  8: optional i64 maxSharedXoffThresholdBytes;
+  9: optional i64 minSharedXoffThresholdBytes;
+  // SRAM/OCB buffer min/max threshold range at which to trigger PFC
+  10: optional i64 maxSramXoffThresholdBytes;
+  11: optional i64 minSramXoffThresholdBytes;
+  // Offset from XOFF in SRAM before allowing XON
+  12: optional i64 sramResumeOffsetBytes;
 }
 
-// Sdk version information that will be parsed by the wrapper script
-// -> asicSdk would be the native SDK for a binary
-// -> saiSdk would be the SDK required for a Sai device, if the Native SDK does not provide support
+// asicSdk: Native SDK version. may or may not support SAI
+// saiSdk: Set to SAI SDK version on SAI device if asicSdk does not support SAI
+// firmware: Set to firmware version if a device uses firmware
+//
+// asicSdk and saiSdk are consumed by the wrapper script.
+// firmware version will be consumed by Agent.
 struct SdkVersion {
   1: optional string asicSdk;
   2: optional string saiSdk;
+  3: optional string firmware;
 }
 
 enum IpTunnelMode {
@@ -1564,9 +1963,31 @@ struct DsfNode {
   2: i64 switchId;
   3: DsfNodeType type;
   4: list<string> loopbackIps;
-  5: optional Range64 systemPortRange;
+  5: optional Range64 systemPortRange_DEPRECATED;
   6: optional string nodeMac;
   7: AsicType asicType;
+  8: fboss_common.PlatformType platformType;
+  // used by two stage ramon test setup to figure out
+  // switches inside the same local capsule.
+  // In prod, this info could be figured out from name
+  // like rdsw001.c085.n001.snc1, where 85 is cluster id.
+  9: optional i32 clusterId;
+  // Applicable only for FABRIC_NODES
+  // Denotes the level for fabric switch in
+  // the DSF n/w topology. Value is either 1 or 2
+  10: optional i32 fabricLevel;
+  // Offset from where to start local system port
+  // ID allocation from
+  11: optional i32 localSystemPortOffset;
+  // Offset from where to start local system port
+  // ID allocation from
+  12: optional i32 globalSystemPortOffset;
+  13: SystemPortRanges systemPortRanges;
+  // Inband port ID - port used by this DSF node
+  // for inband communication. This must be known
+  // as part of config for other nodes to bootstrap
+  // communication to this node
+  14: optional i32 inbandPortId;
 }
 
 /**
@@ -1576,6 +1997,11 @@ enum UdfBaseHeaderType {
   UDF_L2_HEADER = 1,
   UDF_L3_HEADER = 2,
   UDF_L4_HEADER = 3,
+}
+
+enum UdfGroupType {
+  HASH = 0,
+  ACL = 1,
 }
 
 enum UdfMatchL2Type {
@@ -1635,11 +2061,30 @@ struct UdfGroup {
   // number of bytes to extract (can use for hashing)
   4: i32 fieldSizeInBytes;
   5: list<string> udfPacketMatcherIds;
+  6: optional UdfGroupType type;
 }
 
 struct UdfConfig {
   1: map<string, UdfGroup> udfGroups;
   2: map<string, UdfPacketMatcher> udfPacketMatcher;
+}
+
+struct PortFlowletConfig {
+  // port scaling factor for dynamic load balancing
+  1: i16 scalingFactor;
+  // weight of traffic load in determining ports quality
+  2: i16 loadWeight;
+  // weight of total queue size in determining port quality
+  3: i16 queueWeight;
+}
+
+enum SwitchingMode {
+  // flowlet regular quality based reassignments
+  FLOWLET_QUALITY = 0,
+  // per packet assignments
+  PER_PACKET_QUALITY = 1,
+  // flowlet is disabled
+  FIXED_ASSIGNMENT = 2,
 }
 
 struct FlowletSwitchingConfig {
@@ -1652,18 +2097,24 @@ struct FlowletSwitchingConfig {
   // EWMA of historical member queued bytes
   4: i16 dynamicQueueExponent;
   // minimum threshold, in bytes, used to quantize historical member queued bytes
+  // cumulative across all memory buffers on chip
   5: i32 dynamicQueueMinThresholdBytes;
   // maximum threshold, in bytes, used to quantize historical member queued bytes
+  // cumulative across all memory buffers on chip
   6: i32 dynamicQueueMaxThresholdBytes;
   // number of times historical member load and queued bytes are computed in a second
   7: i32 dynamicSampleRate;
-  // TODO move the following 3 port params to port specific structure
-  // port scaling factor for dynamic load balancing
-  8: optional i16 portScalingFactor;
-  // weight of traffic load in determining ports quality
-  9: optional i16 portLoadWeight;
-  // weight of total queue size in determining port quality
-  10: optional i16 portQueueWeight;
+  // minimum threshold, in mbps, used to quantize historical member load
+  8: i32 dynamicEgressMinThresholdBytes;
+  // maximum threshold, in mbps, used to quantize historical member load
+  9: i32 dynamicEgressMaxThresholdBytes;
+  // EWMA of historical member bytes in physical queue
+  10: i16 dynamicPhysicalQueueExponent;
+  // maximum links used for flowlet switching.
+  // Needed for scaling flowset table
+  11: i16 maxLinks;
+  // switching mode
+  12: SwitchingMode switchingMode = FLOWLET_QUALITY;
 }
 
 /**
@@ -1686,9 +2137,9 @@ struct SwitchConfig {
    */
   5: i32 defaultVlan;
   6: list<Interface> interfaces = [];
-  7: i32 arpTimeoutSeconds = 60;
-  8: i32 arpRefreshSeconds = 20;
-  9: i32 arpAgerInterval = 5;
+  7: i32 arpTimeoutSeconds = arpTimeoutDefault;
+  8: i32 arpRefreshSeconds = arpRefreshSecondsDefault;
+  9: i32 arpAgerInterval = arpAgerIntervalDefault;
   10: bool proactiveArp = 0;
   // The MAC address to use for the switch CPU.
   11: optional string cpuMAC;
@@ -1718,8 +2169,8 @@ struct SwitchConfig {
   // safety measure here to avoid catastrophic failure if such a situation
   // arises again.On vendor devices we set ARP expiry to be as high as 1500
   // seconds.
-  16: i32 maxNeighborProbes = 300;
-  17: i32 staleEntryInterval = 10;
+  16: i32 maxNeighborProbes = maxNeighborProbesDefault;
+  17: i32 staleEntryInterval = staleEntryIntervalDefault;
   18: list<AggregatePort> aggregatePorts = [];
   // What admin distance to use for each potential clientID
   // These mappings map a ClientID to a AdminDistance
@@ -1736,6 +2187,7 @@ struct SwitchConfig {
   19: map<i32, i32> clientIdToAdminDistance = {
     2: 0, // INTERFACE_ROUTE
     3: 0, // LINKLOCAL_ROUTE
+    4: 0, // REMOTE_INTERFACE_ROUTE
     1: 1, // STATIC_ROUTE
     786: 10, // OPENR
     0: 20, // BGPD
@@ -1780,9 +2232,6 @@ struct SwitchConfig {
   42: optional QcmConfig qcmConfig;
   43: optional map<PortPgConfigName, list<PortPgConfig>> portPgConfigs;
   44: optional map<BufferPoolConfigName, BufferPoolConfig> bufferPoolConfigs;
-  // aclTableGroup does not need to be a list at this point, as we only expect to
-  // support a single group for the foreseeable future. This could be changed to
-  // list<AclTableGroup> later if the need arises to support multiple groups.
   45: optional AclTableGroup aclTableGroup;
   // agent sdk versions
   46: optional SdkVersion sdkVersion;
@@ -1792,4 +2241,14 @@ struct SwitchConfig {
   48: map<i64, DsfNode> dsfNodes = {};
   49: optional UdfConfig udfConfig;
   50: optional FlowletSwitchingConfig flowletSwitchingConfig;
+  51: list<PortQueue> defaultVoqConfig = [];
+  52: optional map<PortFlowletConfigName, PortFlowletConfig> portFlowletConfigs;
+  // When there's no IPv4 addresses configured, what address to use to source IPv4 ICMP packets from.
+  53: optional string icmpV4UnavailableSrcAddress;
+  // Overrides the system hostname, useful in ICMP responses
+  54: optional string hostname;
+  55: optional list<PortQueue> cpuVoqs;
+  // list of ACL table groups, prefer this over aclTableGroup, aclTableGroup will be deprecated
+  56: optional list<AclTableGroup> aclTableGroups;
+  57: list<MirrorOnDropReport> mirrorOnDropReports = [];
 }

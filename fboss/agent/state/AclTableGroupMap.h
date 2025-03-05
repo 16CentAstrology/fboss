@@ -9,6 +9,7 @@
  */
 #pragma once
 
+#include <memory>
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/AclEntry.h"
 #include "fboss/agent/state/AclTableGroup.h"
@@ -39,6 +40,8 @@ class AclTableGroupMap
     : public ThriftMapNode<AclTableGroupMap, AclTableGroupMapTraits> {
  public:
   using BaseT = ThriftMapNode<AclTableGroupMap, AclTableGroupMapTraits>;
+  using Traits = AclTableGroupMapTraits;
+  using BaseT::modify;
 
   AclTableGroupMap();
   virtual ~AclTableGroupMap() override;
@@ -82,4 +85,37 @@ class AclTableGroupMap
   friend class CloneAllocator;
 };
 
+using MultiSwitchAclTableGroupMapTypeClass = apache::thrift::type_class::
+    map<apache::thrift::type_class::string, AclTableGroupMapTypeClass>;
+using MultiSwitchAclTableGroupMapThriftType =
+    std::map<std::string, AclTableGroupMapThriftType>;
+
+class MultiSwitchAclTableGroupMap;
+
+using MultiSwitchAclTableGroupMapTraits = ThriftMultiSwitchMapNodeTraits<
+    MultiSwitchAclTableGroupMap,
+    MultiSwitchAclTableGroupMapTypeClass,
+    MultiSwitchAclTableGroupMapThriftType,
+    AclTableGroupMap>;
+
+class HwSwitchMatcher;
+
+class MultiSwitchAclTableGroupMap : public ThriftMultiSwitchMapNode<
+                                        MultiSwitchAclTableGroupMap,
+                                        MultiSwitchAclTableGroupMapTraits> {
+ public:
+  using Traits = MultiSwitchAclTableGroupMapTraits;
+  using BaseT = ThriftMultiSwitchMapNode<
+      MultiSwitchAclTableGroupMap,
+      MultiSwitchAclTableGroupMapTraits>;
+  using BaseT::modify;
+
+  MultiSwitchAclTableGroupMap() = default;
+  virtual ~MultiSwitchAclTableGroupMap() = default;
+
+ private:
+  // Inherit the constructors required for clone()
+  using BaseT::BaseT;
+  friend class CloneAllocator;
+};
 } // namespace facebook::fboss

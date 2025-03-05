@@ -14,6 +14,7 @@
 #include "fboss/agent/test/EcmpSetupHelper.h"
 
 #include <folly/IPAddress.h>
+#include <gtest/gtest.h>
 
 namespace facebook::fboss {
 
@@ -23,9 +24,15 @@ class HwSflowTest : public HwLinkStateDependentTest {
     auto cfg = utility::oneL3IntfConfig(
         getHwSwitch(),
         masterLogicalPortIds()[0],
-        getAsic()->desiredLoopbackMode());
-    utility::setDefaultCpuTrafficPolicyConfig(cfg, getAsic());
-    utility::addCpuQueueConfig(cfg, this->getAsic());
+        getAsic()->desiredLoopbackModes());
+    utility::setDefaultCpuTrafficPolicyConfig(
+        cfg,
+        getHwSwitchEnsemble()->getL3Asics(),
+        getHwSwitchEnsemble()->isSai());
+    utility::addCpuQueueConfig(
+        cfg,
+        getHwSwitchEnsemble()->getL3Asics(),
+        getHwSwitchEnsemble()->isSai());
     return cfg;
   }
 
@@ -95,6 +102,13 @@ class HwSflowTest : public HwLinkStateDependentTest {
       }
       EXPECT_EQ(expectedSampledPackets, sampledPackets);
     };
+    if (!getHwSwitch()->getPlatform()->getAsic()->isSupported(
+            HwAsic::Feature::SFLOWv6)) {
+#if defined(GTEST_SKIP)
+      GTEST_SKIP();
+#endif
+      return;
+    }
     verifyAcrossWarmBoots(setup, verify);
   }
 

@@ -2,7 +2,7 @@
 
 #include <thrift/lib/cpp2/server/ThriftServer.h>
 
-#include <folly/experimental/FunctionScheduler.h>
+#include <folly/executors/FunctionScheduler.h>
 #include <folly/logging/Init.h>
 
 #include "fboss/qsfp_service/QsfpServer.h"
@@ -17,7 +17,7 @@ using namespace facebook::fboss;
 
 DEFINE_int32(
     stats_publish_interval,
-    300,
+    60,
     "Interval (in seconds) for publishing stats");
 DEFINE_int32(
     loop_interval,
@@ -26,7 +26,7 @@ DEFINE_int32(
     "if we need to change or fetch data for transceivers");
 DEFINE_int32(
     xphy_stats_loop_interval,
-    60,
+    10,
     "Interval (in seconds) to run the loop that updates all xphy ports stats");
 
 DECLARE_int32(port);
@@ -76,18 +76,6 @@ int main(int argc, char** argv) {
       },
       std::chrono::seconds(FLAGS_loop_interval),
       "refreshStateMachines");
-
-  // Schedule the function to periodically send the I2c transaction
-  // stats to the ServiceData object which gets pulled by FBagent.
-  // The function is called from abstract base class TransceiverManager
-  // which gets implemented by platfdorm aware class inheriting
-  // this class
-  scheduler->addFunction(
-      [mgr = handler->getTransceiverManager()]() {
-        mgr->publishI2cTransactionStats();
-      },
-      std::chrono::seconds(FLAGS_loop_interval),
-      "publishI2cTransactionStats");
 
   // Schedule the function to periodically collect xphy stats if there's a
   // PhyManager

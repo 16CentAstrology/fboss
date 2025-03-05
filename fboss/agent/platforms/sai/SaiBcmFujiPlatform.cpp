@@ -11,7 +11,6 @@
 #include "fboss/agent/platforms/sai/SaiBcmFujiPlatform.h"
 #include "fboss/agent/platforms/common/fuji/FujiPlatformMapping.h"
 
-#include <cstdio>
 #include <cstring>
 namespace facebook::fboss {
 
@@ -25,17 +24,17 @@ SaiBcmFujiPlatform::SaiBcmFujiPlatform(
           localMac) {}
 
 void SaiBcmFujiPlatform::setupAsic(
-    cfg::SwitchType switchType,
     std::optional<int64_t> switchId,
-    std::optional<cfg::Range64> systemPortRange) {
-  asic_ =
-      std::make_unique<Tomahawk4Asic>(switchType, switchId, systemPortRange);
+    const cfg::SwitchInfo& switchInfo,
+    std::optional<HwAsic::FabricNodeRole> fabricNodeRole) {
+  CHECK(!fabricNodeRole.has_value());
+  asic_ = std::make_unique<Tomahawk4Asic>(switchId, switchInfo);
 }
 
 HwAsic* SaiBcmFujiPlatform::getAsic() const {
   return asic_.get();
 }
 
-SaiBcmFujiPlatform::~SaiBcmFujiPlatform() {}
+SaiBcmFujiPlatform::~SaiBcmFujiPlatform() = default;
 
 } // namespace facebook::fboss

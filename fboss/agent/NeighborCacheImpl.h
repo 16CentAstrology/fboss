@@ -67,7 +67,7 @@ class NeighborCacheImpl {
         evb_(sw->getNeighborCacheEvb()) {}
 
   // Methods useful for subclasses
-  void setPendingEntry(AddressType ip, bool force = false);
+  void setPendingEntry(AddressType ip, PortDescriptor port, bool force = false);
 
   void setExistingEntry(
       AddressType ip,
@@ -127,12 +127,26 @@ class NeighborCacheImpl {
   std::optional<NeighborEntryThrift> getCacheData(AddressType ip) const;
 
  private:
+  bool isHwUpdateProtected();
   // These are used to program entries into the SwitchState
   void programEntry(Entry* entry);
-  void programPendingEntry(Entry* entry, bool force = false);
+  void
+  programPendingEntry(Entry* entry, PortDescriptor port, bool force = false);
 
-  SwSwitch::StateUpdateFn getUpdateFnToProgramEntryForNpu(Entry* entry);
-  SwSwitch::StateUpdateFn getUpdateFnToProgramEntryForVoq(Entry* entry);
+  SwSwitch::StateUpdateFn getUpdateFnToProgramEntryForVlan(Entry* entry);
+  SwSwitch::StateUpdateFn getUpdateFnToProgramEntry(
+      Entry* entry,
+      cfg::SwitchType switchType);
+
+  SwSwitch::StateUpdateFn getUpdateFnToProgramPendingEntryForVlan(
+      Entry* entry,
+      PortDescriptor port,
+      bool force);
+  SwSwitch::StateUpdateFn getUpdateFnToProgramPendingEntry(
+      Entry* entry,
+      PortDescriptor port,
+      bool force,
+      cfg::SwitchType switchType);
 
   void processEntry(AddressType ip);
 
@@ -140,9 +154,11 @@ class NeighborCacheImpl {
   // was actually flushed from the switch state
   void flushEntry(AddressType ip, bool* flushed = nullptr);
 
+  template <typename VlanOrIntfT>
   bool flushEntryFromSwitchState(
       std::shared_ptr<SwitchState>* state,
-      AddressType ip);
+      AddressType ip,
+      VlanOrIntfT* vlanOrIntf);
 
   Entry* getCacheEntry(AddressType ip) const;
   void setCacheEntry(std::shared_ptr<Entry> entry);
@@ -151,6 +167,7 @@ class NeighborCacheImpl {
   Entry* setEntryInternal(
       const EntryFields& fields,
       NeighborEntryState state,
+      state::NeighborEntryType type,
       bool add = true);
 
   // Forbidden copy constructor and assignment operator
@@ -162,7 +179,7 @@ class NeighborCacheImpl {
   VlanID vlanID_;
   std::string vlanName_;
   InterfaceID intfID_;
-  folly::EventBase* evb_;
+  FbossEventBase* evb_;
 
   // Map of all entries
   std::unordered_map<AddressType, std::shared_ptr<Entry>> entries_;

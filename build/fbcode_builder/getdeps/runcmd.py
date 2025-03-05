@@ -3,19 +3,17 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import os
 import select
 import subprocess
 import sys
 
+from shlex import quote as shellquote
+
 from .envfuncs import Env
 from .platform import is_windows
-
-
-try:
-    from shlex import quote as shellquote
-except ImportError:
-    from pipes import quote as shellquote
 
 
 class RunCommandError(Exception):

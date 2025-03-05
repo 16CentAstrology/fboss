@@ -18,7 +18,7 @@
 
 #include <folly/IPAddress.h>
 #include <folly/MacAddress.h>
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 #include <folly/logging/xlog.h>
 
 #include <iterator>
@@ -58,6 +58,11 @@ struct SaiNeighborTraits {
         SAI_NEIGHBOR_ENTRY_ATTR_IS_LOCAL,
         bool,
         SaiBoolDefaultTrue>;
+    using NoHostRoute = SaiAttribute<
+        EnumType,
+        SAI_NEIGHBOR_ENTRY_ATTR_NO_HOST_ROUTE,
+        bool,
+        SaiBoolDefaultFalse>;
   };
   class NeighborEntry {
    public:
@@ -104,7 +109,8 @@ struct SaiNeighborTraits {
       Attributes::DstMac,
       std::optional<Attributes::Metadata>,
       std::optional<Attributes::EncapIndex>,
-      std::optional<Attributes::IsLocal>>;
+      std::optional<Attributes::IsLocal>,
+      std::optional<Attributes::NoHostRoute>>;
   using AdapterKey = NeighborEntry;
   using AdapterHostKey = NeighborEntry;
 };
@@ -113,6 +119,7 @@ SAI_ATTRIBUTE_NAME(Neighbor, DstMac)
 SAI_ATTRIBUTE_NAME(Neighbor, Metadata)
 SAI_ATTRIBUTE_NAME(Neighbor, EncapIndex)
 SAI_ATTRIBUTE_NAME(Neighbor, IsLocal)
+SAI_ATTRIBUTE_NAME(Neighbor, NoHostRoute)
 
 template <>
 struct IsSaiEntryStruct<SaiNeighborTraits::NeighborEntry>

@@ -13,8 +13,6 @@
 #include "fboss/qsfp_service/test/hw_test/HwPortUtils.h"
 #include "fboss/qsfp_service/test/hw_test/HwQsfpEnsemble.h"
 
-#include <fmt/format.h>
-
 namespace facebook::fboss {
 std::string HwExternalPhyPortTest::neededFeatureNames() const {
   std::stringstream ss;
@@ -33,7 +31,7 @@ std::string HwExternalPhyPortTest::neededFeatureNames() const {
 std::vector<std::pair<PortID, cfg::PortProfileID>>
 HwExternalPhyPortTest::findAvailableXphyPorts() {
   auto* phyManager = getHwQsfpEnsemble()->getPhyManager();
-  const auto& ports = utility::findAvailablePorts(getHwQsfpEnsemble());
+  const auto& ports = utility::findAvailableCabledPorts(getHwQsfpEnsemble());
   std::vector<std::pair<PortID, cfg::PortProfileID>> xphyPortAndProfiles;
   // Check whether the ExternalPhy of such xphy port support all needed features
   const auto& features = neededFeatures();
@@ -53,5 +51,10 @@ HwExternalPhyPortTest::findAvailableXphyPorts() {
   CHECK(!xphyPortAndProfiles.empty())
       << "Can't find xphy ports to support features:" << neededFeatureNames();
   return xphyPortAndProfiles;
+}
+
+std::vector<qsfp_production_features::QsfpProductionFeature>
+HwExternalPhyPortTest::getProductionFeatures() const {
+  return {qsfp_production_features::QsfpProductionFeature::EXTERNAL_PHY};
 }
 } // namespace facebook::fboss

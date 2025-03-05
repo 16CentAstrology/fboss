@@ -14,9 +14,9 @@
 
 namespace facebook::fboss {
 
-MacTable::MacTable() {}
+MacTable::MacTable() = default;
 
-MacTable::~MacTable() {}
+MacTable::~MacTable() = default;
 
 MacTable* MacTable::modify(Vlan** vlan, std::shared_ptr<SwitchState>* state) {
   if (!isPublished()) {
@@ -38,7 +38,7 @@ MacTable* MacTable::modify(VlanID vlanID, std::shared_ptr<SwitchState>* state) {
     return this;
   }
 
-  auto vlanPtr = (*state)->getVlans()->getVlan(vlanID).get();
+  auto vlanPtr = (*state)->getVlans()->getNode(vlanID).get();
   return modify(&vlanPtr, state);
 }
 
@@ -63,5 +63,5 @@ void MacTable::updateEntry(
   updateNode(entry);
 }
 
-template class ThriftMapNode<MacTable, MacTableTraits>;
+template struct ThriftMapNode<MacTable, MacTableTraits>;
 } // namespace facebook::fboss

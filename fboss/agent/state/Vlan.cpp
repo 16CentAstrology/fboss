@@ -30,24 +30,6 @@ using std::make_pair;
 using std::make_shared;
 using std::string;
 
-namespace {
-constexpr auto kVlanId = "vlanId";
-constexpr auto kVlanMtu = "vlanMTU";
-constexpr auto kVlanName = "vlanName";
-constexpr auto kIntfID = "intfID";
-constexpr auto kDhcpV4Relay = "dhcpV4Relay";
-constexpr auto kDhcpV4RelayOverrides = "dhcpRelayOverridesV4";
-constexpr auto kDhcpV6Relay = "dhcpV6Relay";
-constexpr auto kDhcpV6RelayOverrides = "dhcpRelayOverridesV6";
-constexpr auto kMemberPorts = "memberPorts";
-constexpr auto kTagged = "tagged";
-constexpr auto kArpTable = "arpTable";
-constexpr auto kArpResponseTable = "arpResponseTable";
-constexpr auto kNdpTable = "ndpTable";
-constexpr auto kNdpResponseTable = "ndpResponseTable";
-constexpr auto kMacTable = "macTable";
-} // namespace
-
 namespace facebook::fboss {
 
 Vlan::Vlan(VlanID id, string name) {
@@ -87,10 +69,11 @@ Vlan* Vlan::modify(std::shared_ptr<SwitchState>* state) {
     return this;
   }
 
-  VlanMap* vlans = (*state)->getVlans()->modify(state);
+  MultiSwitchVlanMap* vlans = (*state)->getVlans()->modify(state);
+  const auto scope = vlans->getNodeAndScope(getID()).second;
   auto newVlan = clone();
   auto* ptr = newVlan.get();
-  vlans->updateVlan(std::move(newVlan));
+  vlans->updateNode(std::move(newVlan), scope);
   return ptr;
 }
 
@@ -98,6 +81,6 @@ void Vlan::addPort(PortID id, bool tagged) {
   ref<switch_state_tags::ports>()->emplace(id, tagged);
 }
 
-template class ThriftStructNode<Vlan, state::VlanFields>;
+template struct ThriftStructNode<Vlan, state::VlanFields>;
 
 } // namespace facebook::fboss

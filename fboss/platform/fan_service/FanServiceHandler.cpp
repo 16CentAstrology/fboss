@@ -1,17 +1,32 @@
 // Copyright 2021-present Facebook. All Rights Reserved.
 
-// Implementation of FanServiceHandler class. Refer to .h file
-// for functional description
-#include "FanServiceHandler.h"
+#include <folly/logging/xlog.h>
 
-namespace facebook::fboss::platform {
-facebook::fb303::cpp2::fb_status FanServiceHandler::getStatus() {
-  return facebook::fb303::cpp2::fb_status::ALIVE;
-}
+#include "fboss/platform/fan_service/FanServiceHandler.h"
 
-FanServiceHandler::FanServiceHandler(std::unique_ptr<FanService> fanService)
-    : ::facebook::fb303::FacebookBase2DeprecationMigration("FanService"),
-      service_(std::move(fanService)) {
+namespace facebook::fboss::platform::fan_service {
+
+FanServiceHandler::FanServiceHandler(std::shared_ptr<ControlLogic> controlLogic)
+    : controlLogic_(std::move(controlLogic)) {
   XLOG(INFO) << "FanServiceHandler Started";
 }
-} // namespace facebook::fboss::platform
+
+void FanServiceHandler::getFanStatuses(FanStatusesResponse& response) {
+  response.fanStatuses() = controlLogic_->getFanStatuses();
+}
+
+void FanServiceHandler::setPwmHold(std::unique_ptr<PwmHoldRequest> req) {
+  std::optional<int> pwm = req->pwm().to_optional();
+  if (!pwm.has_value() || (pwm.value() >= 0 && pwm.value() <= 100)) {
+    controlLogic_->setFanHold(pwm);
+  } else {
+    // pwm has_value() or we'd be in the `if` part
+    XLOG(ERR) << "Bad PWM hold request: " << pwm.value();
+  }
+}
+
+void FanServiceHandler::getPwmHold(PwmHoldStatus& status) {
+  status.pwm().from_optional(controlLogic_->getFanHold());
+}
+
+} // namespace facebook::fboss::platform::fan_service

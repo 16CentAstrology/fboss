@@ -25,8 +25,13 @@ class HwSysPortFb303Stats : public HwBasePortFb303Stats {
  public:
   explicit HwSysPortFb303Stats(
       const std::string& portName,
-      QueueId2Name queueId2Name = {})
-      : HwBasePortFb303Stats(portName, queueId2Name) {
+      QueueId2Name queueId2Name = {},
+      std::optional<std::string> multiSwitchStatsPrefix = std::nullopt)
+      : HwBasePortFb303Stats(
+            portName,
+            queueId2Name,
+            {} /*enabledPfcPriorities*/,
+            multiSwitchStatsPrefix) {
     portStats_.portName_() = portName;
     reinitStats(std::nullopt);
   }
@@ -49,10 +54,21 @@ class HwSysPortFb303Stats : public HwBasePortFb303Stats {
     return timeRetrieved_;
   }
 
-  const std::vector<folly::StringPiece>& kPortStatKeys() const override;
-  const std::vector<folly::StringPiece>& kQueueStatKeys() const override;
-  const std::vector<folly::StringPiece>& kInMacsecPortStatKeys() const override;
-  const std::vector<folly::StringPiece>& kOutMacsecPortStatKeys()
+  const std::vector<folly::StringPiece>& kPortMonotonicCounterStatKeys()
+      const override;
+  const std::vector<folly::StringPiece>& kPortFb303CounterStatKeys()
+      const override;
+  const std::vector<folly::StringPiece>& kQueueMonotonicCounterStatKeys()
+      const override;
+  const std::vector<folly::StringPiece>& kQueueFb303CounterStatKeys()
+      const override;
+  const std::vector<folly::StringPiece>& kInMacsecPortMonotonicCounterStatKeys()
+      const override;
+  const std::vector<folly::StringPiece>&
+  kOutMacsecPortMonotonicCounterStatKeys() const override;
+  const std::vector<folly::StringPiece>& kPfcMonotonicCounterStatKeys()
+      const override;
+  const std::vector<folly::StringPiece>& kPriorityGroupCounterStatKeys()
       const override;
 
  private:

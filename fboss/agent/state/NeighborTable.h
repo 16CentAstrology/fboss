@@ -10,8 +10,8 @@
 #pragma once
 
 #include <folly/MacAddress.h>
-#include <folly/dynamic.h>
-#include <folly/json.h>
+#include <folly/json/dynamic.h>
+#include <folly/json/json.h>
 #include <type_traits>
 #include "fboss/agent/state/NeighborEntry.h"
 #include "fboss/agent/state/NodeMap.h"
@@ -62,9 +62,9 @@ template <typename IPADDR, typename ENTRY, typename SUBCLASS>
 class NeighborTable
     : public ThriftMapNode<SUBCLASS, NbrTableTraits<SUBCLASS, ENTRY>> {
  public:
-  typedef IPADDR AddressType;
-  typedef ENTRY Entry;
-
+  using AddressType = IPADDR;
+  using Entry = ENTRY;
+  using ThriftMapNode<SUBCLASS, NbrTableTraits<SUBCLASS, ENTRY>>::modify;
   NeighborTable();
 
   const std::shared_ptr<Entry> getEntry(AddressType ip) const {
@@ -93,7 +93,8 @@ class NeighborTable
       NeighborState state = NeighborState::REACHABLE,
       std::optional<cfg::AclLookupClass> classID = std::nullopt,
       std::optional<int64_t> encapIndex = std::nullopt,
-      bool isLocal = true);
+      bool isLocal = true,
+      std::optional<bool> noHostRoute = std::nullopt);
   void addEntry(const NeighborEntryFields<AddressType>& fields);
   void updateEntry(
       AddressType ip,
@@ -103,7 +104,8 @@ class NeighborTable
       NeighborState state,
       std::optional<cfg::AclLookupClass> classID = std::nullopt,
       std::optional<int64_t> encapIndex = std::nullopt,
-      bool isLocal = true);
+      bool isLocal = true,
+      std::optional<bool> noHostRoute = std::nullopt);
   void updateEntry(const NeighborEntryFields<AddressType>& fields);
   void updateEntry(AddressType ip, std::shared_ptr<ENTRY>);
   void addPendingEntry(AddressType ip, InterfaceID intfID);

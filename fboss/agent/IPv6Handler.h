@@ -19,6 +19,9 @@
 #include <folly/IPAddressV6.h>
 #include <folly/MacAddress.h>
 #include <memory>
+
+DECLARE_bool(send_icmp_time_exceeded);
+
 namespace folly {
 namespace io {
 class Cursor;
@@ -45,11 +48,13 @@ class IPv6Handler : public StateObserver {
 
   void stateUpdated(const StateDelta& delta) override;
 
+  template <typename VlanOrIntfT>
   void handlePacket(
       std::unique_ptr<RxPacket> pkt,
       folly::MacAddress dst,
       folly::MacAddress src,
-      folly::io::Cursor cursor);
+      folly::io::Cursor cursor,
+      const std::shared_ptr<VlanOrIntfT>& vlanOrIntf);
 
   void floodNeighborAdvertisements();
 
@@ -88,8 +93,7 @@ class IPv6Handler : public StateObserver {
       const std::optional<VlanID>& vlanID);
   static void sendMulticastNeighborSolicitation(
       SwSwitch* sw,
-      const folly::IPAddressV6& targetIP,
-      const std::shared_ptr<Vlan>& vlan);
+      const folly::IPAddressV6& targetIP);
 
   static void sendUnicastNeighborSolicitation(
       SwSwitch* sw,
@@ -97,7 +101,7 @@ class IPv6Handler : public StateObserver {
       const folly::MacAddress& targetMac,
       const folly::IPAddressV6& srcIP,
       const folly::MacAddress& srcMac,
-      const VlanID& vlanID,
+      const std::optional<VlanID>& vlanID,
       const PortDescriptor& portDescriptor);
 
  private:
@@ -114,7 +118,7 @@ class IPv6Handler : public StateObserver {
 
   void sendICMPv6TimeExceeded(
       PortID srcPort,
-      VlanID srcVlan,
+      std::optional<VlanID> srcVlan,
       folly::MacAddress dst,
       folly::MacAddress src,
       IPv6Hdr& v6Hdr,
@@ -122,7 +126,7 @@ class IPv6Handler : public StateObserver {
 
   void sendICMPv6PacketTooBig(
       PortID srcPort,
-      VlanID srcVlan,
+      std::optional<VlanID> srcVlan,
       folly::MacAddress dst,
       folly::MacAddress src,
       IPv6Hdr& v6Hdr,
@@ -140,12 +144,14 @@ class IPv6Handler : public StateObserver {
    *                caller to decide what to do with the packet (i.e. forward
    *                the packet to host)
    */
+  template <typename VlanOrIntfT>
   std::unique_ptr<RxPacket> handleICMPv6Packet(
       std::unique_ptr<RxPacket> pkt,
       folly::MacAddress dst,
       folly::MacAddress src,
       const IPv6Hdr& ipv6,
-      folly::io::Cursor cursor);
+      folly::io::Cursor cursor,
+      const std::shared_ptr<VlanOrIntfT>& vlanOrIntf);
   void handleRouterSolicitation(
       std::unique_ptr<RxPacket> pkt,
       const ICMPHeaders& hdr,
@@ -154,14 +160,18 @@ class IPv6Handler : public StateObserver {
       std::unique_ptr<RxPacket> pkt,
       const ICMPHeaders& hdr,
       folly::io::Cursor cursor);
+  template <typename VlanOrIntfT>
   void handleNeighborSolicitation(
       std::unique_ptr<RxPacket> pkt,
       const ICMPHeaders& hdr,
-      folly::io::Cursor cursor);
+      folly::io::Cursor cursor,
+      const std::shared_ptr<VlanOrIntfT>& vlanOrIntf);
+  template <typename VlanOrIntfT>
   void handleNeighborAdvertisement(
       std::unique_ptr<RxPacket> pkt,
       const ICMPHeaders& hdr,
-      folly::io::Cursor cursor);
+      folly::io::Cursor cursor,
+      const std::shared_ptr<VlanOrIntfT>& vlanOrIntf);
 
   bool checkNdpPacket(const ICMPHeaders& hdr, const RxPacket* pkt) const;
 
@@ -183,6 +193,28 @@ class IPv6Handler : public StateObserver {
       const std::optional<PortDescriptor>& portDescriptor =
           std::optional<PortDescriptor>(),
       const NDPOptions& options = NDPOptions());
+
+  template <typename VlanOrIntfT>
+  void receivedNdpNotMine(
+      const std::shared_ptr<VlanOrIntfT>& vlanOrIntf,
+      folly::IPAddressV6 ip,
+      folly::MacAddress macAddr,
+      PortDescriptor port,
+      ICMPv6Type type,
+      uint32_t flags);
+
+  template <typename VlanOrIntfT>
+  void receivedNdpMine(
+      const std::shared_ptr<VlanOrIntfT>& vlanOrIntf,
+      folly::IPAddressV6 ip,
+      folly::MacAddress macAddr,
+      PortDescriptor port,
+      ICMPv6Type type,
+      uint32_t flags);
+
+  static std::optional<PortDescriptor> getInterfacePortDescriptorToReach(
+      SwSwitch* sw,
+      const folly::IPAddressV6& ipAddr);
 
   SwSwitch* sw_{nullptr};
   RAMap routeAdvertisers_;

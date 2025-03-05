@@ -32,7 +32,8 @@ void oidListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    std::vector<std::string>& attrLines) {
+    std::vector<std::string>& attrLines,
+    bool logEntry) {
   // First make sure we have enough lists for use
   uint32_t listLimit = SaiTracer::getInstance()->checkListCount(
       listIndex + 1, sizeof(sai_object_id_t), attr_list[i].value.objlist.count);
@@ -40,7 +41,7 @@ void oidListAttr(
   string prefix = to<string>("s_a", "[", i, "].value.objlist.");
   attrLines.push_back(
       to<string>(prefix, "count=", attr_list[i].value.objlist.count));
-  if (attr_list[i].value.objlist.list) {
+  if (logEntry && attr_list[i].value.objlist.list) {
     attrLines.push_back(
         to<string>(prefix, "list=(sai_object_id_t*)(list_", listIndex, ")"));
     for (int j = 0; j < std::min(attr_list[i].value.objlist.count, listLimit);
@@ -76,7 +77,8 @@ void aclEntryActionSaiObjectIdListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    std::vector<std::string>& attrLines) {
+    std::vector<std::string>& attrLines,
+    bool logEntry) {
   uint32_t objectListCount =
       attr_list[i].value.aclaction.parameter.objlist.count;
 
@@ -88,7 +90,7 @@ void aclEntryActionSaiObjectIdListAttr(
       to<string>(prefix, "enable=", attr_list[i].value.aclaction.enable));
   attrLines.push_back(
       to<string>(prefix, "parameter.objlist.count=", objectListCount));
-  if (attr_list[i].value.aclaction.parameter.objlist.list) {
+  if (logEntry && attr_list[i].value.aclaction.parameter.objlist.list) {
     attrLines.push_back(to<string>(
         prefix,
         "parameter.objlist.list=(sai_object_id_t*)(list_",
@@ -104,7 +106,7 @@ void aclEntryActionSaiObjectIdListAttr(
               attr_list[i].value.aclaction.parameter.objlist.list[j])));
     }
   } else {
-    attrLines.push_back(to<string>(prefix, "list=NULL"));
+    attrLines.push_back(to<string>(prefix, "parameter.objlist.list=NULL"));
   }
 }
 
@@ -245,6 +247,62 @@ void aclEntryFieldMacAttr(
   }
 }
 
+void aclEntryFieldU8ListAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    uint32_t listIndex,
+    vector<string>& attrLines,
+    bool logEntry) {
+  uint32_t listLimit = SaiTracer::getInstance()->checkListCount(
+      listIndex + 1,
+      sizeof(sai_uint32_t),
+      attr_list[i].value.aclfield.data.u8list.count);
+
+  string prefix = to<string>("s_a", "[", i, "].value.aclfield.");
+  attrLines.push_back(
+      to<string>(prefix, "enable=", attr_list[i].value.aclfield.enable));
+
+  prefix = to<string>("s_a", "[", i, "].value.aclfield.data.u8list.");
+  attrLines.push_back(to<string>(
+      prefix, "count=", attr_list[i].value.aclfield.data.u8list.count));
+  if (logEntry && attr_list[i].value.aclfield.data.u8list.list) {
+    attrLines.push_back(
+        to<string>(prefix, "list=(sai_uint8_t*)(list_", listIndex, ")"));
+    for (int j = 0;
+         j < std::min(attr_list[i].value.aclfield.data.u8list.count, listLimit);
+         ++j) {
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "]=",
+          attr_list[i].value.aclfield.data.u8list.list[j]));
+    }
+  } else {
+    attrLines.push_back(to<string>(prefix, "list=NULL"));
+  }
+
+  prefix = to<string>("s_a", "[", i, "].value.aclfield.mask.u8list.");
+  attrLines.push_back(to<string>(
+      prefix, "count=", attr_list[i].value.aclfield.mask.u8list.count));
+  if (logEntry && attr_list[i].value.aclfield.mask.u8list.list) {
+    attrLines.push_back(
+        to<string>(prefix, "list=(sai_uint8_t*)(list_", listIndex + 1, ")"));
+    for (int j = 0;
+         j < std::min(attr_list[i].value.aclfield.mask.u8list.count, listLimit);
+         ++j) {
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "]=",
+          attr_list[i].value.aclfield.mask.u8list.list[j]));
+    }
+  } else {
+    attrLines.push_back(to<string>(prefix, "list=NULL"));
+  }
+}
+
 void systemPortConfigAttr(
     const sai_attribute_t* attr_list,
     int i,
@@ -275,7 +333,8 @@ void systemPortConfigListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    vector<string>& attrLines) {
+    vector<string>& attrLines,
+    bool logEntry) {
   // First make sure we have enough lists for use
   uint32_t listLimit = SaiTracer::getInstance()->checkListCount(
       listIndex + 1,
@@ -285,7 +344,7 @@ void systemPortConfigListAttr(
   string prefix = to<string>("s_a", "[", i, "].value.sysportconfiglist.");
   attrLines.push_back(
       to<string>(prefix, "count=", attr_list[i].value.sysportconfiglist.count));
-  if (attr_list[i].value.sysportconfiglist.list) {
+  if (logEntry && attr_list[i].value.sysportconfiglist.list) {
     attrLines.push_back(to<string>(
         prefix, "list=(sai_system_port_config_t*)(list_", listIndex, ")"));
     for (int j = 0;
@@ -360,7 +419,8 @@ void portLaneLatchStatusListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    vector<string>& attrLines) {
+    vector<string>& attrLines,
+    bool logEntry) {
   // First make sure we have enough lists for use
   uint32_t listLimit = SaiTracer::getInstance()->checkListCount(
       listIndex + 1,
@@ -370,7 +430,7 @@ void portLaneLatchStatusListAttr(
   string prefix = to<string>("s_a", "[", i, "].value.portlanelatchstatuslist.");
   attrLines.push_back(to<string>(
       prefix, "count=", attr_list[i].value.portlanelatchstatuslist.count));
-  if (attr_list[i].value.portlanelatchstatuslist.list) {
+  if (logEntry && attr_list[i].value.portlanelatchstatuslist.list) {
     attrLines.push_back(to<string>(
         prefix, "list=(sai_port_lane_latch_status_t*)(list_", listIndex, ")"));
     for (int j = 0; j <
@@ -387,7 +447,7 @@ void portLaneLatchStatusListAttr(
           prefix,
           "list[",
           j,
-          "].",
+          "].value.",
           "current_status=",
           attr_list[i]
               .value.portlanelatchstatuslist.list[j]
@@ -396,9 +456,96 @@ void portLaneLatchStatusListAttr(
           prefix,
           "list[",
           j,
-          "].",
+          "].value.",
           "changed=",
           attr_list[i].value.portlanelatchstatuslist.list[j].value.changed));
+    }
+  } else {
+    attrLines.push_back(to<string>(prefix, "list=NULL"));
+  }
+}
+#endif
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 13, 0)
+void portFrequencyOffsetPpmListAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    uint32_t listIndex,
+    vector<string>& attrLines,
+    bool logEntry) {
+  // First make sure we have enough lists for use
+  uint32_t listLimit = SaiTracer::getInstance()->checkListCount(
+      listIndex + 1,
+      sizeof(sai_uint32_t),
+      attr_list[i].value.portfrequencyoffsetppmlist.count);
+
+  string prefix =
+      to<string>("s_a", "[", i, "].value.portfrequencyoffsetppmlist.");
+  attrLines.push_back(to<string>(
+      prefix, "count=", attr_list[i].value.portfrequencyoffsetppmlist.count));
+  if (logEntry && attr_list[i].value.portfrequencyoffsetppmlist.list) {
+    attrLines.push_back(to<string>(
+        prefix,
+        "list=(sai_port_frequency_offset_ppm_values_t*)(list_",
+        listIndex,
+        ")"));
+    for (int j = 0; j <
+         std::min(attr_list[i].value.portfrequencyoffsetppmlist.count,
+                  listLimit);
+         ++j) {
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].",
+          "lane=",
+          attr_list[i].value.portfrequencyoffsetppmlist.list[j].lane));
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].ppm=",
+          attr_list[i].value.portfrequencyoffsetppmlist.list[j].ppm));
+    }
+  } else {
+    attrLines.push_back(to<string>(prefix, "list=NULL"));
+  }
+}
+
+void portSnrListAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    uint32_t listIndex,
+    vector<string>& attrLines,
+    bool logEntry) {
+  // First make sure we have enough lists for use
+  uint32_t listLimit = SaiTracer::getInstance()->checkListCount(
+      listIndex + 1,
+      sizeof(sai_uint32_t),
+      attr_list[i].value.portsnrlist.count);
+
+  string prefix = to<string>("s_a", "[", i, "].value.portsnrlist.");
+  attrLines.push_back(
+      to<string>(prefix, "count=", attr_list[i].value.portsnrlist.count));
+  if (logEntry && attr_list[i].value.portsnrlist.list) {
+    attrLines.push_back(to<string>(
+        prefix, "list=(sai_port_snr_values_t*)(list_", listIndex, ")"));
+    for (int j = 0;
+         j < std::min(attr_list[i].value.portsnrlist.count, listLimit);
+         ++j) {
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].",
+          "lane=",
+          attr_list[i].value.portsnrlist.list[j].lane));
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].snr=",
+          attr_list[i].value.portsnrlist.list[j].snr));
     }
   } else {
     attrLines.push_back(to<string>(prefix, "list=NULL"));
@@ -475,7 +622,8 @@ void s32ListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    vector<string>& attrLines) {
+    vector<string>& attrLines,
+    bool logEntry) {
   // First make sure we have enough lists for use
   uint32_t listLimit = SaiTracer::getInstance()->checkListCount(
       listIndex + 1, sizeof(sai_int32_t), attr_list[i].value.s32list.count);
@@ -485,7 +633,7 @@ void s32ListAttr(
       to<string>(prefix, "count=", attr_list[i].value.s32list.count));
   attrLines.push_back(
       to<string>(prefix, "list=(sai_int32_t*)(list_", listIndex, ")"));
-  if (attr_list[i].value.s32list.list) {
+  if (logEntry && attr_list[i].value.s32list.list) {
     for (int j = 0; j < std::min(attr_list[i].value.s32list.count, listLimit);
          ++j) {
       attrLines.push_back(to<string>(
@@ -500,7 +648,8 @@ void u32ListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    vector<string>& attrLines) {
+    vector<string>& attrLines,
+    bool logEntry) {
   // First make sure we have enough lists for use
   uint32_t listLimit = SaiTracer::getInstance()->checkListCount(
       listIndex + 1, sizeof(sai_uint32_t), attr_list[i].value.u32list.count);
@@ -508,7 +657,7 @@ void u32ListAttr(
   string prefix = to<string>("s_a", "[", i, "].value.u32list.");
   attrLines.push_back(
       to<string>(prefix, "count=", attr_list[i].value.u32list.count));
-  if (attr_list[i].value.u32list.list) {
+  if (logEntry && attr_list[i].value.u32list.list) {
     attrLines.push_back(
         to<string>(prefix, "list=(sai_uint32_t*)(list_", listIndex, ")"));
     for (int j = 0; j < std::min(attr_list[i].value.u32list.count, listLimit);
@@ -526,8 +675,10 @@ void s32RangeAttr(
     int i,
     std::vector<std::string>& attrLines) {
   string prefix = to<string>("s_a", "[", i, "].value.s32range.");
-  attrLines.push_back(to<string>("min=", attr_list[i].value.s32range.min));
-  attrLines.push_back(to<string>("max=", attr_list[i].value.s32range.max));
+  attrLines.push_back(
+      to<string>(prefix, "min=", attr_list[i].value.s32range.min));
+  attrLines.push_back(
+      to<string>(prefix, "max=", attr_list[i].value.s32range.max));
 }
 
 void u32RangeAttr(
@@ -535,15 +686,56 @@ void u32RangeAttr(
     int i,
     std::vector<std::string>& attrLines) {
   string prefix = to<string>("s_a", "[", i, "].value.u32range.");
-  attrLines.push_back(to<string>("min=", attr_list[i].value.u32range.min));
-  attrLines.push_back(to<string>("max=", attr_list[i].value.u32range.max));
+  attrLines.push_back(
+      to<string>(prefix, "min=", attr_list[i].value.u32range.min));
+  attrLines.push_back(
+      to<string>(prefix, "max=", attr_list[i].value.u32range.max));
+}
+
+void mapListAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    uint32_t listIndex,
+    std::vector<std::string>& attrLines,
+    bool logEntry) {
+  // Make sure we have enough lists for use
+  uint32_t listLimit = SaiTracer::getInstance()->checkListCount(
+      listIndex + 1, sizeof(sai_map_t), attr_list[i].value.maplist.count);
+
+  string prefix = to<string>("s_a", "[", i, "].value.maplist.");
+  attrLines.push_back(
+      to<string>(prefix, "count=", attr_list[i].value.maplist.count));
+  attrLines.push_back(
+      to<string>(prefix, "list=(sai_map_t*)(list_", listIndex, ")"));
+  if (logEntry && attr_list[i].value.maplist.list) {
+    for (int j = 0; j < std::min(attr_list[i].value.maplist.count, listLimit);
+         ++j) {
+      // Key
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].key=",
+          attr_list[i].value.maplist.list[j].key));
+      // Value
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].value=",
+          attr_list[i].value.maplist.list[j].value));
+    }
+  } else {
+    attrLines.push_back(to<string>(prefix, "list=NULL"));
+  }
 }
 
 void qosMapListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    std::vector<std::string>& attrLines) {
+    std::vector<std::string>& attrLines,
+    bool logEntry) {
   // First make sure we have enough lists for use
   uint32_t listLimit = SaiTracer::getInstance()->checkListCount(
       listIndex + 1, sizeof(sai_qos_map_t), attr_list[i].value.qosmap.count);
@@ -556,7 +748,7 @@ void qosMapListAttr(
 
   // TODO(zecheng): Find a way to know the type of key and value.
   // For now we can only set every single field
-  if (attr_list[i].value.qosmap.list) {
+  if (logEntry && attr_list[i].value.qosmap.list) {
     for (int j = 0; j < std::min(attr_list[i].value.qosmap.count, listLimit);
          ++j) {
       // Key
@@ -739,6 +931,19 @@ void u8ArrGenericAttr(
   SaiTracer::getInstance()->printHex(outStringStream, array[arrLength - 1]);
   outStringStream << "}";
   attrLines.push_back(outStringStream.str());
+}
+
+void prbsRxStateAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    std::vector<std::string>& attrLines) {
+#if SAI_API_VERSION >= SAI_VERSION(1, 8, 1)
+  string prefix = to<string>("s_a", "[", i, "].value.rx_state.");
+  attrLines.push_back(
+      to<string>(prefix, "rx_status=", attr_list[i].value.rx_state.rx_status));
+  attrLines.push_back(to<string>(
+      prefix, "error_count=", attr_list[i].value.rx_state.error_count));
+#endif
 }
 
 std::string toCapital(const std::string& input) {

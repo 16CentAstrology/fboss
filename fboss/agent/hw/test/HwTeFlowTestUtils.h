@@ -23,12 +23,32 @@ void setExactMatchCfg(HwSwitchEnsemble* hwSwitchEnsemble, int prefixLength);
 
 void setExactMatchCfg(std::shared_ptr<SwitchState>* state, int prefixLength);
 
-TeFlow makeFlowKey(std::string dstIp, uint16_t srcPort);
+TeFlow makeFlowKey(std::string dstIp, uint16_t srcPort, int prefixLength = 56);
+
+FlowEntry makeFlow(
+    const std::string& dstIp,
+    const std::string& nhop,
+    const std::string& ifname,
+    const uint16_t& srcPort,
+    const std::string& counterID,
+    const int& prefixLength);
+
+std::shared_ptr<std::vector<FlowEntry>> makeFlowEntries(
+    const std::vector<std::string>& flows,
+    const std::string& nhop,
+    const std::string& ifname,
+    const uint16_t& srcPort,
+    const std::string& counterID,
+    const int& prefixLength);
+
+std::shared_ptr<std::vector<TeFlow>> makeTeFlows(
+    const std::vector<std::string>& flows,
+    const uint16_t& srcPort);
 
 std::shared_ptr<TeFlowEntry> makeFlowEntry(
     std::string dstIp,
-    std::string nhopAdd,
-    std::string ifName,
+    std::optional<std::string> nhopAdd,
+    std::optional<std::string> ifName,
     uint16_t srcPort,
     std::string counterID);
 
@@ -41,7 +61,8 @@ void addFlowEntries(
     std::vector<std::shared_ptr<TeFlowEntry>>& flowEntries);
 void addFlowEntries(
     std::shared_ptr<SwitchState>* state,
-    std::vector<std::shared_ptr<TeFlowEntry>>& flowEntries);
+    std::vector<std::shared_ptr<TeFlowEntry>>& flowEntries,
+    const SwitchIdScopeResolver& resolver);
 
 void deleteFlowEntry(
     HwSwitchEnsemble* hwEnsemble,
@@ -53,6 +74,15 @@ void deleteFlowEntries(
 void deleteFlowEntries(
     std::shared_ptr<SwitchState>* state,
     std::vector<std::shared_ptr<TeFlowEntry>>& flowEntries);
+
+void addSyncFlowEntries(
+    HwSwitchEnsemble* hwEnsemble,
+    std::shared_ptr<std::vector<FlowEntry>>& flowEntries,
+    bool addSync);
+
+void deleteFlowEntries(
+    HwSwitchEnsemble* hwEnsemble,
+    std::shared_ptr<std::vector<TeFlow>>& teFlows);
 
 void modifyFlowEntry(
     HwSwitchEnsemble* hwEnsemble,
@@ -67,10 +97,36 @@ void modifyFlowEntry(
     std::shared_ptr<TeFlowEntry>& newFlowEntry,
     bool enable);
 
+class FlowEntryGenerator {
+ public:
+  explicit FlowEntryGenerator(
+      std::string& dstIpStart,
+      std::string& nhopAddress,
+      std::string& ifName,
+      uint16_t srcPort,
+      uint32_t numEntries)
+      : dstIpStart(dstIpStart),
+        nhopAddress(nhopAddress),
+        ifName(ifName),
+        srcPort(srcPort),
+        numEntries(numEntries) {}
+
+  std::vector<std::shared_ptr<TeFlowEntry>> generateFlowEntries() const;
+  std::string getCounterId(int index) const;
+  std::string getDstIp(int index) const;
+
+ private:
+  std::string dstIpStart;
+  std::string nhopAddress;
+  std::string ifName;
+  uint16_t srcPort;
+  uint32_t numEntries;
+};
+
 std::vector<std::shared_ptr<TeFlowEntry>> makeFlowEntries(
-    std::string dstIp,
-    std::string nhopAdd,
-    std::string ifName,
+    std::string& dstIp,
+    std::string& nhopAdd,
+    std::string& ifName,
     uint16_t srcPort,
     uint32_t numEntries);
 

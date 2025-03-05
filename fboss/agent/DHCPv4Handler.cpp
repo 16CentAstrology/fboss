@@ -17,9 +17,10 @@
 
 #include "fboss/agent/DHCPv4OptionsOfInterest.h"
 #include "fboss/agent/FbossError.h"
-#include "fboss/agent/Platform.h"
+#include "fboss/agent/HwAsicTable.h"
 #include "fboss/agent/RxPacket.h"
 #include "fboss/agent/SwSwitch.h"
+#include "fboss/agent/SwitchIdScopeResolver.h"
 #include "fboss/agent/SwitchStats.h"
 #include "fboss/agent/TxPacket.h"
 #include "fboss/agent/packet/DHCPv4Packet.h"
@@ -98,8 +99,12 @@ void sendDHCPPacket(
   auto txPacket = sw->allocatePacket(
       18 + // ethernet header
       ipHdr.size() + udpHdr.size() + dhcpPacket.size());
+
+  std::optional<VlanID> vlanID = std::nullopt;
   const auto& vlanTags = ethHdr.getVlanTags();
-  CHECK(!vlanTags.empty());
+  if (!vlanTags.empty()) {
+    vlanID = VlanID(vlanTags[0].vid());
+  }
 
   RWPrivateCursor rwCursor(txPacket->buf());
   // Write data to packet buffer
@@ -107,7 +112,7 @@ void sendDHCPPacket(
       &rwCursor,
       ethHdr.getDstMac(),
       ethHdr.getSrcMac(),
-      VlanID(vlanTags[0].vid()),
+      vlanID,
       ethHdr.getEtherType());
   ipHdr.write(&rwCursor);
   rwCursor.writeBE<uint16_t>(udpHdr.srcPort);
@@ -121,9 +126,8 @@ void sendDHCPPacket(
   uint16_t csum = udpHdr.computeChecksum(ipHdr, payloadStart);
   csumCursor.writeBE<uint16_t>(csum);
 
-  XLOG(DBG4) << " Sent dhcp packet :"
-             << " Eth header : " << ethHdr << " IPv4 Header : " << ipHdr
-             << " UDP Header : " << udpHdr;
+  XLOG(DBG4) << " Sent dhcp packet :" << " Eth header : " << ethHdr
+             << " IPv4 Header : " << ipHdr << " UDP Header : " << udpHdr;
   // Send packet
   sw->sendPacketSwitchedAsync(std::move(txPacket));
 }
@@ -158,6 +162,7 @@ bool DHCPv4Handler::isDHCPv4Packet(const UDPHeader& udpHdr) {
       (dstPort == kBootPCPort || dstPort == kBootPSPort);
 }
 
+template <typename VlanOrIntfT>
 void DHCPv4Handler::handlePacket(
     SwSwitch* sw,
     std::unique_ptr<RxPacket> pkt,
@@ -165,7 +170,8 @@ void DHCPv4Handler::handlePacket(
     MacAddress /*dstMac*/,
     const IPv4Hdr& ipHdr,
     const UDPHeader& /*udpHdr*/,
-    Cursor cursor) {
+    Cursor cursor,
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf) {
   sw->portStats(pkt->getSrcPort())->dhcpV4Pkt();
   if (ipHdr.ttl <= 1) {
     sw->portStats(pkt->getSrcPort())->dhcpV4BadPkt();
@@ -177,7 +183,7 @@ void DHCPv4Handler::handlePacket(
   DHCPv4Packet dhcpPkt;
   try {
     dhcpPkt.parse(&cursor);
-  } catch (const FbossError& err) {
+  } catch (const FbossError&) {
     sw->portStats(pkt->getSrcPort())->dhcpV4BadPkt();
     throw; // Rethrow
   }
@@ -185,7 +191,7 @@ void DHCPv4Handler::handlePacket(
     switch (dhcpPkt.op) {
       case BOOTREQUEST:
         XLOG(DBG4) << " Got boot request ";
-        processRequest(sw, std::move(pkt), srcMac, ipHdr, dhcpPkt);
+        processRequest(sw, std::move(pkt), srcMac, ipHdr, dhcpPkt, vlanOrIntf);
         break;
       case BOOTREPLY:
         XLOG(DBG4) << " Got boot reply";
@@ -204,46 +210,93 @@ void DHCPv4Handler::handlePacket(
   }
 }
 
+// Explicit instantiation to avoid linker errors
+// https://isocpp.org/wiki/faq/templates#separate-template-fn-defn-from-decl
+template void DHCPv4Handler::handlePacket(
+    SwSwitch* sw,
+    std::unique_ptr<RxPacket> pkt,
+    MacAddress srcMac,
+    MacAddress /*dstMac*/,
+    const IPv4Hdr& ipHdr,
+    const UDPHeader& /*udpHdr*/,
+    Cursor cursor,
+    const std::shared_ptr<Vlan>& vlanOrIntf);
+
+template void DHCPv4Handler::handlePacket(
+    SwSwitch* sw,
+    std::unique_ptr<RxPacket> pkt,
+    MacAddress srcMac,
+    MacAddress /*dstMac*/,
+    const IPv4Hdr& ipHdr,
+    const UDPHeader& /*udpHdr*/,
+    Cursor cursor,
+    const std::shared_ptr<Interface>& vlanOrIntf);
+
+template <typename VlanOrIntfT>
 void DHCPv4Handler::processRequest(
     SwSwitch* sw,
     std::unique_ptr<RxPacket> pkt,
     MacAddress srcMac,
     const IPv4Hdr& origIPHdr,
-    const DHCPv4Packet& dhcpPacket) {
+    const DHCPv4Packet& dhcpPacket,
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf) {
   auto dhcpPacketOut(dhcpPacket);
   auto state = sw->getState();
-  auto vlan = state->getVlans()->getVlanIf(pkt->getSrcVlan());
-  if (!vlan) {
+  auto vlanID = getVlanIDFromVlanOrIntf(vlanOrIntf);
+  auto vlanIDStr = vlanID.has_value()
+      ? folly::to<std::string>(static_cast<int>(vlanID.value()))
+      : "None";
+
+  if (!vlanOrIntf) {
     sw->stats()->dhcpV4DropPkt();
-    XLOG(DBG4) << " VLAN  " << pkt->getSrcVlan() << " is no longer present "
-               << " dropped dhcp packet received on a port in this VLAN";
+    XLOG(DBG4) << " VLAN  " << vlanIDStr << " is no longer present "
+               << " DHCPv4Packet dropped on port " << pkt->getSrcPort();
     return;
   }
-  auto dhcpServer = vlan->getDhcpV4Relay();
+  auto dhcpServer = vlanOrIntf->getDhcpV4Relay();
 
   XLOG(DBG4) << "srcMac: " << srcMac.toString();
   // look in the override map, and use relevant destination
-  auto dhcpOverrideMap = vlan->getDhcpV4RelayOverrides();
+  auto dhcpOverrideMap = vlanOrIntf->getDhcpV4RelayOverrides();
   if (dhcpOverrideMap.find(srcMac) != dhcpOverrideMap.end()) {
     dhcpServer = dhcpOverrideMap[srcMac];
-    XLOG(DBG4) << "dhcpServer: " << dhcpServer;
+    if constexpr (std::is_same_v<VlanOrIntfT, Vlan>) {
+      XLOG(DBG4) << "dhcpServer: " << dhcpServer;
+    } else {
+      XLOG(DBG4) << "dhcpServer: " << dhcpServer.value();
+    }
   }
 
-  if (dhcpServer.isZero()) {
-    sw->stats()->dhcpV4DropPkt();
-    XLOG(DBG4) << " No relay configured for VLAN : " << vlan->getID()
-               << " dropped dhcp packet ";
-    return;
+  IPAddressV4 dhcpServerIP;
+  if constexpr (std::is_same_v<VlanOrIntfT, Vlan>) {
+    if (dhcpServer.isZero()) {
+      sw->stats()->dhcpV4DropPkt();
+      XLOG(DBG4) << " No relay configured for VLAN : " << vlanIDStr
+                 << " dropped dhcp packet ";
+      return;
+    }
+    dhcpServerIP = dhcpServer;
+  } else {
+    if (!dhcpServer.has_value() || dhcpServer.value().isZero()) {
+      sw->stats()->dhcpV4DropPkt();
+      XLOG(DBG4) << " No relay configured for Interface: "
+                 << vlanOrIntf->getID() << " dropped dhcp packet ";
+      return;
+    }
+    dhcpServerIP = dhcpServer.value();
   }
 
   auto switchIp = state->getDhcpV4RelaySrc();
   if (switchIp.isZero()) {
-    auto vlanInterface =
-        state->getInterfaces()->getInterfaceInVlanIf(pkt->getSrcVlan());
-    for (auto iter : std::as_const(*vlanInterface->getAddresses())) {
-      auto address = folly::IPAddress(iter.first);
-      if (address.isV4()) {
-        switchIp = address.asV4();
+    auto interfaceID = sw->getState()->getInterfaceIDForPort(
+        PortDescriptor(pkt->getSrcPort()));
+    auto interface = state->getInterfaces()->getNodeIf(interfaceID);
+
+    for (auto iter : std::as_const(*interface->getAddresses())) {
+      auto address =
+          std::make_pair(folly::IPAddress(iter.first), iter.second->cref());
+      if (address.first.isV4()) {
+        switchIp = address.first.asV4();
         break;
       }
     }
@@ -251,8 +304,8 @@ void DHCPv4Handler::processRequest(
 
   if (switchIp.isZero()) {
     sw->stats()->dhcpV4DropPkt();
-    XLOG(ERR) << "Could not find a SVI interface on vlan : "
-              << pkt->getSrcVlan() << "DHCP packet dropped ";
+    XLOG(ERR) << "Could not find a SVI interface on vlan : " << vlanIDStr
+              << "DHCP packet dropped ";
     return;
   }
 
@@ -278,14 +331,22 @@ void DHCPv4Handler::processRequest(
     return;
   }
   dhcpPacketOut.giaddr = switchIp;
-  // Look up cpu mac from platform
-  MacAddress cpuMac = sw->getPlatform()->getLocalMac();
+  // Look up cpu mac from HwAsicTable
+  SwitchID switchID;
+  if constexpr (std::is_same_v<VlanOrIntfT, Vlan>) {
+    switchID = sw->getScopeResolver()->scope(vlanOrIntf).switchId();
+  } else {
+    switchID =
+        sw->getScopeResolver()->scope(vlanOrIntf, sw->getState()).switchId();
+  }
+
+  MacAddress cpuMac = sw->getHwAsicTable()->getHwAsicIf(switchID)->getAsicMac();
 
   // Prepare the packet to be sent out
-  EthHdr ethHdr = makeEthHdr(cpuMac, cpuMac, pkt->getSrcVlan());
+  EthHdr ethHdr = makeEthHdr(cpuMac, cpuMac, vlanID);
   auto ipHdr = makeIpv4Header(
       switchIp,
-      dhcpServer,
+      dhcpServerIP,
       origIPHdr.ttl - 1,
       IPv4Hdr::minSize() + UDPHeader::size() + dhcpPacketOut.size());
   UDPHeader udpHdr(
@@ -315,7 +376,8 @@ void DHCPv4Handler::processReply(
   if (switchIp.isZero()) {
     switchIp = origIPHdr.dstAddr;
   }
-  MacAddress cpuMac = sw->getPlatform()->getLocalMac();
+  auto switchId = sw->getScopeResolver()->scope(pkt->getSrcPort()).switchId();
+  MacAddress cpuMac = sw->getHwAsicTable()->getHwAsicIf(switchId)->getAsicMac();
   // Extract client MAC address from dhcp reply
   uint8_t chaddr[MacAddress::SIZE];
   memcpy(chaddr, dhcpPacketOut.chaddr.data(), MacAddress::SIZE);

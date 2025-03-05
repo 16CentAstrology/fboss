@@ -79,6 +79,13 @@ void assertPortsLoopbackMode(
   }
 }
 
+int getLoopbackMode(cfg::PortLoopbackMode loopbackMode) {
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+  return (int)getSaiPortLoopbackMode(loopbackMode);
+#endif
+  return (int)getSaiPortInternalLoopbackMode(loopbackMode);
+}
+
 void assertPortSampleDestination(
     const HwSwitch* /*hw*/,
     PortID /*port*/,
@@ -97,9 +104,15 @@ void assertPortLoopbackMode(
     PortID port,
     int expectedLoopbackMode) {
   auto key = getPortAdapterKey(hw, port);
-  SaiPortTraits::Attributes::InternalLoopbackMode loopbackMode;
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+  SaiPortTraits::Attributes::PortLoopbackMode loopbackMode;
   SaiApiTable::getInstance()->portApi().getAttribute(key, loopbackMode);
   CHECK_EQ(expectedLoopbackMode, loopbackMode.value());
+#else
+  SaiPortTraits::Attributes::InternalLoopbackMode internalLoopbackMode;
+  SaiApiTable::getInstance()->portApi().getAttribute(key, internalLoopbackMode);
+  CHECK_EQ(expectedLoopbackMode, internalLoopbackMode.value());
+#endif
 }
 
 void cleanPortConfig(
@@ -189,13 +202,17 @@ void verifyTxSettting(
     Platform* platform,
     const std::vector<phy::PinConfig>& expectedPinConfigs) {
   auto* saiPlatform = static_cast<SaiPlatform*>(platform);
-  if (!saiPlatform->isSerdesApiSupported()) {
+  if (!saiPlatform->isSerdesApiSupported() ||
+      !saiPlatform->getAsic()->isSupported(
+          HwAsic::Feature::SAI_PORT_SERDES_PROGRAMMING)) {
     return;
   }
 
   auto numExpectedTxLanes = 0;
+  std::vector<phy::TxSettings> txSettings;
   for (const auto& pinConfig : expectedPinConfigs) {
     if (auto tx = pinConfig.tx()) {
+      txSettings.push_back(*tx);
       ++numExpectedTxLanes;
     }
   }
@@ -223,9 +240,69 @@ void verifyTxSettting(
   auto post = portApi.getAttribute(
       serdes->adapterKey(), SaiPortSerdesTraits::Attributes::TxFirPost1{});
 
+  std::vector<sai_uint32_t> pre2;
+  std::vector<sai_uint32_t> post2;
+  std::vector<sai_uint32_t> post3;
+
   EXPECT_EQ(pre, GET_OPT_ATTR(PortSerdes, TxFirPre1, expectedTx));
   EXPECT_EQ(main, GET_OPT_ATTR(PortSerdes, TxFirMain, expectedTx));
   EXPECT_EQ(post, GET_OPT_ATTR(PortSerdes, TxFirPost1, expectedTx));
+
+  if (auto expectedPre3 =
+          std::get<std::optional<SaiPortSerdesTraits::Attributes::TxFirPre3>>(
+              expectedTx)) {
+    auto pre3 = portApi.getAttribute(
+        serdes->adapterKey(), SaiPortSerdesTraits::Attributes::TxFirPre3{});
+    EXPECT_EQ(pre3, expectedPre3->value());
+  }
+
+  if (saiPlatform->getAsic()->isSupported(
+          HwAsic::Feature::SAI_CONFIGURE_SIX_TAP)) {
+    pre2 = portApi.getAttribute(
+        serdes->adapterKey(), SaiPortSerdesTraits::Attributes::TxFirPre2{});
+    post2 = portApi.getAttribute(
+        serdes->adapterKey(), SaiPortSerdesTraits::Attributes::TxFirPost2{});
+    post3 = portApi.getAttribute(
+        serdes->adapterKey(), SaiPortSerdesTraits::Attributes::TxFirPost3{});
+    EXPECT_EQ(pre2, GET_OPT_ATTR(PortSerdes, TxFirPre2, expectedTx));
+    EXPECT_EQ(post2, GET_OPT_ATTR(PortSerdes, TxFirPost2, expectedTx));
+    EXPECT_EQ(post3, GET_OPT_ATTR(PortSerdes, TxFirPost3, expectedTx));
+  }
+
+  // Also verify sixtap attributes against expected pin config
+  EXPECT_EQ(pre.size(), txSettings.size());
+  for (int i = 0; i < txSettings.size(); ++i) {
+    auto expectedTxFromPin = txSettings[i];
+    EXPECT_EQ(pre[i], expectedTxFromPin.pre());
+    EXPECT_EQ(main[i], expectedTxFromPin.main());
+    EXPECT_EQ(post[i], expectedTxFromPin.post());
+    if (saiPlatform->getAsic()->isSupported(
+            HwAsic::Feature::SAI_CONFIGURE_SIX_TAP)) {
+      EXPECT_EQ(pre2[i], expectedTxFromPin.pre2());
+      EXPECT_EQ(post2[i], expectedTxFromPin.post2());
+      EXPECT_EQ(post3[i], expectedTxFromPin.post3());
+    }
+  }
+
+  if (saiPlatform->getAsic()->isSupported(
+          HwAsic::Feature::SAI_CONFIGURE_SIX_TAP) &&
+      (saiPlatform->getAsic()->getAsicVendor() ==
+       HwAsic::AsicVendor::ASIC_VENDOR_TAJO)) {
+    SaiPortSerdesTraits::CreateAttributes expectedSerdes =
+        saiSwitch->managerTable()
+            ->portManager()
+            .serdesAttributesFromSwPinConfigs(
+                saiPortHandle->port->adapterKey(), expectedPinConfigs, serdes);
+
+    if (auto expectedTxLutMode =
+            std::get<std::optional<SaiPortSerdesTraits::Attributes::TxLutMode>>(
+                expectedSerdes)) {
+      auto txLutMode = portApi.getAttribute(
+          serdes->adapterKey(), SaiPortSerdesTraits::Attributes::TxLutMode{});
+      EXPECT_EQ(txLutMode, expectedTxLutMode->value());
+    }
+  }
+
   if (auto expectedDriveCurrent =
           std::get<std::optional<SaiPortSerdesTraits::Attributes::IDriver>>(
               expectedTx)) {
@@ -244,33 +321,35 @@ void verifyTxSettting(
   }
 }
 
-void verifyLedStatus(HwSwitchEnsemble* ensemble, PortID port, bool up) {
+bool verifyLedStatus(HwSwitchEnsemble* ensemble, PortID port, bool up) {
   SaiPlatform* platform = static_cast<SaiPlatform*>(ensemble->getPlatform());
   SaiPlatformPort* platformPort = platform->getPort(port);
   uint32_t currentVal = platformPort->getCurrentLedState();
   uint32_t expectedVal = 0;
-  switch (platform->getMode()) {
-    case PlatformMode::WEDGE: {
+  switch (platform->getType()) {
+    case PlatformType::PLATFORM_WEDGE: {
       expectedVal =
           static_cast<uint32_t>(Wedge40LedUtils::getExpectedLEDState(up, up));
     } break;
-    case PlatformMode::WEDGE100: {
+    case PlatformType::PLATFORM_WEDGE100: {
       expectedVal = static_cast<uint32_t>(Wedge100LedUtils::getExpectedLEDState(
           platform->getLaneCount(platformPort->getCurrentProfile()), up, up));
     } break;
-    case PlatformMode::GALAXY_FC:
-    case PlatformMode::GALAXY_LC: {
+    case PlatformType::PLATFORM_GALAXY_FC:
+    case PlatformType::PLATFORM_GALAXY_LC: {
       expectedVal = GalaxyLedUtils::getExpectedLEDState(up, up);
     } break;
-    case PlatformMode::WEDGE400:
-    case PlatformMode::WEDGE400C: {
+    case PlatformType::PLATFORM_WEDGE400:
+    case PlatformType::PLATFORM_WEDGE400_GRANDTETON:
+    case PlatformType::PLATFORM_WEDGE400C:
+    case PlatformType::PLATFORM_WEDGE400C_GRANDTETON: {
       expectedVal = static_cast<uint32_t>(Wedge400LedUtils::getLedState(
           platform->getLaneCount(platformPort->getCurrentProfile()), up, up));
     } break;
     default:
-      return;
+      return true;
   }
-  EXPECT_EQ(currentVal, expectedVal);
+  return currentVal == expectedVal;
 }
 
 void verifyRxSettting(
@@ -279,7 +358,9 @@ void verifyRxSettting(
     Platform* platform,
     const std::vector<phy::PinConfig>& expectedPinConfigs) {
   auto* saiPlatform = static_cast<SaiPlatform*>(platform);
-  if (!saiPlatform->isSerdesApiSupported()) {
+  if (!saiPlatform->isSerdesApiSupported() ||
+      !saiPlatform->getAsic()->isSupported(
+          HwAsic::Feature::SAI_PORT_SERDES_PROGRAMMING)) {
     return;
   }
 
@@ -370,4 +451,9 @@ void verifyFec(
   // Verify the getPortFecMode function
   EXPECT_EQ(saiSwitch->getPortFECMode(portID), *expectedProfileConfig.fec());
 }
+
+void enableSixtapProgramming() {
+  FLAGS_sai_configure_six_tap = true;
+};
+
 } // namespace facebook::fboss::utility

@@ -10,6 +10,7 @@
 
 #include "fboss/agent/hw/sai/switch/SaiMirrorManager.h"
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
+#include "fboss/agent/hw/sai/switch/SaiSystemPortManager.h"
 
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/hw/sai/store/SaiStore.h"
@@ -22,22 +23,36 @@
 
 namespace facebook::fboss {
 
-SaiMirrorHandle::SaiMirror SaiMirrorManager::addMirrorSpan(
-    PortSaiId monitorPort) {
+SaiMirrorHandle::SaiMirror SaiMirrorManager::addNodeSpan(
+    sai_object_id_t monitorPort) {
+  std::optional<SaiLocalMirrorTraits::Attributes::TcBufferLimit> tcBufferLimit;
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  // TODO: Fix this to be picked up from eventor VoQ config.
+  // For now, defaulting to 1M.
+  tcBufferLimit = 1000000;
+#endif
   SaiLocalMirrorTraits::AdapterHostKey k{
-      SAI_MIRROR_SESSION_TYPE_LOCAL, monitorPort};
+      SAI_MIRROR_SESSION_TYPE_LOCAL, monitorPort, tcBufferLimit};
   SaiLocalMirrorTraits::CreateAttributes attributes = k;
   auto& store = saiStore_->get<SaiLocalMirrorTraits>();
   return store.setObject(k, attributes);
 }
 
-SaiMirrorHandle::SaiMirror SaiMirrorManager::addMirrorErSpan(
+SaiMirrorHandle::SaiMirror SaiMirrorManager::addNodeErSpan(
     const std::shared_ptr<Mirror>& mirror,
-    PortSaiId monitorPort) {
+    sai_object_id_t monitorPort) {
   auto mirrorTunnel = mirror->getMirrorTunnel().value();
   auto headerVersion = mirrorTunnel.srcIp.isV4() ? 4 : 6;
   auto truncateSize =
       mirror->getTruncate() ? platform_->getAsic()->getMirrorTruncateSize() : 0;
+  auto greProtocol = platform_->getAsic()->getGreProtocol();
+  std::optional<SaiEnhancedRemoteMirrorTraits::Attributes::TcBufferLimit>
+      tcBufferLimit;
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  // TODO: Fix this to be picked up from eventor VoQ config.
+  // For now, defaulting to 1M.
+  tcBufferLimit = 1000000;
+#endif
   SaiEnhancedRemoteMirrorTraits::CreateAttributes attributes{
       SAI_MIRROR_SESSION_TYPE_ENHANCED_REMOTE,
       monitorPort,
@@ -47,10 +62,12 @@ SaiMirrorHandle::SaiMirror SaiMirrorManager::addMirrorErSpan(
       mirrorTunnel.dstIp,
       mirrorTunnel.srcMac,
       mirrorTunnel.dstMac,
-      mirrorTunnel.greProtocol,
+      greProtocol,
       headerVersion,
       mirrorTunnel.ttl,
-      truncateSize};
+      truncateSize,
+      mirror->getSamplingRate(),
+      tcBufferLimit};
   SaiEnhancedRemoteMirrorTraits::AdapterHostKey k{
       SAI_MIRROR_SESSION_TYPE_ENHANCED_REMOTE,
       monitorPort,
@@ -60,13 +77,19 @@ SaiMirrorHandle::SaiMirror SaiMirrorManager::addMirrorErSpan(
   return store.setObject(k, attributes);
 }
 
-SaiMirrorHandle::SaiMirror SaiMirrorManager::addMirrorSflow(
+SaiMirrorHandle::SaiMirror SaiMirrorManager::addNodeSflow(
     const std::shared_ptr<Mirror>& mirror,
-    PortSaiId monitorPort) {
+    sai_object_id_t monitorPort) {
   auto mirrorTunnel = mirror->getMirrorTunnel().value();
   auto headerVersion = mirrorTunnel.srcIp.isV4() ? 4 : 6;
   auto truncateSize =
       mirror->getTruncate() ? platform_->getAsic()->getMirrorTruncateSize() : 0;
+  std::optional<SaiSflowMirrorTraits::Attributes::TcBufferLimit> tcBufferLimit;
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  // TODO: Fix this to be picked up from eventor VoQ config.
+  // For now, defaulting to 1M.
+  tcBufferLimit = 1000000;
+#endif
   SaiSflowMirrorTraits::CreateAttributes attributes{
       SAI_MIRROR_SESSION_TYPE_SFLOW,
       monitorPort,
@@ -79,7 +102,9 @@ SaiMirrorHandle::SaiMirror SaiMirrorManager::addMirrorSflow(
       mirrorTunnel.udpPorts.value().udpDstPort,
       headerVersion,
       mirrorTunnel.ttl,
-      truncateSize};
+      truncateSize,
+      mirror->getSamplingRate(),
+      tcBufferLimit};
   SaiSflowMirrorTraits::AdapterHostKey k{
       SAI_MIRROR_SESSION_TYPE_SFLOW,
       monitorPort,
@@ -98,7 +123,7 @@ SaiMirrorHandle::~SaiMirrorHandle() {
       mirrorId, MirrorAction::STOP);
 }
 
-void SaiMirrorManager::addMirror(const std::shared_ptr<Mirror>& mirror) {
+void SaiMirrorManager::addNode(const std::shared_ptr<Mirror>& mirror) {
   if (!mirror->isResolved()) {
     return;
   }
@@ -107,27 +132,20 @@ void SaiMirrorManager::addMirror(const std::shared_ptr<Mirror>& mirror) {
     throw FbossError(
         "Attempted to add mirror which already exists: ", mirror->getID());
   }
-
   auto mirrorHandle =
       std::make_unique<SaiMirrorHandle>(mirror->getID(), managerTable_);
-  auto monitorPortHandle = managerTable_->portManager().getPortHandle(
-      mirror->getEgressPort().value());
-  if (!monitorPortHandle) {
-    throw FbossError(
-        "Failed to find sai port for egress port for mirroring: ",
-        mirror->getEgressPort().value());
-  }
+  auto monitorPort = mirror->getEgressPortDesc().has_value()
+      ? getMonitorPort(mirror->getEgressPortDesc().value())
+      : getMonitorPort(PortDescriptor(mirror->getEgressPort().value()));
   if (mirror->getMirrorTunnel().has_value()) {
     auto mirrorTunnel = mirror->getMirrorTunnel().value();
     if (mirrorTunnel.udpPorts.has_value()) {
-      mirrorHandle->mirror =
-          addMirrorSflow(mirror, monitorPortHandle->port->adapterKey());
+      mirrorHandle->mirror = addNodeSflow(mirror, monitorPort);
     } else {
-      mirrorHandle->mirror =
-          addMirrorErSpan(mirror, monitorPortHandle->port->adapterKey());
+      mirrorHandle->mirror = addNodeErSpan(mirror, monitorPort);
     }
   } else {
-    mirrorHandle->mirror = addMirrorSpan(monitorPortHandle->port->adapterKey());
+    mirrorHandle->mirror = addNodeSpan(monitorPort);
   }
   mirrorHandles_.emplace(mirror->getID(), std::move(mirrorHandle));
   managerTable_->portManager().programMirrorOnAllPorts(
@@ -156,7 +174,7 @@ void SaiMirrorManager::changeMirror(
     const std::shared_ptr<Mirror>& oldMirror,
     const std::shared_ptr<Mirror>& newMirror) {
   removeMirror(oldMirror);
-  addMirror(newMirror);
+  addNode(newMirror);
 }
 
 SaiMirrorHandle* FOLLY_NULLABLE
@@ -193,6 +211,40 @@ std::vector<MirrorSaiId> SaiMirrorManager::getAllMirrorSessionOids() const {
     mirrorSaiIds.push_back(mirrorIdAndHandle.second->adapterKey());
   }
   return mirrorSaiIds;
+}
+
+sai_object_id_t SaiMirrorManager::getMonitorPort(
+    const PortDescriptor& portDesc) {
+  sai_object_id_t monitorPort;
+  switch (portDesc.type()) {
+    case PortDescriptor::PortType::PHYSICAL: {
+      auto portHandle =
+          managerTable_->portManager().getPortHandle(portDesc.phyPortID());
+      if (!portHandle) {
+        throw FbossError(
+            "Failed to find sai port for egress port for mirroring: ",
+            portDesc.phyPortID());
+      }
+      monitorPort = portHandle->port->adapterKey();
+      break;
+    }
+    case PortDescriptor::PortType::SYSTEM_PORT: {
+      auto systemPortHandle =
+          managerTable_->systemPortManager().getSystemPortHandle(
+              portDesc.sysPortID());
+      if (!systemPortHandle) {
+        throw FbossError(
+            "Failed to find sai system port for egress port for mirroring: ",
+            portDesc.sysPortID());
+      }
+      monitorPort = systemPortHandle->systemPort->adapterKey();
+      break;
+    }
+    case PortDescriptor::PortType::AGGREGATE: {
+      throw FbossError("Invalid agg port desc type received for mirroring");
+    }
+  }
+  return monitorPort;
 }
 
 } // namespace facebook::fboss

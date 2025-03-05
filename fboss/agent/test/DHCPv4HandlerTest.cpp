@@ -20,16 +20,13 @@
 #include "fboss/agent/TxPacket.h"
 #include "fboss/agent/hw/mock/MockHwSwitch.h"
 #include "fboss/agent/hw/mock/MockPlatform.h"
-#include "fboss/agent/hw/mock/MockRxPacket.h"
 #include "fboss/agent/packet/DHCPv4Packet.h"
 #include "fboss/agent/packet/EthHdr.h"
 #include "fboss/agent/packet/Ethertype.h"
 #include "fboss/agent/packet/IPv4Hdr.h"
 #include "fboss/agent/packet/PktUtil.h"
 #include "fboss/agent/packet/UDPHeader.h"
-#include "fboss/agent/state/ArpEntry.h"
 #include "fboss/agent/state/ArpResponseTable.h"
-#include "fboss/agent/state/ArpTable.h"
 #include "fboss/agent/state/Interface.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/state/Vlan.h"
@@ -38,7 +35,6 @@
 #include "fboss/agent/test/HwTestHandle.h"
 #include "fboss/agent/test/TestUtils.h"
 
-#include <boost/cast.hpp>
 #include <gtest/gtest.h>
 
 using namespace facebook::fboss;
@@ -70,35 +66,79 @@ const IPAddressV4 kDhcpV4RelaySrc("88.0.0.1");
 // have to match an interface (fboss55) IP address
 const IPAddressV4 kDhcpV4ReplySrc("10.0.55.1");
 
-shared_ptr<SwitchState> testState() {
-  auto state = testStateA();
-  const auto& vlans = state->getVlans();
+template <typename VlansOrIntfsT, typename NodeIDT>
+shared_ptr<SwitchState> testStateHelper(
+    std::shared_ptr<SwitchState> state,
+    VlansOrIntfsT vlansOrIntfs,
+    NodeIDT nodeId) {
   // Set up an arp response entry for VLAN 1, 10.0.0.1,
   // so that we can detect the packet to 10.0.0.1 is for myself
   auto respTable1 = make_shared<ArpResponseTable>();
   respTable1->setEntry(
       kVlanInterfaceIP, MockPlatform::getMockLocalMac(), InterfaceID(1));
-  vlans->getVlan(VlanID(1))->setArpResponseTable(respTable1);
-  vlans->getVlan(VlanID(1))->setDhcpV4Relay(kDhcpV4Relay);
+
+  vlansOrIntfs->getNode(nodeId)->setArpResponseTable(respTable1);
+  vlansOrIntfs->getNode(nodeId)->setDhcpV4Relay(kDhcpV4Relay);
   DhcpV4OverrideMap overrides;
   overrides[kClientMacOverride] = kDhcpOverride;
-  vlans->getVlan(VlanID(1))->setDhcpV4RelayOverrides(overrides);
+  vlansOrIntfs->getNode(nodeId)->setDhcpV4RelayOverrides(overrides);
+  addSwitchInfo(
+      state,
+      cfg::SwitchType::NPU,
+      0, /*SwitchId*/
+      cfg::AsicType::ASIC_TYPE_MOCK,
+      cfg::switch_config_constants::DEFAULT_PORT_ID_RANGE_MIN(),
+      cfg::switch_config_constants::DEFAULT_PORT_ID_RANGE_MAX(),
+      0, /* switchIndex*/
+      std::nullopt, /* sysPort min*/
+      std::nullopt, /*sysPort max()*/
+      MockPlatform::getMockLocalMac().toString());
   return state;
 }
 
-shared_ptr<SwitchState> testStateNAT() {
-  auto state = testState();
-  state->setDhcpV4RelaySrc(kDhcpV4RelaySrc);
-  state->setDhcpV4ReplySrc(kDhcpV4ReplySrc);
+shared_ptr<SwitchState> testState(bool isIntfNbrTable) {
+  auto state = testStateA();
+
+  if (isIntfNbrTable) {
+    const auto& intfs = state->getInterfaces();
+    return testStateHelper(state, intfs, InterfaceID(1));
+  } else {
+    const auto& vlans = state->getVlans();
+    return testStateHelper(state, vlans, VlanID(1));
+  }
+}
+
+unique_ptr<HwTestHandle> setupTestHandle(bool isIntfNbrTable) {
+  return createTestHandle(testState(isIntfNbrTable));
+}
+
+shared_ptr<SwitchState> testStateNAT(bool isIntfNbrTable) {
+  auto state = testState(isIntfNbrTable);
+  auto switchSettings = std::make_shared<SwitchSettings>();
+  switchSettings->setDhcpV4RelaySrc(kDhcpV4RelaySrc);
+  switchSettings->setDhcpV4ReplySrc(kDhcpV4ReplySrc);
+  auto multiSwitchSwitchSettings = std::make_shared<MultiSwitchSettings>();
+  multiSwitchSwitchSettings->addNode(
+      HwSwitchMatcher(std::unordered_set<SwitchID>{SwitchID(0)})
+          .matcherString(),
+      switchSettings);
+  state->resetSwitchSettings(multiSwitchSwitchSettings);
+  addSwitchInfo(
+      state,
+      cfg::SwitchType::NPU,
+      0, /*SwitchId*/
+      cfg::AsicType::ASIC_TYPE_MOCK,
+      cfg::switch_config_constants::DEFAULT_PORT_ID_RANGE_MIN(),
+      cfg::switch_config_constants::DEFAULT_PORT_ID_RANGE_MAX(),
+      0, /* switchIndex*/
+      std::nullopt, /* sysPort min*/
+      std::nullopt, /*sysPort max()*/
+      MockPlatform::getMockLocalMac().toString());
   return state;
 }
 
-unique_ptr<HwTestHandle> setupTestHandle() {
-  return createTestHandle(testState());
-}
-
-unique_ptr<HwTestHandle> setupTestHandleNAT() {
-  return createTestHandle(testStateNAT());
+unique_ptr<HwTestHandle> setupTestHandleNAT(bool isIntfNbrTable) {
+  return createTestHandle(testStateNAT(isIntfNbrTable));
 }
 
 void sendDHCPPacket(
@@ -217,13 +257,13 @@ void sendDHCPPacket(
       + dhcpMsgTypeOpt
       // Other options to append
       + appendOptions +
-      // 3 X Pad, 1 X end
-      "00  00  00 ff"));
+      // 4 X Pad, 1 X end
+      "00  00  00 00 ff"));
   ASSERT_EQ(
-      payloadSize + udpHdrSize + ipHdrSize + ethHdrSize + /*'\0'*/ 1,
+      payloadSize + udpHdrSize + ipHdrSize + ethHdrSize + /*'\0\0'*/ 2,
       buf->length())
       << "Don't forget to adjust the headers' length";
-  handle->rxPacket(std::move(buf), PortID(1), VlanID(1));
+  handle->rxPacket(std::move(buf), PortDescriptor(PortID(1)), VlanID(1));
 }
 
 struct Option {
@@ -278,7 +318,7 @@ TxMatchFn checkDHCPPkt(
           "expected protocol to be ", IPPROTO_UDP, "; got ", ipHdr.protocol);
     }
 
-    SwitchStats switchStats;
+    SwitchStats switchStats(1 /*numSwitches*/);
     PortStats portStats(PortID(0), "foo", &switchStats);
     UDPHeader udpHdr;
     udpHdr.parse(&c, &portStats);
@@ -368,10 +408,42 @@ TxMatchFn checkDHCPReply(
       dstMac, vlan, srcIp, dstIp, srcPort, dstPort, giaddr, optionsToCheck);
 }
 
-} // unnamed   namespace
+} // unnamed namespace
 
-TEST(DHCPv4HandlerTest, DHCPRequest) {
-  auto handle = setupTestHandle();
+template <bool enableIntfNbrTable>
+struct EnableIntfNbrTable {
+  static constexpr auto intfNbrTable = enableIntfNbrTable;
+};
+
+using NbrTableTypes =
+    ::testing::Types<EnableIntfNbrTable<false>, EnableIntfNbrTable<true>>;
+
+/*
+ * DHCPv4HandlerTest tests validate DHCP relay with VLANs and Interfaces for
+ * NPU switches.
+ *
+ * TODO(skhare) Validate for VOQ switches as well. Since VOQ switches don't
+ * support VLAns. That will involve modifying the pkts in these tests to not
+ * carry VLANs.
+ */
+template <typename EnableIntfNbrTableT>
+class DHCPv4HandlerTest : public ::testing::Test {
+  static auto constexpr intfNbrTable = EnableIntfNbrTableT::intfNbrTable;
+
+  void SetUp() override {
+    FLAGS_intf_nbr_tables = isIntfNbrTable();
+  }
+
+ public:
+  bool isIntfNbrTable() const {
+    return intfNbrTable == true;
+  }
+};
+
+TYPED_TEST_SUITE(DHCPv4HandlerTest, NbrTableTypes);
+
+TYPED_TEST(DHCPv4HandlerTest, DHCPRequest) {
+  auto handle = setupTestHandle(this->isIntfNbrTable());
   auto sw = handle->getSw();
 
   VlanID vlanID(1);
@@ -391,7 +463,7 @@ TEST(DHCPv4HandlerTest, DHCPRequest) {
   CounterCache counters(sw);
 
   // Sending an DHCP request should not trigger state update
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
+  EXPECT_HW_CALL(sw, stateChangedImpl(_)).Times(0);
 
   EXPECT_SWITCHED_PKT(sw, "DHCP request", checkDHCPReq());
 
@@ -412,8 +484,8 @@ TEST(DHCPv4HandlerTest, DHCPRequest) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.pkts.sum", 1);
 }
 
-TEST(DHCPv4HandlerOverrideTest, DHCPRequest) {
-  auto handle = setupTestHandle();
+TYPED_TEST(DHCPv4HandlerTest, RelayOverrideDHCPRequest) {
+  auto handle = setupTestHandle(this->isIntfNbrTable());
   auto sw = handle->getSw();
   VlanID vlanID(1);
   const char* senderIP = "00 00 00 00";
@@ -430,7 +502,7 @@ TEST(DHCPv4HandlerOverrideTest, DHCPRequest) {
   const string dhcpMsgTypeOpt = "35  01  01";
 
   // Sending an DHCP request should not trigger state update
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
+  EXPECT_HW_CALL(sw, stateChangedImpl(_)).Times(0);
 
   EXPECT_SWITCHED_PKT(sw, "DHCP request", checkDHCPReq(kDhcpOverride));
 
@@ -447,8 +519,8 @@ TEST(DHCPv4HandlerOverrideTest, DHCPRequest) {
       dhcpMsgTypeOpt);
 }
 
-TEST(DHCPv4RelaySrcTest, DHCPRequest) {
-  auto handle = setupTestHandleNAT();
+TYPED_TEST(DHCPv4HandlerTest, RelaySrcDHCPRequest) {
+  auto handle = setupTestHandleNAT(this->isIntfNbrTable());
   auto sw = handle->getSw();
   VlanID vlanID(1);
   const char* senderIP = "00 00 00 00";
@@ -465,7 +537,7 @@ TEST(DHCPv4RelaySrcTest, DHCPRequest) {
   const string dhcpMsgTypeOpt = "35  01  01";
 
   // Sending an DHCP request should not trigger state update
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
+  EXPECT_HW_CALL(sw, stateChangedImpl(_)).Times(0);
 
   EXPECT_SWITCHED_PKT(
       sw, "DHCP request", checkDHCPReq(kDhcpOverride, kDhcpV4RelaySrc));
@@ -483,8 +555,8 @@ TEST(DHCPv4RelaySrcTest, DHCPRequest) {
       dhcpMsgTypeOpt);
 }
 
-TEST(DHCPv4HandlerTest, DHCPReply) {
-  auto handle = setupTestHandle();
+TYPED_TEST(DHCPv4HandlerTest, DHCPReply) {
+  auto handle = setupTestHandle(this->isIntfNbrTable());
   auto sw = handle->getSw();
   VlanID vlanID(55);
   // Client mac
@@ -511,7 +583,7 @@ TEST(DHCPv4HandlerTest, DHCPReply) {
   CounterCache counters(sw);
 
   // Sending an DHCP request should not trigger state update
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
+  EXPECT_HW_CALL(sw, stateChangedImpl(_)).Times(0);
 
   EXPECT_SWITCHED_PKT(sw, "DHCP reply", checkDHCPReply());
 
@@ -534,8 +606,8 @@ TEST(DHCPv4HandlerTest, DHCPReply) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.pkts.sum", 1);
 }
 
-TEST(DHCPv4ReplySrcTest, DHCPReply) {
-  auto handle = setupTestHandleNAT();
+TYPED_TEST(DHCPv4HandlerTest, RelaySrcDHCPReply) {
+  auto handle = setupTestHandleNAT(this->isIntfNbrTable());
   auto sw = handle->getSw();
   VlanID vlanID(55);
   // Client mac
@@ -562,7 +634,7 @@ TEST(DHCPv4ReplySrcTest, DHCPReply) {
   CounterCache counters(sw);
 
   // Sending an DHCP request should not trigger state update
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
+  EXPECT_HW_CALL(sw, stateChangedImpl(_)).Times(0);
 
   // DHCP reply source is override to fboss55's address
   EXPECT_SWITCHED_PKT(
@@ -587,8 +659,8 @@ TEST(DHCPv4ReplySrcTest, DHCPReply) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.pkts.sum", 1);
 }
 
-TEST(DHCPv4HandlerTest, DHCPBadRequest) {
-  auto handle = setupTestHandle();
+TYPED_TEST(DHCPv4HandlerTest, DHCPBadRequest) {
+  auto handle = setupTestHandle(this->isIntfNbrTable());
   auto sw = handle->getSw();
   VlanID vlanID(1);
   const string senderIP = "00 00 00 00";
@@ -605,7 +677,7 @@ TEST(DHCPv4HandlerTest, DHCPBadRequest) {
   CounterCache counters(sw);
 
   // Sending an DHCP request should not trigger state update
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
+  EXPECT_HW_CALL(sw, stateChangedImpl(_)).Times(0);
   EXPECT_HW_CALL(sw, sendPacketSwitchedAsync_(_)).Times(0);
 
   sendDHCPPacket(

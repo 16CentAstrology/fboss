@@ -116,6 +116,11 @@ struct WrappedSaiType<std::vector<sai_qos_map_t>> {
 };
 
 template <>
+struct WrappedSaiType<std::vector<sai_map_t>> {
+  using value = sai_map_list_t;
+};
+
+template <>
 struct WrappedSaiType<std::vector<sai_port_lane_eye_values_t>> {
   using value = sai_port_eye_values_list_t;
 };
@@ -134,6 +139,18 @@ struct WrappedSaiType<std::vector<sai_port_lane_latch_status_t>> {
 template <>
 struct WrappedSaiType<sai_latch_status_t> {
   using value = sai_latch_status_t;
+};
+#endif
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 13, 0)
+template <>
+struct WrappedSaiType<std::vector<sai_port_frequency_offset_ppm_values_t>> {
+  using value = sai_port_frequency_offset_ppm_list_t;
+};
+
+template <>
+struct WrappedSaiType<std::vector<sai_port_snr_values_t>> {
+  using value = sai_port_snr_list_t;
 };
 #endif
 
@@ -157,7 +174,7 @@ class AclEntryField {
  public:
   AclEntryField(){};
   AclEntryField(T dataAndMask) : dataAndMask_(dataAndMask) {}
-  T getDataAndMask() const {
+  const T& getDataAndMask() const {
     return dataAndMask_;
   }
 
@@ -166,8 +183,30 @@ class AclEntryField {
   }
 
   std::string str() const {
-    return folly::to<std::string>(
-        "data: ", dataAndMask_.first, " mask: ", dataAndMask_.second);
+    if constexpr (
+        std::is_same_v<
+            T,
+            std::pair<std::vector<sai_uint8_t>, std::vector<sai_uint8_t>>>) {
+      std::ostringstream retStr;
+
+      if (!dataAndMask_.first.empty()) {
+        retStr << "data: ";
+        std::copy(
+            dataAndMask_.first.begin(),
+            dataAndMask_.first.end(),
+            std::ostream_iterator<int>(retStr, ", "));
+        retStr << "mask: ";
+        std::copy(
+            dataAndMask_.second.begin(),
+            dataAndMask_.second.end(),
+            std::ostream_iterator<int>(retStr, ", "));
+      }
+
+      return retStr.str();
+    } else {
+      return folly::to<std::string>(
+          "data: ", dataAndMask_.first, " mask: ", dataAndMask_.second);
+    }
   }
 
  private:
@@ -215,6 +254,8 @@ using AclEntryFieldIpV4 =
     AclEntryField<std::pair<folly::IPAddressV4, folly::IPAddressV4>>;
 using AclEntryFieldMac =
     AclEntryField<std::pair<folly::MacAddress, folly::MacAddress>>;
+using AclEntryFieldU8List = AclEntryField<
+    std::pair<std::vector<sai_uint8_t>, std::vector<sai_uint8_t>>>;
 
 /*
  * Mask is not needed for sai_object_id_t Acl Entry field.
@@ -278,6 +319,7 @@ std::size_t hash_value(const AclEntryAction<T>& key) {
   return seed;
 }
 
+using AclEntryActionBool = AclEntryAction<bool>;
 using AclEntryActionU8 = AclEntryAction<sai_uint8_t>;
 using AclEntryActionU32 = AclEntryAction<sai_uint32_t>;
 using AclEntryActionSaiObjectIdT = AclEntryAction<sai_object_id_t>;

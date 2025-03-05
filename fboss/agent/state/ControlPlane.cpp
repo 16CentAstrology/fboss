@@ -14,34 +14,12 @@
 
 #include "fboss/agent/state/NodeBase-defs.h"
 #include "fboss/agent/state/Thrifty.h"
-#include "folly/dynamic.h"
-#include "folly/json.h"
+#include "folly/json/dynamic.h"
+#include "folly/json/json.h"
 
 #include <thrift/lib/cpp/util/EnumUtils.h>
 
-namespace {
-constexpr auto kQueues = "queues";
-constexpr auto kRxReasonToQueue = "rxReasonToQueue";
-constexpr auto kRxReasonToQueueOrderedList = "rxReasonToQueueOrderedList";
-constexpr auto kRxReason = "rxReason";
-constexpr auto kQueueId = "queueId";
-constexpr auto kQosPolicy = "defaultQosPolicy";
-} // namespace
-
 namespace facebook::fboss {
-
-ControlPlane* ControlPlane::modify(std::shared_ptr<SwitchState>* state) {
-  if (!isPublished()) {
-    CHECK(!(*state)->isPublished());
-    return this;
-  }
-
-  SwitchState::modify(state);
-  auto newControlPlane = clone();
-  auto* ptr = newControlPlane.get();
-  (*state)->resetControlPlane(std::move(newControlPlane));
-  return ptr;
-}
 
 cfg::PacketRxReasonToQueue ControlPlane::makeRxReasonToQueueEntry(
     cfg::PacketRxReason reason,
@@ -52,6 +30,27 @@ cfg::PacketRxReasonToQueue ControlPlane::makeRxReasonToQueueEntry(
   return reasonToQueue;
 }
 
-template class ThriftStructNode<ControlPlane, state::ControlPlaneFields>;
+std::shared_ptr<ControlPlane> MultiControlPlane::getControlPlane() const {
+  auto iter = find(HwSwitchMatcher::defaultHwSwitchMatcherKey());
+  if (iter == cend()) {
+    return nullptr;
+  }
+  return iter->second;
+}
+
+MultiControlPlane* MultiControlPlane::modify(
+    std::shared_ptr<SwitchState>* state) {
+  if (!isPublished()) {
+    CHECK(!(*state)->isPublished());
+    return this;
+  }
+
+  auto newMultiControlPlane = this->clone();
+  auto* ptr = newMultiControlPlane.get();
+  (*state)->resetControlPlane(std::move(newMultiControlPlane));
+  return ptr;
+}
+
+template struct ThriftStructNode<ControlPlane, state::ControlPlaneFields>;
 
 } // namespace facebook::fboss

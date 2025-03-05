@@ -176,14 +176,17 @@ TEST_F(BcmPortQueueManagerTest, DefaultPortQueuesCheckWithoutConfig) {
   // return directly if platfotm is Wedge40
   if (!isSupported(HwAsic::Feature::L3_QOS)) {
     XLOG(WARNING) << "Platform doesn't support port cos queue setting";
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
   auto setup = [=]() { applyNewConfig(initialConfig()); };
 
   auto verify = [&]() {
-    auto defaultUCQueueSize =
-        getAsic()->getDefaultNumPortQueues(cfg::StreamType::UNICAST, false);
+    auto defaultUCQueueSize = getAsic()->getDefaultNumPortQueues(
+        cfg::StreamType::UNICAST, cfg::PortType::INTERFACE_PORT);
     EXPECT_EQ(getHwQueues().size(), defaultUCQueueSize);
     // if we've never set cosq configs to any queue. The system should come up
     // with all default values.
@@ -203,6 +206,9 @@ TEST_F(BcmPortQueueManagerTest, ConfigPortQueuesSetup) {
   // return directly if platfotm is Wedge40
   if (!isSupported(HwAsic::Feature::L3_QOS)) {
     XLOG(WARNING) << "Platform doesn't support port cos queue setting";
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
@@ -225,6 +231,9 @@ TEST_F(BcmPortQueueManagerTest, ChangeQueue0Settings) {
   // return directly if platfotm is Wedge40
   if (!isSupported(HwAsic::Feature::L3_QOS)) {
     XLOG(WARNING) << "Platform doesn't support port cos queue setting";
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
@@ -290,6 +299,9 @@ TEST_F(BcmPortQueueManagerTest, ClearPortQueueSettings) {
   // return directly if platfotm is Wedge40
   if (!isSupported(HwAsic::Feature::L3_QOS)) {
     XLOG(WARNING) << "Platform doesn't support port cos queue setting";
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
@@ -334,6 +346,9 @@ TEST_F(BcmPortQueueManagerTest, ChangePortQueueAQM) {
   // return directly if platfotm is Wedge40
   if (!isSupported(HwAsic::Feature::L3_QOS)) {
     XLOG(WARNING) << "Platform doesn't support port cos queue setting";
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
@@ -402,6 +417,9 @@ TEST_F(BcmPortQueueManagerTest, InternalPriorityMappings) {
   // return directly if platfotm is Wedge40
   if (!isSupported(HwAsic::Feature::L3_QOS)) {
     XLOG(WARNING) << "Platform doesn't support port cos queue setting";
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
@@ -454,6 +472,9 @@ TEST_F(BcmPortQueueManagerTest, InternalPriorityMappingsOverride) {
   // return directly if platfotm is Wedge40
   if (!isSupported(HwAsic::Feature::L3_QOS)) {
     XLOG(WARNING) << "Platform doesn't support port cos queue setting";
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 

@@ -12,15 +12,14 @@
 #include <folly/Memory.h>
 #include "fboss/agent/Platform.h"
 #include "fboss/agent/SysError.h"
-#include "fboss/agent/ThriftHandler.h"
 #include "fboss/agent/hw/mock/MockHwSwitch.h"
+#include "fboss/agent/hw/mock/MockPlatformMapping.h"
 #include "fboss/agent/hw/mock/MockPlatformPort.h"
 #include "fboss/agent/hw/mock/MockTestHandle.h"
-#include "fboss/agent/platforms/common/wedge100/Wedge100PlatformMapping.h"
-#include "fboss/agent/test/HwTestHandle.h"
 #include "fboss/lib/platforms/PlatformProductInfo.h"
 
 #include <gmock/gmock.h>
+#include <memory>
 
 using std::make_unique;
 using std::string;
@@ -47,17 +46,20 @@ MockPlatform::MockPlatform(
     std::unique_ptr<MockHwSwitch> hw)
     : Platform(
           std::move(productInfo),
-          std::make_unique<Wedge100PlatformMapping>(),
+          std::make_unique<MockPlatformMapping>(),
           getMockLocalMac()),
       tmpDir_("fboss_mock_state"),
-      hw_(std::move(hw)) {
-  ON_CALL(*hw_, stateChanged(_))
+      hw_(std::move(hw)),
+      agentDirUtil_(new AgentDirectoryUtil(
+          tmpDir_.path().string() + "/volatile",
+          tmpDir_.path().string() + "/persist")) {
+  ON_CALL(*hw_, stateChangedImpl(_))
       .WillByDefault(WithArg<0>(
           Invoke([=](const StateDelta& delta) { return delta.newState(); })));
-  ON_CALL(*hw_, stateChangedTransaction(_))
+  ON_CALL(*hw_, stateChangedTransaction(_, _))
       .WillByDefault(WithArg<0>(
           Invoke([=](const StateDelta& delta) { return delta.newState(); })));
-  for (auto portEntry : getPlatformMapping()->getPlatformPorts()) {
+  for (const auto& portEntry : getPlatformMapping()->getPlatformPorts()) {
     auto portID = PortID(portEntry.first);
     portMapping_.emplace(
         portID, std::make_unique<MockPlatformPort>(portID, this));
@@ -69,29 +71,17 @@ MockPlatform::MockPlatform()
           nullptr,
           make_unique<::testing::NiceMock<MockHwSwitch>>(this)) {}
 
-MockPlatform::~MockPlatform() {}
+MockPlatform::~MockPlatform() = default;
 
 void MockPlatform::setupAsic(
-    cfg::SwitchType switchType,
     std::optional<int64_t> switchId,
-    std::optional<cfg::Range64> systemPortRange) {
-  asic_ = std::make_unique<MockAsic>(switchType, switchId, systemPortRange);
+    const cfg::SwitchInfo& switchInfo,
+    std::optional<HwAsic::FabricNodeRole> role) {
+  asic_ = std::make_unique<MockAsic>(switchId, switchInfo);
 }
+
 HwSwitch* MockPlatform::getHwSwitch() const {
   return hw_.get();
-}
-
-string MockPlatform::getVolatileStateDir() const {
-  return tmpDir_.path().string() + "/volatile";
-}
-
-string MockPlatform::getPersistentStateDir() const {
-  return tmpDir_.path().string() + "/persist";
-}
-
-std::unique_ptr<HwTestHandle> MockPlatform::createTestHandle(
-    std::unique_ptr<SwSwitch> sw) {
-  return make_unique<MockTestHandle>(std::move(sw), this);
 }
 
 HwAsic* MockPlatform::getAsic() const {

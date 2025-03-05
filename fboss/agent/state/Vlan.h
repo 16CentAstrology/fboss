@@ -56,6 +56,7 @@ RESOLVE_STRUCT_MEMBER(Vlan, switch_state_tags::macTable, MacTable)
 class Vlan : public ThriftStructNode<Vlan, state::VlanFields> {
  public:
   using Base = ThriftStructNode<Vlan, state::VlanFields>;
+  using Base::modify;
   using MemberPorts = std::map<int16_t, bool>;
 
   Vlan(VlanID id, std::string name);
@@ -122,6 +123,13 @@ class Vlan : public ThriftStructNode<Vlan, state::VlanFields> {
   }
   void setNeighborTable(std::shared_ptr<NdpTable> table) {
     ref<switch_state_tags::ndpTable>() = std::move(table);
+  }
+
+  void setArpTable(state::NeighborEntries arpTable) {
+    set<switch_state_tags::arpTable>(std::move(arpTable));
+  }
+  void setNdpTable(state::NeighborEntries ndpTable) {
+    set<switch_state_tags::ndpTable>(std::move(ndpTable));
   }
 
   const std::shared_ptr<NdpResponseTable> getNdpResponseTable() const {

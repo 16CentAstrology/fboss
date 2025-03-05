@@ -11,6 +11,7 @@
 #pragma once
 
 #include "fboss/agent/hw/sai/api/SaiApiTable.h"
+#include "fboss/agent/hw/sai/api/Types.h"
 #include "fboss/agent/hw/sai/api/VirtualRouterApi.h"
 #include "fboss/agent/hw/sai/store/SaiObject.h"
 #include "fboss/agent/hw/sai/store/SaiStore.h"
@@ -36,6 +37,8 @@ class SaiPlatform;
 class StateDelta;
 
 class SaiSwitchManager {
+  static constexpr auto kBitsPerByte = 8;
+
  public:
   SaiSwitchManager(
       SaiManagerTable* managerTable,
@@ -64,6 +67,9 @@ class SaiSwitchManager {
   void setTamObject(std::vector<sai_object_id_t> tamObject);
   void resetTamObject();
 
+  void setArsProfile(ArsProfileSaiId arsProfileSaiId);
+  void resetArsProfile();
+
   void setMacAgingSeconds(sai_uint32_t agingSeconds);
   sai_uint32_t getMacAgingSeconds() const;
 
@@ -72,13 +78,43 @@ class SaiSwitchManager {
   sai_object_id_t getDefaultVlanAdapterKey() const;
 
   PortSaiId getCpuPort() const;
+  std::optional<PortSaiId> getCpuRecyclePort() const;
 
   void initCpuPort();
+  void setCpuRecyclePort(PortSaiId portSaiId);
+
   void setPtpTcEnabled(bool ptpEnable);
   std::optional<bool> getPtpTcEnabled();
 
   bool isGlobalQoSMapSupported() const;
   bool isMplsQoSMapSupported() const;
+
+  void updateStats(bool updateWatermarks);
+
+  void setSwitchIsolate(bool isolate);
+  HwSwitchDropStats getSwitchDropStats() const {
+    return switchDropStats_;
+  }
+  void setForceTrafficOverFabric(bool forceTrafficOverFabric);
+  void setCreditWatchdog(bool creditWatchdog);
+  HwSwitchWatermarkStats getSwitchWatermarkStats() const {
+    return switchWatermarkStats_;
+  }
+  void setLocalCapsuleSwitchIds(
+      const std::map<SwitchID, int>& switchIdToNumCores);
+  void setReachabilityGroupList(const std::vector<int>& reachabilityGroups);
+  void setSramGlobalFreePercentXoffTh(uint8_t sramFreePercentXoffThreshold);
+  void setSramGlobalFreePercentXonTh(uint8_t sramFreePercentXonThreshold);
+  void setLinkFlowControlCreditTh(uint16_t linkFlowControlThreshold);
+  void setVoqDramBoundTh(uint32_t dramBoundThreshold);
+  void setConditionalEntropyRehashPeriodUS(
+      int conditionalEntropyRehashPeriodUS);
+  void setShelConfig(
+      const std::optional<cfg::SelfHealingEcmpLagConfig>& shelConfig);
+  void setLocalVoqMaxExpectedLatency(int localVoqMaxExpectedLatencyNsec);
+  void setRemoteL1VoqMaxExpectedLatency(int remoteL1VoqMaxExpectedLatencyNsec);
+  void setRemoteL2VoqMaxExpectedLatency(int remoteL2VoqMaxExpectedLatencyNsec);
+  void setVoqOutOfBoundsLatency(int voqOutOfBoundsLatencyNsec);
 
  private:
   void programEcmpLoadBalancerParams(
@@ -91,6 +127,9 @@ class SaiSwitchManager {
       std::optional<cfg::HashingAlgorithm> algo);
   void addOrUpdateLagLoadBalancer(const std::shared_ptr<LoadBalancer>& newLb);
 
+  std::vector<sai_object_id_t> getUdfGroupIds(
+      const std::shared_ptr<LoadBalancer>& newLb) const;
+
   template <typename HashAttrT>
   SaiHashTraits::CreateAttributes getProgrammedHashAttr();
 
@@ -100,11 +139,17 @@ class SaiSwitchManager {
       SaiHashTraits::CreateAttributes& hashCreateAttrs);
   template <typename HashAttrT>
   void resetLoadBalancer();
-
+  const std::vector<sai_stat_id_t>& supportedDropStats() const;
+  const std::vector<sai_stat_id_t>& supportedDramStats() const;
+  const std::vector<sai_stat_id_t>& supportedWatermarkStats() const;
+  const std::vector<sai_stat_id_t>& supportedCreditStats() const;
+  const std::vector<sai_stat_id_t>& supportedErrorStats() const;
+  const HwSwitchWatermarkStats getHwSwitchWatermarkStats() const;
   SaiManagerTable* managerTable_;
   const SaiPlatform* platform_;
   std::unique_ptr<SaiSwitchObj> switch_;
   std::optional<PortSaiId> cpuPort_;
+  std::optional<PortSaiId> cpuRecyclePort_;
   std::shared_ptr<SaiHash> ecmpV4Hash_;
   std::shared_ptr<SaiHash> ecmpV6Hash_;
   std::shared_ptr<SaiHash> lagV4Hash_;
@@ -117,6 +162,21 @@ class SaiSwitchManager {
   bool isMplsQosSupported_{false};
   // since this is an optional attribute in SAI
   std::optional<bool> isPtpTcEnabled_{std::nullopt};
+  HwSwitchDropStats switchDropStats_;
+  HwSwitchWatermarkStats switchWatermarkStats_;
 };
 
+void fillHwSwitchDramStats(
+    const folly::F14FastMap<sai_stat_id_t, uint64_t>& counterId2Value,
+    HwSwitchDramStats& hwSwitchDramStats);
+void fillHwSwitchWatermarkStats(
+    const folly::F14FastMap<sai_stat_id_t, uint64_t>& counterId2Value,
+    HwSwitchWatermarkStats& hwSwitchWatermarkStats);
+void fillHwSwitchCreditStats(
+    const folly::F14FastMap<sai_stat_id_t, uint64_t>& counterId2Value,
+    HwSwitchCreditStats& hwSwitchCreditStats);
+void fillHwSwitchErrorStats(
+    const folly::F14FastMap<sai_stat_id_t, uint64_t>& counterId2Value,
+    HwSwitchDropStats& switchDropStats);
+void publishSwitchWatermarks(HwSwitchWatermarkStats& watermarkStats);
 } // namespace facebook::fboss

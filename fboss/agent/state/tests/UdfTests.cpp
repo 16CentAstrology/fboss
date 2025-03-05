@@ -18,12 +18,19 @@
 #include "fboss/agent/test/TestUtils.h"
 
 #include <gtest/gtest.h>
+#include <optional>
 
 namespace {
 constexpr folly::StringPiece kPacketMatcherCfgName = "matchCfg_1";
 constexpr folly::StringPiece kPacketMatcherCfgName2 = "matchCfg_2";
 constexpr folly::StringPiece kUdfGroupCfgName1 = "foo1";
 constexpr folly::StringPiece kUdfGroupCfgName2 = "foo2";
+
+facebook::fboss::HwSwitchMatcher scope() {
+  return facebook::fboss::HwSwitchMatcher{
+      std::unordered_set<facebook::fboss::SwitchID>{
+          facebook::fboss::SwitchID(0)}};
+}
 } // namespace
 
 using namespace facebook::fboss;
@@ -39,7 +46,8 @@ std::shared_ptr<UdfGroup> createStateUdfGroup(
 
   udfGroupEntry.name() = name;
   udfGroupEntry.header() = cfg::UdfBaseHeaderType::UDF_L4_HEADER;
-  udfGroupEntry.startOffsetInBytes() = 5;
+  udfGroupEntry.startOffsetInBytes() =
+      utility::kUdfHashDstQueuePairStartOffsetInBytes;
   udfGroupEntry.fieldSizeInBytes() = fieldSize;
   udfGroupEntry.udfPacketMatcherIds() = {kPacketMatcherCfgName.str()};
 
@@ -61,12 +69,20 @@ cfg::UdfPacketMatcher makeCfgUdfPacketMatcherEntry(
   return udfPkt;
 }
 
-cfg::UdfGroup makeCfgUdfGroupEntry(std::string name, int fieldSize = 0) {
+cfg::UdfGroup makeCfgUdfGroupEntry(
+    std::string name,
+    std::optional<cfg::UdfGroupType> type = std::nullopt,
+    int fieldSize = 0) {
   cfg::UdfGroup udfGroupEntry;
 
   udfGroupEntry.name() = name;
+  if (type) {
+    udfGroupEntry.type() = *type;
+  }
+
   udfGroupEntry.header() = cfg::UdfBaseHeaderType::UDF_L4_HEADER;
-  udfGroupEntry.startOffsetInBytes() = 5;
+  udfGroupEntry.startOffsetInBytes() =
+      utility::kUdfHashDstQueuePairStartOffsetInBytes;
   udfGroupEntry.fieldSizeInBytes() = fieldSize;
   udfGroupEntry.udfPacketMatcherIds() = {kPacketMatcherCfgName.str()};
 
@@ -94,6 +110,12 @@ cfg::UdfConfig makeUdfCfg(
   return udf;
 }
 
+std::shared_ptr<SwitchState> getStateV0(Platform* platform) {
+  auto stateV0 = std::make_shared<SwitchState>();
+  cfg::SwitchConfig emptyCfg{};
+  return publishAndApplyConfig(stateV0, &emptyCfg, platform);
+}
+
 TEST(Udf, addUpdateRemove) {
   auto state = std::make_shared<SwitchState>();
   auto udfEntry1 = makeCfgUdfGroupEntry(kUdfGroupCfgName1.str());
@@ -113,7 +135,9 @@ TEST(Udf, addUpdateRemove) {
   udfConfig->fromThrift(udf);
 
   // update the state
-  state->resetUdfConfig(udfConfig);
+  auto switchSettings = std::make_shared<SwitchSettings>();
+  switchSettings->setUdfConfig(udfConfig);
+  addSwitchSettingsToState(state, switchSettings);
 
   // both entries should be present
   EXPECT_EQ(state->getUdfConfig()->getUdfGroupMap()->size(), 2);
@@ -171,10 +195,47 @@ TEST(Udf, addUpdateRemove) {
       nullptr);
 }
 
+TEST(Udf, udfGroupType) {
+  auto state = std::make_shared<SwitchState>();
+  auto udfEntry1 = makeCfgUdfGroupEntry(kUdfGroupCfgName1.str());
+  auto udfEntry2 =
+      makeCfgUdfGroupEntry(kUdfGroupCfgName2.str(), cfg::UdfGroupType::ACL);
+
+  auto udfPacketmatcherEntry =
+      makeCfgUdfPacketMatcherEntry(kPacketMatcherCfgName.str());
+  // convert to state object
+  const auto pktMatcherCfgName = kPacketMatcherCfgName.str();
+  auto udfStatePacketmatcherEntry =
+      std::make_shared<UdfPacketMatcher>(pktMatcherCfgName);
+  udfStatePacketmatcherEntry->fromThrift(udfPacketmatcherEntry);
+
+  cfg::UdfConfig udf =
+      makeUdfCfg({udfEntry1, udfEntry2}, {udfPacketmatcherEntry});
+  auto udfConfig = std::make_shared<UdfConfig>();
+  udfConfig->fromThrift(udf);
+
+  // update the state
+  auto switchSettings = std::make_shared<SwitchSettings>();
+  switchSettings->setUdfConfig(udfConfig);
+  addSwitchSettingsToState(state, switchSettings);
+  EXPECT_EQ(
+      state->getUdfConfig()
+          ->getUdfGroupMap()
+          ->getNodeIf(kUdfGroupCfgName1.str())
+          ->getUdfGroupType(),
+      std::nullopt);
+  EXPECT_EQ(
+      state->getUdfConfig()
+          ->getUdfGroupMap()
+          ->getNodeIf(kUdfGroupCfgName2.str())
+          ->getUdfGroupType(),
+      cfg::UdfGroupType::ACL);
+}
+
 TEST(Udf, serDesUdfGroup) {
   auto udfEntry = createStateUdfGroup(kUdfGroupCfgName1.str());
-  auto serialized = udfEntry->toFollyDynamic();
-  auto deserialized = UdfGroup::fromFollyDynamic(serialized);
+  auto serialized = udfEntry->toThrift();
+  auto deserialized = std::make_shared<UdfGroup>(serialized);
   EXPECT_TRUE(*udfEntry == *deserialized);
 }
 
@@ -188,8 +249,8 @@ TEST(Udf, serDesUdfPacketMatcher) {
       std::make_shared<UdfPacketMatcher>(pktMatcherCfgName);
   udfStatePacketmatcherEntry->fromThrift(udfPacketmatcherEntry);
 
-  auto serialized = udfStatePacketmatcherEntry->toFollyDynamic();
-  auto deserialized = UdfPacketMatcher::fromFollyDynamic(serialized);
+  auto serialized = udfStatePacketmatcherEntry->toThrift();
+  auto deserialized = std::make_shared<UdfPacketMatcher>(serialized);
 
   EXPECT_TRUE(*udfStatePacketmatcherEntry == *deserialized);
 }
@@ -203,7 +264,11 @@ TEST(Udf, addUpdate) {
   udfConfig->fromThrift(udf);
 
   // update the state with udfCfg
-  state->resetUdfConfig(udfConfig);
+  auto switchSettings = std::make_shared<SwitchSettings>();
+  switchSettings->setUdfConfig(udfConfig);
+  auto multiSwitchSwitchSettings = std::make_shared<MultiSwitchSettings>();
+  multiSwitchSwitchSettings->addNode(scope().matcherString(), switchSettings);
+  state->resetSwitchSettings(multiSwitchSwitchSettings);
 
   EXPECT_EQ(state->getUdfConfig()->getUdfGroupMap()->size(), 0);
 
@@ -233,21 +298,10 @@ TEST(Udf, addUpdate) {
           kUdfGroupCfgName1.str()));
 }
 
-TEST(Udf, publish) {
-  cfg::UdfConfig udfCfg;
-  auto udfConfig = std::make_shared<UdfConfig>();
-  auto state = std::make_shared<SwitchState>();
-
-  // convert to state
-  udfConfig->fromThrift(udfCfg);
-  // update the state with udfCfg
-  state->publish();
-  EXPECT_TRUE(state->getUdfConfig()->isPublished());
-}
-
 TEST(Udf, applyConfig) {
   auto platform = createMockPlatform();
-  auto stateV0 = std::make_shared<SwitchState>();
+  auto stateV0 = getStateV0(platform.get());
+  addSwitchInfo(stateV0);
 
   cfg::SwitchConfig config;
   cfg::UdfConfig udf;
@@ -256,7 +310,7 @@ TEST(Udf, applyConfig) {
   auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
   ASSERT_EQ(nullptr, stateV1);
   // no map has been populated
-  EXPECT_EQ(stateV0->getUdfConfig()->getUdfGroupMap()->size(), 0);
+  EXPECT_EQ(stateV0->getUdfConfig(), nullptr);
 
   auto udfEntry = makeCfgUdfGroupEntry(kUdfGroupCfgName1.str());
   auto udfPacketmatcherEntry =
@@ -271,17 +325,20 @@ TEST(Udf, applyConfig) {
   EXPECT_EQ(stateV2->getUdfConfig()->getUdfGroupMap()->size(), 1);
   // one entry has been added <matchCfg_1>
   EXPECT_EQ(stateV2->getUdfConfig()->getUdfPacketMatcherMap()->size(), 1);
+  auto switchSettingsV2 = utility::getFirstNodeIf(stateV2->getSwitchSettings());
+  EXPECT_EQ(stateV2->getUdfConfig(), switchSettingsV2->getUdfConfig());
 
   // undo udf cfg
   config.udfConfig().reset();
   auto stateV3 = publishAndApplyConfig(stateV2, &config, platform.get());
   ASSERT_NE(nullptr, stateV3);
-  EXPECT_EQ(stateV3->getUdfConfig(), nullptr);
+  EXPECT_EQ(stateV3->getUdfConfig()->toThrift(), cfg::UdfConfig());
 }
 
 TEST(Udf, validateMissingPacketMatcherConfig) {
   auto platform = createMockPlatform();
-  auto stateV0 = std::make_shared<SwitchState>();
+  auto stateV0 = getStateV0(platform.get());
+  addSwitchInfo(stateV0);
 
   cfg::SwitchConfig config;
   cfg::UdfConfig udf;
@@ -290,7 +347,7 @@ TEST(Udf, validateMissingPacketMatcherConfig) {
   auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
   ASSERT_EQ(nullptr, stateV1);
   // no map has been populated
-  EXPECT_EQ(stateV0->getUdfConfig()->getUdfGroupMap()->size(), 0);
+  EXPECT_EQ(stateV0->getUdfConfig(), nullptr);
 
   auto udfEntry = makeCfgUdfGroupEntry(kUdfGroupCfgName1.str());
   // Add matchCfg_2 for packetMatcher while matchCfg_1 is associated with
@@ -363,7 +420,8 @@ TEST(Udf, validateMissingUdfGroupConfig) {
 
 TEST(Udf, removeUdfConfigStateDelta) {
   auto platform = createMockPlatform();
-  auto stateV0 = std::make_shared<SwitchState>();
+  auto stateV0 = getStateV0(platform.get());
+  addSwitchInfo(stateV0);
 
   cfg::SwitchConfig config;
   cfg::UdfConfig udf;
@@ -372,7 +430,7 @@ TEST(Udf, removeUdfConfigStateDelta) {
   auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
   ASSERT_EQ(nullptr, stateV1);
   // no map has been populated
-  EXPECT_EQ(stateV0->getUdfConfig()->getUdfGroupMap()->size(), 0);
+  EXPECT_EQ(stateV0->getUdfConfig(), nullptr);
 
   auto udfEntry = makeCfgUdfGroupEntry(kUdfGroupCfgName1.str());
   auto udfPacketmatcherEntry =
@@ -392,7 +450,7 @@ TEST(Udf, removeUdfConfigStateDelta) {
   config.udfConfig().reset();
   auto stateV3 = publishAndApplyConfig(stateV2, &config, platform.get());
   ASSERT_NE(nullptr, stateV3);
-  EXPECT_EQ(stateV3->getUdfConfig(), nullptr);
+  EXPECT_EQ(stateV3->getUdfConfig()->toThrift(), cfg::UdfConfig());
 
   StateDelta delta(stateV2, stateV3);
   std::set<std::string> foundRemovedUdfGroup;

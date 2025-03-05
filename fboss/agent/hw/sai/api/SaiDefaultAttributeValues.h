@@ -34,6 +34,16 @@ struct SaiIntDefault {
   }
 };
 
+struct SaiVlanIdDefault {
+  uint16_t operator()() const {
+#if defined(CHENAB_SAI_SDK)
+    return 1;
+#else
+    return 0;
+#endif
+  }
+};
+
 struct SaiInt1Default {
   sai_uint32_t operator()() const {
     return 1;
@@ -50,6 +60,13 @@ template <typename SaiIntT>
 struct SaiInt100Default {
   SaiIntT operator()() const {
     return 100;
+  }
+};
+
+template <typename SaiIntT, SaiIntT N>
+struct SaiIntValueDefault {
+  SaiIntT operator()() const {
+    return N;
   }
 };
 
@@ -109,6 +126,18 @@ struct SaiAclEntryActionSaiObjectDefault {
   }
 };
 
+struct SaiAclEntryActionBoolTrue {
+  AclEntryActionBool operator()() const {
+    return AclEntryActionBool(true);
+  }
+};
+
+struct SaiAclEntryActionBoolFalse {
+  AclEntryActionBool operator()() const {
+    return AclEntryActionBool(false);
+  }
+};
+
 struct SaiPortEyeValuesDefault {
   sai_port_lane_eye_values_t operator()() const {
     return sai_port_lane_eye_values_t{0, 0, 0, 0, 0};
@@ -135,6 +164,20 @@ struct SaiLatchStatusDefault {
 };
 #endif
 
+#if SAI_API_VERSION >= SAI_VERSION(1, 13, 0)
+struct SaiRxPPMDefault {
+  sai_port_frequency_offset_ppm_values_t operator()() const {
+    return sai_port_frequency_offset_ppm_values_t{0, 0};
+  }
+};
+#endif
+
+struct SaiPrbsConfigDefault {
+  sai_port_prbs_config_t operator()() const {
+    return SAI_PORT_PRBS_CONFIG_DISABLE;
+  }
+};
+
 #if SAI_API_VERSION >= SAI_VERSION(1, 8, 1)
 struct SaiPrbsRxStateDefault {
   sai_prbs_rx_state_t operator()() const {
@@ -142,6 +185,30 @@ struct SaiPrbsRxStateDefault {
   }
 };
 #endif
+
+struct SaiPacketActionDefaultDrop {
+  sai_packet_action_t operator()() const {
+    return SAI_PACKET_ACTION_DROP;
+  }
+};
+
+struct SaiHostifUserDefinedTrapDefaultType {
+  sai_hostif_user_defined_trap_type_t operator()() const {
+    return SAI_HOSTIF_USER_DEFINED_TRAP_TYPE_ACL;
+  }
+};
+
+struct SaiHostifUserDefinedTrapDefaultPriority {
+  sai_uint32_t operator()() const {
+    return SAI_SWITCH_ATTR_ACL_ENTRY_MINIMUM_PRIORITY;
+  }
+};
+
+struct SaiIpAddressDefault {
+  folly::IPAddress operator()() const {
+    return folly::IPAddressV6("::");
+  }
+};
 
 using SaiObjectIdListDefault = SaiListDefault<sai_object_list_t>;
 using SaiU32ListDefault = SaiListDefault<sai_u32_list_t>;

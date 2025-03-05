@@ -13,7 +13,7 @@
 #include "fboss/agent/SwitchStats.h"
 #include "fboss/agent/Utils.h"
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
-#include "fboss/agent/platforms/sai/SaiHwPlatform.h"
+#include "fboss/agent/platforms/sai/SaiPlatform.h"
 #include "fboss/agent/state/StateUpdate.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/lib/config/PlatformConfigUtils.h"
@@ -69,8 +69,7 @@ void SaiPhyManager::PlatformInfo::applyUpdate(
 
 SaiPhyManager::~SaiPhyManager() {}
 
-SaiPhyManager::PlatformInfo::PlatformInfo(
-    std::unique_ptr<SaiHwPlatform> platform)
+SaiPhyManager::PlatformInfo::PlatformInfo(std::unique_ptr<SaiPlatform> platform)
     : saiPlatform_(std::move(platform)) {
   setState(std::make_shared<SwitchState>());
 }
@@ -82,11 +81,11 @@ SaiPhyManager::PlatformInfo* SaiPhyManager::getPlatformInfo(
   const auto& phyIDInfo = getPhyIDInfo(xphyID);
   auto pimPlatforms = saiPlatforms_.find(phyIDInfo.pimID);
   if (pimPlatforms == saiPlatforms_.end()) {
-    throw FbossError("No SaiHwPlatform is created for pimID:", phyIDInfo.pimID);
+    throw FbossError("No SaiPlatform is created for pimID:", phyIDInfo.pimID);
   }
   auto platformItr = pimPlatforms->second.find(xphyID);
   if (platformItr == pimPlatforms->second.end()) {
-    throw FbossError("SaiHwPlatform is not created for globalPhyID:", xphyID);
+    throw FbossError("SaiPlatform is not created for globalPhyID:", xphyID);
   }
   return platformItr->second.get();
 }
@@ -95,11 +94,11 @@ SaiPhyManager::PlatformInfo* SaiPhyManager::getPlatformInfo(PortID portID) {
   return getPlatformInfo(getGlobalXphyIDbyPortID(portID));
 }
 
-SaiHwPlatform* SaiPhyManager::getSaiPlatform(GlobalXphyID xphyID) {
+SaiPlatform* SaiPhyManager::getSaiPlatform(GlobalXphyID xphyID) {
   return getPlatformInfo(xphyID)->getPlatform();
 }
 
-SaiHwPlatform* SaiPhyManager::getSaiPlatform(PortID portID) {
+SaiPlatform* SaiPhyManager::getSaiPlatform(PortID portID) {
   return getSaiPlatform(getGlobalXphyIDbyPortID(portID));
 }
 
@@ -124,15 +123,20 @@ void SaiPhyManager::updateAllXphyPortsStats() {
             auto& xphyToPlatform = saiPlatforms_.find(pimId)->second;
             for (auto& [xphy, platformInfo] : xphyToPlatform) {
               try {
-                static SwitchStats unused;
-                platformInfo->getHwSwitch()->updateStats(&unused);
-                auto phyInfos = platformInfo->getHwSwitch()->updateAllPhyInfo();
+                if (!platformInfo->getHwSwitch() ||
+                    !platformInfo->getHwSwitch()->isFullyConfigured()) {
+                  XLOG(WARN) << "Skipping xphy stats collection for xphy "
+                             << xphy << " as it's not fully configured";
+                  continue;
+                }
+                platformInfo->getHwSwitch()->updateStats();
+                platformInfo->getHwSwitch()->updateAllPhyInfo();
+                auto phyInfos = platformInfo->getHwSwitch()->getAllPhyInfo();
                 for (auto& [portId, phyInfo] : phyInfos) {
                   updateXphyInfo(portId, std::move(phyInfo));
                 }
               } catch (const std::exception& e) {
-                XLOG(INFO) << "Stats collection failed on : "
-                           << "switch: "
+                XLOG(INFO) << "Stats collection failed on : " << "switch: "
                            << platformInfo->getHwSwitch()->getSaiSwitchId()
                            << " xphy: " << xphy << " error: " << e.what();
               }
@@ -150,7 +154,7 @@ void SaiPhyManager::updateAllXphyPortsStats() {
 
 void SaiPhyManager::addSaiPlatform(
     GlobalXphyID xphyID,
-    std::unique_ptr<SaiHwPlatform> platform) {
+    std::unique_ptr<SaiPlatform> platform) {
   const auto phyIDInfo = getPhyIDInfo(xphyID);
   saiPlatforms_[phyIDInfo.pimID].emplace(std::make_pair(
       xphyID, std::make_unique<PlatformInfo>(std::move(platform))));
@@ -230,7 +234,7 @@ mka::MKASakHealthResponse SaiPhyManager::sakHealthCheck(
   health.active() = false;
   bool rxActive{false}, txActive{false};
   auto switchState = getPlatformInfo(portId)->getState();
-  auto port = switchState->getPorts()->getPortIf(portId);
+  auto port = switchState->getPorts()->getNodeIf(portId);
   if (port) {
     txActive = port->getTxSak() && *port->getTxSak() == sak;
     for (const auto& keyAndSak : port->getRxSaksMap()) {
@@ -269,10 +273,9 @@ bool SaiPhyManager::setupMacsecState(
     // If macsecDesired is False and we are trying to remove Macsec from a list
     // of ports then from the portList, remove the ports which are not
     // programmed in HW for Macsec
-    PlatformInfo* platInfo;
     try {
-      platInfo = getPlatformInfo(portId);
-    } catch (FbossError& e) {
+      getPlatformInfo(portId);
+    } catch (FbossError&) {
       if (macsecDesired) {
         throw;
       } else {
@@ -284,7 +287,7 @@ bool SaiPhyManager::setupMacsecState(
     auto updatePortsFn =
         [saiPlatform, this, portId, macsecDesired, dropUnencrypted](
             std::shared_ptr<SwitchState> in) {
-          auto portObj = in->getPorts()->getPortIf(portId);
+          auto portObj = in->getPorts()->getNodeIf(portId);
           if (!portObj && !macsecDesired) {
             XLOG(DBG5) << "Port " << portId << " does not exists";
             return std::shared_ptr<SwitchState>(nullptr);
@@ -327,21 +330,25 @@ PortID SaiPhyManager::getPortId(std::string portName) const {
 std::shared_ptr<SwitchState> SaiPhyManager::portUpdateHelper(
     std::shared_ptr<SwitchState> in,
     PortID portId,
-    const SaiHwPlatform* saiPlatform,
+    const SaiPlatform* saiPlatform,
     const std::function<void(std::shared_ptr<Port>&)>& modify) const {
   auto newState = in->clone();
   auto newPorts = newState->getPorts()->modify(&newState);
   // Lookup or create SwitchState port
-  auto portObj = newPorts->getPortIf(portId);
+  auto portObj = newPorts->getNodeIf(portId);
   portObj = portObj
       ? portObj->clone()
       : std::make_shared<Port>(PortID(portId), getPortName(portId));
   // Modify port fields
   modify(portObj);
-  if (newPorts->getPortIf(portId)) {
-    newPorts->updatePort(std::move(portObj));
+  auto switchId = saiPlatform->getAsic()->getSwitchId()
+      ? *saiPlatform->getAsic()->getSwitchId()
+      : 0;
+  HwSwitchMatcher matcher(std::unordered_set<SwitchID>({SwitchID(switchId)}));
+  if (newPorts->getNodeIf(portId)) {
+    newPorts->updateNode(std::move(portObj), matcher);
   } else {
-    newPorts->addPort(std::move(portObj));
+    newPorts->addNode(std::move(portObj), matcher);
   }
   return newState;
 }
@@ -366,7 +373,6 @@ void SaiPhyManager::programOnePort(
     // Get phy platform
     auto globalPhyID = getGlobalXphyIDbyPortIDLocked(wLockedCache);
     auto saiPlatform = getSaiPlatform(globalPhyID);
-    auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
     const auto& desiredPhyPortConfig =
         getDesiredPhyPortConfig(portId, portProfileId, transceiverInfo);
 
@@ -483,10 +489,12 @@ phy::PhyInfo SaiPhyManager::getPhyInfo(PortID swPort) {
   auto saiPlatform = getSaiPlatform(globalPhyID);
   auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
 
-  auto allPhyParams = saiSwitch->updateAllPhyInfo();
+  saiSwitch->updateAllPhyInfo();
+  auto allPhyParams = saiSwitch->getAllPhyInfo();
   if (allPhyParams.find(swPort) != allPhyParams.end()) {
     return allPhyParams[swPort];
   }
+
   return phy::PhyInfo{};
 }
 
@@ -519,12 +527,12 @@ std::string SaiPhyManager::getSaiPortInfo(PortID swPort) {
   auto connectorAdapter = portHandle->connector->adapterKey();
 
   auto portInfoGet = [this](
-                         bool lineSide,
+                         phy::Side side,
                          SaiPortTraits::AdapterKey& portAdapter,
                          std::string& output) {
     output.append(folly::sformat(
         "  {:s} Port Obj = {}\n",
-        (lineSide ? "Line" : "System"),
+        ((side == phy::Side::LINE) ? "Line" : "System"),
         portAdapter.t));
 
     auto portOperStatus = SaiApiTable::getInstance()->portApi().getAttribute(
@@ -562,8 +570,8 @@ std::string SaiPhyManager::getSaiPortInfo(PortID swPort) {
     output.append(folly::sformat("    Serdes Id: {:d}\n", serdesId));
   };
 
-  portInfoGet(true, linePortAdapter, output);
-  portInfoGet(false, sysPortAdapter, output);
+  portInfoGet(phy::Side::LINE, linePortAdapter, output);
+  portInfoGet(phy::Side::SYSTEM, sysPortAdapter, output);
 
   output.append(
       folly::sformat("  Port Connector Obj = {}\n", connectorAdapter.t));
@@ -578,8 +586,6 @@ void SaiPhyManager::setSaiPortLoopbackState(
   auto globalPhyID = getGlobalXphyIDbyPortID(swPort);
   auto saiPlatform = getSaiPlatform(globalPhyID);
   auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
-
-  auto switchId = saiSwitch->getSaiSwitchId();
 
   // Get port handle and then get port attributes
   auto portHandle =
@@ -618,8 +624,6 @@ void SaiPhyManager::setSaiPortAdminState(
   auto saiPlatform = getSaiPlatform(globalPhyID);
   auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
 
-  auto switchId = saiSwitch->getSaiSwitchId();
-
   // Get port handle and then get port attributes
   auto portHandle =
       saiSwitch->managerTable()->portManager().getPortHandle(swPort);
@@ -651,8 +655,7 @@ SaiPhyManager::createExternalPhyPortStats(PortID portID) {
 
 MacsecStats SaiPhyManager::getMacsecStatsFromHw(const std::string& portName) {
   auto saiSwitch = getSaiSwitch(getPortId(portName));
-  static SwitchStats unused;
-  saiSwitch->updateStats(&unused);
+  saiSwitch->updateStats();
   return getMacsecStats(portName);
 }
 
@@ -689,8 +692,7 @@ std::map<std::string, MacsecStats> SaiPhyManager::getAllMacsecPortStats(
       auto saiSwitch = getSaiSwitch(xphyID);
 
       if (readFromHw) {
-        static SwitchStats unused;
-        saiSwitch->updateStats(&unused);
+        saiSwitch->updateStats();
       }
 
       // Call getPortStats for the particular Phy and fill in to return map
@@ -863,6 +865,17 @@ mka::MacsecSaStats SaiPhyManager::getMacsecSecureAssocStats(
   }
 }
 
+std::optional<HwPortStats> SaiPhyManager::getHwPortStats(
+    const std::string& portName) const {
+  auto portId = getPortId(portName);
+  auto saiSwitch = getSaiSwitch(portId);
+  auto hwPortStats = saiSwitch->getPortStats();
+  if (hwPortStats.find(portName) != hwPortStats.end()) {
+    return hwPortStats.at(portName);
+  }
+  return std::nullopt;
+}
+
 std::string SaiPhyManager::listHwObjects(
     std::vector<HwObjectType>& hwObjects,
     bool cached) {
@@ -1013,6 +1026,8 @@ std::vector<phy::PrbsLaneStats> SaiPhyManager::getPortPrbsStats(
 
   std::vector<phy::PrbsLaneStats> lanePrbs;
   phy::PrbsLaneStats oneLanePrbs;
+  oneLanePrbs.timeCollected() =
+      duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
   oneLanePrbs.laneId() = 0;
 
   bool prbsEnabled =
@@ -1051,7 +1066,6 @@ void SaiPhyManager::xphyPortStateToggle(PortID swPort, phy::Side side) {
   }
 
   auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
-  auto switchId = saiSwitch->getSaiSwitchId();
 
   // Get port handle and then get port adapter key (SAI object id)
   auto portHandle =
@@ -1104,14 +1118,7 @@ void SaiPhyManager::gracefulExit() {
 
       // Get SaiSwitch and SwitchState using global xphy id
       auto saiSwitch = getSaiSwitch(xphyID);
-      auto switchState = getPlatformInfo(xphyID)->getState();
-
-      // Get the current SwitchState and ThriftState which will be used to call
-      //  SaiSwitch::gracefulExit function
-      folly::dynamic follySwitchState = folly::dynamic::object;
-      state::WarmbootState thriftSwitchState;
-      *thriftSwitchState.swSwitchState() = switchState->toThrift();
-      saiSwitch->gracefulExit(follySwitchState, thriftSwitchState);
+      saiSwitch->gracefulExit();
     }
   }
 }

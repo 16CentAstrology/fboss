@@ -14,8 +14,9 @@ BspSystemContainer::BspSystemContainer(std::unique_ptr<FpgaDevice> fpgaDevice)
   fpgaDevice_->mmap();
 }
 
-BspSystemContainer::BspSystemContainer(BspPlatformMapping* bspMapping)
-    : bspMapping_(bspMapping) {
+BspSystemContainer::BspSystemContainer(
+    std::unique_ptr<BspPlatformMapping> bspMapping)
+    : bspMapping_(std::move(bspMapping)) {
   initializePimContainers();
 }
 
@@ -23,6 +24,12 @@ void BspSystemContainer::initializePimContainers() {
   for (auto pimMapping : bspMapping_->getPimMappings()) {
     pimContainers_.emplace(
         pimMapping.first, std::make_unique<BspPimContainer>(pimMapping.second));
+  }
+}
+
+void BspSystemContainer::createBspLedContainers() {
+  for (auto& [pimID, pimContainer] : pimContainers_) {
+    pimContainer->createBspLedContainers();
   }
 }
 
@@ -67,8 +74,16 @@ void BspSystemContainer::clearAllTransceiverReset() const {
   }
 }
 
-void BspSystemContainer::triggerQsfpHardReset(int tcvrID) const {
-  getPimContainerFromTcvrID(tcvrID)->triggerTcvrHardReset(tcvrID);
+void BspSystemContainer::initTransceiver(int tcvrID) const {
+  getPimContainerFromTcvrID(tcvrID)->initTransceiver(tcvrID);
+}
+
+void BspSystemContainer::holdTransceiverReset(int tcvrID) const {
+  getPimContainerFromTcvrID(tcvrID)->holdTransceiverReset(tcvrID);
+}
+
+void BspSystemContainer::releaseTransceiverReset(int tcvrID) const {
+  getPimContainerFromTcvrID(tcvrID)->releaseTransceiverReset(tcvrID);
 }
 
 bool BspSystemContainer::isTcvrPresent(int tcvrID) const {
@@ -94,10 +109,30 @@ const I2cControllerStats BspSystemContainer::getI2cControllerStats(
   return getPimContainerFromTcvrID(tcvrID)->getI2cControllerStats(tcvrID);
 }
 
-LedIO* BspSystemContainer::getLedController(int tcvrID) const {
-  return getPimContainerFromTcvrID(tcvrID)
-      ->getLedContainer(tcvrID)
-      ->getLedController();
+void BspSystemContainer::i2cTimeProfilingStart(unsigned int tcvrID) const {
+  getPimContainerFromTcvrID(tcvrID)->i2cTimeProfilingStart(tcvrID);
+}
+
+void BspSystemContainer::i2cTimeProfilingEnd(unsigned int tcvrID) const {
+  getPimContainerFromTcvrID(tcvrID)->i2cTimeProfilingEnd(tcvrID);
+}
+
+std::pair<uint64_t, uint64_t> BspSystemContainer::getI2cTimeProfileMsec(
+    unsigned int tcvrID) const {
+  return getPimContainerFromTcvrID(tcvrID)->getI2cTimeProfileMsec(tcvrID);
+}
+
+std::map<uint32_t, LedIO*> BspSystemContainer::getLedController(
+    int tcvrID) const {
+  std::map<uint32_t, LedIO*> ledControllers;
+
+  auto ledContainers =
+      getPimContainerFromTcvrID(tcvrID)->getLedContainer(tcvrID);
+  for (auto& ledContainer : ledContainers) {
+    ledControllers[ledContainer.first] =
+        ledContainer.second->getLedController();
+  }
+  return ledControllers;
 }
 
 BspDeviceMdioController* BspSystemContainer::getMdioController(

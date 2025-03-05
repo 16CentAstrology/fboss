@@ -34,7 +34,8 @@ ArpCache::ArpCache(
           state->getStaleEntryInterval()) {}
 
 void ArpCache::sentArpRequest(folly::IPAddressV4 ip) {
-  setPendingEntry(ip);
+  // Pending entry points to CPU port
+  setPendingEntry(ip, PortDescriptor(PortID(0)));
 }
 
 void ArpCache::receivedArpMine(
@@ -65,12 +66,7 @@ inline void ArpCache::checkReachability(
 }
 
 inline void ArpCache::probeFor(folly::IPAddressV4 ip) const {
-  auto vlan = getSw()->getState()->getVlans()->getVlanIf(getVlanID());
-  if (!vlan) {
-    XLOG(DBG2) << "Vlan " << getVlanID() << " not found. Skip sending probe";
-    return;
-  }
-  ArpHandler::sendArpRequest(getSw(), vlan, ip);
+  ArpHandler::sendArpRequest(getSw(), ip);
 }
 
 std::list<ArpEntryThrift> ArpCache::getArpCacheData() {

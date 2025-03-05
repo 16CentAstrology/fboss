@@ -22,13 +22,6 @@ std::string UdfPacketMatcher::getName() const {
   return get<switch_config_tags::name>()->cref();
 }
 
-std::shared_ptr<UdfPacketMatcher> UdfPacketMatcher::fromFollyDynamic(
-    const folly::dynamic& entry) {
-  auto node = std::make_shared<UdfPacketMatcher>();
-  static_cast<std::shared_ptr<BaseT>>(node)->fromFollyDynamic(entry);
-  return node;
-}
-
 cfg::UdfMatchL2Type UdfPacketMatcher::getUdfl2PktType() const {
   return get<switch_config_tags::l2PktType>()->cref();
 }
@@ -49,5 +42,25 @@ std::optional<int> UdfPacketMatcher::getUdfL4DstPort() const {
   return std::nullopt;
 }
 
-template class ThriftStructNode<UdfPacketMatcher, cfg::UdfPacketMatcher>;
+void UdfPacketMatcher::setUdfl2PktType(cfg::UdfMatchL2Type type) {
+  set<switch_config_tags::l2PktType>(type);
+}
+
+void UdfPacketMatcher::setUdfl3PktType(cfg::UdfMatchL3Type type) {
+  set<switch_config_tags::l3pktType>(type);
+}
+
+void UdfPacketMatcher::setUdfl4PktType(cfg::UdfMatchL4Type type) {
+  set<switch_config_tags::l4PktType>(type);
+}
+
+void UdfPacketMatcher::setUdfL4DstPort(std::optional<int> port) {
+  if (port) {
+    set<switch_config_tags::UdfL4DstPort>(*port);
+  } else {
+    ref<switch_config_tags::UdfL4DstPort>().reset();
+  }
+}
+
+template struct ThriftStructNode<UdfPacketMatcher, cfg::UdfPacketMatcher>;
 } // namespace facebook::fboss

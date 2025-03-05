@@ -23,6 +23,8 @@ class Cursor;
 }
 } // namespace folly
 
+DECLARE_bool(ipv4_ext_headers_enabled);
+
 namespace facebook::fboss {
 
 class RxPacket;
@@ -36,11 +38,13 @@ class IPv4Handler {
 
   explicit IPv4Handler(SwSwitch* sw);
 
+  template <typename VlanOrIntfT>
   void handlePacket(
       std::unique_ptr<RxPacket> pkt,
       folly::MacAddress dst,
       folly::MacAddress src,
-      folly::io::Cursor cursor);
+      folly::io::Cursor cursor,
+      const std::shared_ptr<VlanOrIntfT>& vlanOrIntf);
 
   /*
    * TODO(aeckert): t17949183 unify packet handling pipeline and then
@@ -49,12 +53,12 @@ class IPv4Handler {
   bool resolveMac(
       std::shared_ptr<SwitchState> state,
       PortID ingressPort,
-      folly::IPAddressV4 dest,
-      VlanID ingressVlan);
+      folly::IPAddressV4 dest);
 
  private:
   void sendICMPTimeExceeded(
-      VlanID srcVlan,
+      PortID port,
+      std::optional<VlanID> srcVlan,
       folly::MacAddress dst,
       folly::MacAddress src,
       IPv4Hdr& v4Hdr,

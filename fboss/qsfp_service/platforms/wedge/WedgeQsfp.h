@@ -9,80 +9,19 @@
  */
 #pragma once
 
+#include <cstdint>
+#include <memory>
+
 #include <folly/futures/Future.h>
 #include <folly/io/async/EventBase.h>
-#include <chrono>
-#include <cstdint>
-#include <mutex>
+
+#include "fboss/lib/IOStatsRecorder.h"
+#include "fboss/qsfp_service/TransceiverManager.h"
+#include "fboss/qsfp_service/module/I2cLogBuffer.h"
 #include "fboss/qsfp_service/module/TransceiverImpl.h"
-#include "fboss/qsfp_service/platforms/wedge/WedgeI2CBusLock.h"
 
 namespace facebook {
 namespace fboss {
-
-class WedgeQsfpStats {
-  using time_point = std::chrono::steady_clock::time_point;
-  using seconds = std::chrono::seconds;
-
- public:
-  WedgeQsfpStats() {}
-  ~WedgeQsfpStats() {}
-
-  void updateReadDownTime() {
-    std::lock_guard<std::mutex> g(statsMutex_);
-    stats_.readDownTime() = downTimeLocked(lastSuccessfulRead_);
-  }
-
-  void updateWriteDownTime() {
-    std::lock_guard<std::mutex> g(statsMutex_);
-    stats_.writeDownTime() = downTimeLocked(lastSuccessfulWrite_);
-  }
-
-  void recordReadSuccess() {
-    std::lock_guard<std::mutex> g(statsMutex_);
-    lastSuccessfulRead_ = std::chrono::steady_clock::now();
-  }
-
-  void recordWriteSuccess() {
-    std::lock_guard<std::mutex> g(statsMutex_);
-    lastSuccessfulWrite_ = std::chrono::steady_clock::now();
-  }
-
-  void recordReadAttempted() {
-    std::lock_guard<std::mutex> g(statsMutex_);
-    stats_.numReadAttempted() = stats_.numReadAttempted().value() + 1;
-  }
-
-  void recordWriteAttempted() {
-    std::lock_guard<std::mutex> g(statsMutex_);
-    stats_.numWriteAttempted() = stats_.numWriteAttempted().value() + 1;
-  }
-
-  void recordReadFailed() {
-    std::lock_guard<std::mutex> g(statsMutex_);
-    stats_.numReadFailed() = stats_.numReadFailed().value() + 1;
-  }
-
-  void recordWriteFailed() {
-    std::lock_guard<std::mutex> g(statsMutex_);
-    stats_.numWriteFailed() = stats_.numWriteFailed().value() + 1;
-  }
-
-  TransceiverStats getStats() {
-    std::lock_guard<std::mutex> g(statsMutex_);
-    return stats_;
-  }
-
- private:
-  double downTimeLocked(const time_point& lastSuccess) {
-    auto now = std::chrono::steady_clock::now();
-    return std::chrono::duration_cast<seconds>(now - lastSuccess).count();
-  }
-  TransceiverStats stats_;
-  std::mutex statsMutex_;
-  time_point lastSuccessfulRead_;
-  time_point lastSuccessfulWrite_;
-};
 
 /*
  * This is the Wedge Platform Specific Class
@@ -90,25 +29,26 @@ class WedgeQsfpStats {
  */
 class WedgeQsfp : public TransceiverImpl {
  public:
-  WedgeQsfp(int module, TransceiverI2CApi* i2c);
+  WedgeQsfp(
+      int module,
+      TransceiverI2CApi* i2c,
+      TransceiverManager* const tcvrManager,
+      std::unique_ptr<I2cLogBuffer> logBuffer);
 
   ~WedgeQsfp() override;
 
   /* This function is used to read the SFP EEprom */
   int readTransceiver(
       const TransceiverAccessParameter& param,
-      uint8_t* fieldValue) override;
+      uint8_t* fieldValue,
+      const int field) override;
 
   /* write to the eeprom (usually to change the page setting) */
   int writeTransceiver(
       const TransceiverAccessParameter& param,
-      uint8_t* fieldValue) override;
-
-  /* This function detects if a SFP is present on the particular port */
-  bool detectTransceiver() override;
-
-  /* This function unset the reset status of Qsfp */
-  void ensureOutOfReset() override;
+      const uint8_t* fieldValue,
+      uint64_t delay,
+      const int field) override;
 
   /* Returns the name for the port */
   folly::StringPiece getName() override;
@@ -127,11 +67,62 @@ class WedgeQsfp : public TransceiverImpl {
 
   std::array<uint8_t, 2> getFirmwareVer();
 
+  // Note that the module_ starts at 0, but the I2C bus module
+  // assumes that QSFP module numbers extend from 1 to N.
+
+  /* Detects if a SFP is present on the particular port
+   */
+  bool detectTransceiver() override {
+    return threadSafeI2CBus_->isPresent(module_ + 1);
+  }
+
+  /* Unset the reset status of Qsfp
+   */
+  void ensureOutOfReset() override {
+    threadSafeI2CBus_->ensureOutOfReset(module_ + 1);
+  }
+
+  /* Functions relevant to I2C Profiling
+   */
+  void i2cTimeProfilingStart() const override {
+    threadSafeI2CBus_->i2cTimeProfilingStart(module_ + 1);
+  }
+
+  void i2cTimeProfilingEnd() const override {
+    threadSafeI2CBus_->i2cTimeProfilingEnd(module_ + 1);
+  }
+
+  std::pair<uint64_t, uint64_t> getI2cTimeProfileMsec() const override {
+    return threadSafeI2CBus_->getI2cTimeProfileMsec(module_ + 1);
+  }
+
+  void triggerQsfpHardReset() override {
+    tcvrManager_->getQsfpPlatformApi()->triggerQsfpHardReset(module_ + 1);
+  }
+
+  void updateTransceiverState(TransceiverStateMachineEvent event) override {
+    tcvrManager_->updateStateBlocking(TransceiverID(module_), event);
+  }
+
+  // Dump i2c log to file. Return number of header/log entries.
+  std::pair<size_t, size_t> dumpTransceiverI2cLog();
+
+  // Get the capacity of the i2c buffer.
+  size_t getI2cLogBufferCapacity();
+
+  void setTcvrInfoInLog(
+      const TransceiverManagementInterface& mgmtIf,
+      const std::set<std::string>& portNames,
+      const std::optional<FirmwareStatus>& status,
+      const std::optional<Vendor>& vendor);
+
  private:
   int module_;
   std::string moduleName_;
   TransceiverI2CApi* threadSafeI2CBus_;
-  WedgeQsfpStats wedgeQsfpstats_;
+  TransceiverManager* const tcvrManager_;
+  IOStatsRecorder ioStatsRecorder_;
+  std::unique_ptr<I2cLogBuffer> logBuffer_;
 };
 
 } // namespace fboss

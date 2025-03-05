@@ -61,7 +61,7 @@ struct LegacyAggregatePortFields {
       boost::container::flat_map<PortID, ParticipantInfo>;
 
   struct Subport {
-    Subport() {}
+    Subport() = default;
     Subport(
         PortID id,
         uint16_t pri,
@@ -137,6 +137,7 @@ class AggregatePort
       LegacyAggregatePortFields::SubportToForwardingState::value_type;
   using ThriftType = state::AggregatePortFields;
   using Base = ThriftStructNode<AggregatePort, state::AggregatePortFields>;
+  using Base::modify;
   using Subports = boost::container::flat_set<Subport>;
 
   using SubportToForwardingState =
@@ -153,6 +154,7 @@ class AggregatePort
       folly::MacAddress systemID,
       uint8_t minimumLinkCount,
       Subports&& ports,
+      const std::vector<int32_t>& interfaceIDs,
       LegacyAggregatePortFields::Forwarding fwd = Forwarding::DISABLED,
       ParticipantInfo pState = ParticipantInfo::defaultParticipantInfo());
 
@@ -175,7 +177,8 @@ class AggregatePort
       uint16_t systemPriority,
       folly::MacAddress systemID,
       uint8_t minLinkCount,
-      folly::Range<Iterator> subports) {
+      folly::Range<Iterator> subports,
+      const std::vector<int32_t>& interfaceIDs) {
     return std::make_shared<AggregatePort>(
         id,
         name,
@@ -184,6 +187,7 @@ class AggregatePort
         systemID,
         minLinkCount,
         Subports(subports.begin(), subports.end()),
+        interfaceIDs,
         Forwarding::DISABLED,
         ParticipantInfo::defaultParticipantInfo());
   }
@@ -320,11 +324,20 @@ class AggregatePort
 
   bool isMemberPort(PortID port) const;
 
+  auto getInterfaceIDs() const {
+    return safe_cref<switch_state_tags::interfaceIDs>();
+  }
+
+  void setInterfaceIDs(const std::vector<int32_t>& interfaceIDs) {
+    set<switch_state_tags::interfaceIDs>(interfaceIDs);
+  }
+
   AggregatePort* modify(std::shared_ptr<SwitchState>* state);
 
   static bool isIngressValid(
       const std::shared_ptr<SwitchState>& state,
-      const std::unique_ptr<RxPacket>& packet);
+      const std::unique_ptr<RxPacket>& packet,
+      const bool needAggPortUp = false);
 
   bool isUp() const;
 

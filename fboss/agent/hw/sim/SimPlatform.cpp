@@ -10,14 +10,11 @@
 
 #include "fboss/agent/hw/sim/SimPlatform.h"
 #include "fboss/agent/FbossError.h"
-#include "fboss/agent/SwSwitch.h"
 #include "fboss/agent/ThriftHandler.h"
 #include "fboss/agent/hw/sim/SimPlatformMapping.h"
 #include "fboss/agent/hw/sim/SimPlatformPort.h"
 #include "fboss/agent/hw/sim/SimSwitch.h"
 #include "fboss/lib/platforms/PlatformProductInfo.h"
-
-#include <folly/Memory.h>
 
 using std::make_unique;
 using std::unique_ptr;
@@ -27,7 +24,10 @@ namespace facebook::fboss {
 SimPlatform::SimPlatform(folly::MacAddress mac, uint32_t numPorts)
     : Platform(nullptr, std::make_unique<SimPlatformMapping>(numPorts), mac),
       hw_(new SimSwitch(this, numPorts)),
-      numPorts_(numPorts) {
+      numPorts_(numPorts),
+      agentDirUtil_(new AgentDirectoryUtil(
+          "/tmp/fboss_sim/volatile",
+          "/tmp/fboss_sim/persistent")) {
   initPorts();
 }
 
@@ -37,25 +37,7 @@ HwSwitch* SimPlatform::getHwSwitch() const {
   return hw_.get();
 }
 
-void SimPlatform::onHwInitialized(SwSwitch* /*sw*/) {}
-
-void SimPlatform::onInitialConfigApplied(SwSwitch* /*sw*/) {}
-
-void SimPlatform::stop() {}
-
-unique_ptr<ThriftHandler> SimPlatform::createHandler(SwSwitch* sw) {
-  return std::make_unique<ThriftHandler>(sw);
-}
-
-std::string SimPlatform::getVolatileStateDir() const {
-  FLAGS_volatile_state_dir = "/tmp/fboss_sim/volatile";
-  return FLAGS_volatile_state_dir;
-}
-
-std::string SimPlatform::getPersistentStateDir() const {
-  FLAGS_persistent_state_dir = "/tmp/fboss_sim/persistent";
-  return FLAGS_persistent_state_dir;
-}
+void SimPlatform::onHwInitialized(HwSwitchCallback* /*sw*/) {}
 
 void SimPlatform::initPorts() {
   for (auto i = 0; i < numPorts_; i++) {

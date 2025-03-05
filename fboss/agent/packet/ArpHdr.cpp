@@ -9,6 +9,7 @@
  */
 #include "fboss/agent/packet/ArpHdr.h"
 
+#include <sstream>
 #include <stdexcept>
 
 namespace facebook::fboss {
@@ -36,9 +37,29 @@ ArpHdr::ArpHdr(Cursor& cursor) {
         folly::ByteRange(&macAddress[0], MacAddress::SIZE));
     cursor.pull(&ipAddress, 4);
     tpa = IPAddressV4::fromLong(ipAddress);
-  } catch (const std::out_of_range& e) {
+  } catch (const std::out_of_range&) {
     throw HdrParseError("ARP header too small");
   }
 }
 
+void ArpHdr::serialize(folly::io::RWPrivateCursor* cursor) const {
+  cursor->writeBE<uint16_t>(htype);
+  cursor->writeBE<uint16_t>(ptype);
+  cursor->write<uint8_t>(hlen);
+  cursor->write<uint8_t>(plen);
+  cursor->writeBE<uint16_t>(oper);
+  cursor->push(sha.bytes(), MacAddress::SIZE);
+  cursor->push(spa.bytes(), IPAddressV4::byteCount());
+  cursor->push(tha.bytes(), MacAddress::SIZE);
+  cursor->push(tpa.bytes(), IPAddressV4::byteCount());
+}
+
+std::string ArpHdr::toString() const {
+  std::stringstream ss;
+  ss << " header type: " << htype << " protocol type: " << ptype
+     << " header len: " << (int)hlen << " protocol len: " << (int)plen
+     << "smac: " << sha << "src ip: " << spa << " dmac: " << tha
+     << " dst ip: " << tpa;
+  return ss.str();
+}
 } // namespace facebook::fboss

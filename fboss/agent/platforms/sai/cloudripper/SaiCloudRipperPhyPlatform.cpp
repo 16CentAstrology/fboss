@@ -72,17 +72,22 @@ SaiCloudRipperPhyPlatform::SaiCloudRipperPhyPlatform(
     std::unique_ptr<PlatformProductInfo> productInfo,
     folly::MacAddress localMac,
     int phyId)
-    : SaiHwPlatform(
+    : SaiPlatform(
           std::move(productInfo),
           std::make_unique<CloudRipperPlatformMapping>(),
           localMac),
-      phyId_(phyId) {}
+      phyId_(phyId),
+      agentDirUtil_(new AgentDirectoryUtil(
+          FLAGS_volatile_state_dir_phy + "/" + folly::to<std::string>(phyId_),
+          FLAGS_persistent_state_dir_phy + "/" +
+              folly::to<std::string>(phyId_))) {}
 
 void SaiCloudRipperPhyPlatform::setupAsic(
-    cfg::SwitchType switchType,
     std::optional<int64_t> switchId,
-    std::optional<cfg::Range64> systemPortRange) {
-  asic_ = std::make_unique<CredoPhyAsic>(switchType, switchId, systemPortRange);
+    const cfg::SwitchInfo& switchInfo,
+    std::optional<HwAsic::FabricNodeRole> fabricNodeRole) {
+  CHECK(!fabricNodeRole.has_value());
+  asic_ = std::make_unique<CredoPhyAsic>(switchId, switchInfo);
 }
 
 SaiCloudRipperPhyPlatform::~SaiCloudRipperPhyPlatform() {}

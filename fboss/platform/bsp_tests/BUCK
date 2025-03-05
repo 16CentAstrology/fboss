@@ -1,0 +1,82 @@
+load("@fbcode_macros//build_defs:python_binary.bzl", "python_binary")
+load("@fbcode_macros//build_defs:python_library.bzl", "python_library")
+load("@fbcode_macros//build_defs:python_unittest.bzl", "python_unittest")
+load("//fbpkg:fbpkg.bzl", "fbpkg")
+
+oncall("fboss_platform")
+
+fbpkg.builder(
+    name = "fboss_bsp_tests",
+    path_actions = {
+        "bsp_tests.par": ":bsp_tests",
+        "configs": "configs",
+        "tests": "tests",
+    },
+)
+
+python_binary(
+    name = "bsp_tests",
+    srcs = glob([
+        "configs/*.json",
+        "tests/*.py",
+    ]) + ["test_runner.py"],
+    main_function = ".test_runner.main",
+    deps = [
+        "fbsource//third-party/pypi/pysensors:pysensors",
+        "fbsource//third-party/pypi/pytest:pytest",
+        ":bsp_test_config",
+        ":bsp_test_utils",
+        ":config",
+    ],
+)
+
+python_library(
+    name = "bsp_test_config",
+    srcs = [
+        "cdev_types.py",
+        "config.py",
+    ],
+    deps = [
+        "fbsource//third-party/pypi/dataclasses-json:dataclasses-json",
+        "//fboss/platform/platform_manager:platform_manager_config-py3-types",
+        "//thrift/lib/py3:types",
+    ],
+)
+
+python_library(
+    name = "bsp_test_utils",
+    srcs = glob(["utils/*.py"]),
+    deps = [
+        "fbsource//third-party/pypi/ioctl-opt:ioctl-opt",
+        ":bsp_test_config",
+        "//fboss/platform/platform_manager:platform_manager_config-py3-types",
+        "//thrift/lib/py3:types",
+    ],
+)
+
+python_library(
+    name = "config",
+    srcs = ["config.py"],
+    labels = ["autodeps2_generated"],
+    resources = {
+        "//fboss/platform:configs": "fboss_config_files",
+    },
+    deps = [
+        "fbsource//third-party/pypi/dataclasses-json:dataclasses-json",
+        ":bsp_test_config",
+        "//fboss/platform/platform_manager:platform_manager_config-py3-types",
+        "//thrift/lib/py3:types",
+    ],
+)
+
+python_unittest(
+    name = "config_test",
+    srcs = ["config_test.py"],
+    labels = ["autodeps2_generated"],
+    deps = [
+        ":bsp_test_config",
+        ":config",
+        "//fboss/platform/platform_manager:platform_manager_config-py3-types",
+        "//thrift/lib/py3:types",
+    ],
+)

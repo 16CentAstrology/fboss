@@ -20,24 +20,40 @@ namespace facebook::fboss {
 
 class MockTestHandle : public HwTestHandle {
  public:
-  MockTestHandle(std::unique_ptr<SwSwitch> sw, MockPlatform* platform)
-      : HwTestHandle(std::move(sw)), platform_(platform) {}
+  MockTestHandle(
+      std::unique_ptr<SwSwitch> sw,
+      std::vector<std::unique_ptr<MockPlatform>> platforms)
+      : HwTestHandle(std::move(sw), convert(std::move(platforms))) {}
+
   ~MockTestHandle() {}
 
   void rxPacket(
       std::unique_ptr<folly::IOBuf> buf,
-      PortID srcPort,
+      const PortDescriptor& srcPort,
       std::optional<VlanID> srcVlan) override;
   void forcePortDown(PortID port) override;
   void forcePortUp(PortID port) override;
   void forcePortFlap(PortID port) override;
 
+  MockPlatform* getMockPlatform(int idx) const {
+    return dynamic_cast<MockPlatform*>(getPlatform(idx));
+  }
+
  private:
+  static std::vector<std::unique_ptr<Platform>> convert(
+      std::vector<std::unique_ptr<MockPlatform>>&& platforms) {
+    std::vector<std::unique_ptr<Platform>> ret;
+    auto iter = platforms.begin();
+    while (iter != platforms.end()) {
+      auto platform = std::move(*iter);
+      ret.push_back(std::move(platform));
+      iter = platforms.erase(iter);
+    }
+    return ret;
+  }
   // Forbidden copy constructor and assignment operator
   MockTestHandle(MockTestHandle const&) = delete;
   MockTestHandle& operator=(MockTestHandle const&) = delete;
-
-  MockPlatform* platform_{nullptr};
 };
 
 } // namespace facebook::fboss

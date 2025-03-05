@@ -80,18 +80,15 @@ class QueueManagerTest : public ManagerTestBase {
         kSysPortOffset + testInterfaces[0].remoteHosts[0].port.id);
   }
   std::shared_ptr<SystemPort> firstSysPort() const {
-    return programmedState->getSystemPorts()->getSystemPort(firstSysPortId());
+    return programmedState->getSystemPorts()->getNode(firstSysPortId());
   }
-  // TODO - look at only the configured VOQs once
-  // QOS is supported on system ports
   std::vector<int> voqIds(SystemPortID sysPortId) const {
     std::vector<int> voqs;
-    auto sysPort = programmedState->getSystemPorts()->getSystemPort(sysPortId);
+    auto sysPort = programmedState->getSystemPorts()->getNode(sysPortId);
     if (sysPort->getQosPolicy()) {
-      // TODO - look at configured queues from qos policy
-    }
-    for (auto i = 0; i < sysPort->getNumVoqs(); ++i) {
-      voqs.push_back(i);
+      for (const auto& queue : std::as_const(*sysPort->getPortQueues())) {
+        voqs.push_back(queue->getID());
+      }
     }
     return voqs;
   }
@@ -173,7 +170,7 @@ TEST_F(QueueManagerTest, checkNonExistentQueues) {
   PortSaiId portSaiId = portHandle->port->adapterKey();
   auto streamType = cfg::StreamType::UNICAST;
   std::vector<uint8_t> queueIds = {1, 2, 3, 4};
-  std::vector<uint8_t> nonExistentQueueIds = {7, 8, 10};
+  std::vector<uint8_t> nonExistentQueueIds = {8, 10};
   auto queueConfig = makeQueueConfig({queueIds});
   auto queueSaiIds = getPortQueueSaiIds(portHandle);
   auto queueHandles = saiManagerTable->queueManager().loadQueues(queueSaiIds);
@@ -193,7 +190,7 @@ TEST_F(QueueManagerTest, getNonExistentQueues) {
   PortSaiId portSaiId = portHandle->port->adapterKey();
   auto streamType = cfg::StreamType::UNICAST;
   std::vector<uint8_t> queueIds = {1, 2, 3, 4};
-  std::vector<uint8_t> nonExistentQueueIds = {7, 8, 10};
+  std::vector<uint8_t> nonExistentQueueIds = {8, 10};
   auto queueConfig = makeQueueConfig({queueIds});
   auto queueSaiIds = getPortQueueSaiIds(portHandle);
   auto queueHandles = saiManagerTable->queueManager().loadQueues(queueSaiIds);
@@ -206,24 +203,6 @@ TEST_F(QueueManagerTest, getNonExistentQueues) {
         PortID(10), saiQueueConfig);
     EXPECT_FALSE(queueHandle);
   }
-}
-
-TEST_F(QueueManagerTest, loadUCMCQueueWithSameQueueId) {
-  auto portHandle = saiManagerTable->portManager().getPortHandle(PortID(10));
-  PortSaiId portSaiId = portHandle->port->adapterKey();
-  // Fake has queue id 6 allocated for unicast and multicast
-  std::vector<uint8_t> queueIds = {6};
-  auto ucQueueConfig = makeQueueConfig({queueIds}, cfg::StreamType::UNICAST);
-  auto mcQueueConfig = makeQueueConfig({queueIds}, cfg::StreamType::MULTICAST);
-  auto queueSaiIds = getPortQueueSaiIds(portHandle);
-  auto ucQueueHandles = saiManagerTable->queueManager().loadQueues(queueSaiIds);
-  saiManagerTable->queueManager().ensurePortQueueConfig(
-      portSaiId, ucQueueHandles, ucQueueConfig);
-  auto mcQueueHandles = saiManagerTable->queueManager().loadQueues(queueSaiIds);
-  saiManagerTable->queueManager().ensurePortQueueConfig(
-      portSaiId, mcQueueHandles, mcQueueConfig);
-  checkQueue(ucQueueHandles, portSaiId, cfg::StreamType::UNICAST, {queueIds});
-  checkQueue(mcQueueHandles, portSaiId, cfg::StreamType::MULTICAST, {queueIds});
 }
 
 TEST_F(QueueManagerTest, changePortQueue) {
@@ -256,7 +235,7 @@ void checkCounterExportAndValue(
     const std::string& queueName,
     ExpectExport expectExport,
     const PortStats* portStat) {
-  for (auto statKey : PortStats("dummy").kQueueStatKeys()) {
+  for (auto statKey : PortStats("dummy").kQueueMonotonicCounterStatKeys()) {
     switch (expectExport) {
       case ExpectExport::EXPORT:
         EXPECT_TRUE(facebook::fbData->getStatMap()->contains(
@@ -323,11 +302,12 @@ TEST_F(QueueManagerTest, addPortQueueAndCheckStats) {
 
 TEST_F(QueueManagerTest, checkSysPortVoqStats) {
   auto sysPort = firstSysPort();
-  saiManagerTable->systemPortManager().updateStats(sysPort->getID(), true);
+  saiManagerTable->systemPortManager().updateStats(
+      sysPort->getID(), true /* updateWatermarks */, true /* updateVoqStats */);
   auto portStat =
       saiManagerTable->systemPortManager().getLastPortStats(sysPort->getID());
   checkCounterExportAndValue(
-      sysPort->getPortName(),
+      sysPort->getName(),
       voqIds(sysPort->getID()),
       ExpectExport::EXPORT,
       portStat);
@@ -336,13 +316,16 @@ TEST_F(QueueManagerTest, checkSysPortVoqStats) {
 TEST_F(QueueManagerTest, changeSysPortAndCheckVoqStats) {
   auto sysPort = firstSysPort();
   auto newSysPort = sysPort->clone();
-  newSysPort->setPortName(folly::sformat("new_{}", sysPort->getPortName()));
+  newSysPort->setName(folly::sformat("new_{}", sysPort->getName()));
   saiManagerTable->systemPortManager().changeSystemPort(sysPort, newSysPort);
-  saiManagerTable->systemPortManager().updateStats(newSysPort->getID(), true);
+  saiManagerTable->systemPortManager().updateStats(
+      newSysPort->getID(),
+      true /* updateWatermarks */,
+      true /* updateVoqStats */);
   auto portStat = saiManagerTable->systemPortManager().getLastPortStats(
       newSysPort->getID());
   checkCounterExportAndValue(
-      newSysPort->getPortName(),
+      newSysPort->getName(),
       voqIds(newSysPort->getID()),
       ExpectExport::EXPORT,
       portStat);
@@ -360,19 +343,29 @@ TEST_F(QueueManagerTest, changeSysPortVoQsAndCheckVoqStats) {
   auto sysPort = firstSysPort();
   auto oldVoqs = voqIds(firstSysPortId());
   auto newSysPort = sysPort->clone();
-  newSysPort->setNumVoqs(oldVoqs.size() - 1);
+  newSysPort->setNumVoqs(sysPort->getNumVoqs() - 1);
   auto newVoqs = oldVoqs;
   newVoqs.pop_back();
+  std::vector<uint8_t> queueIds;
+  std::transform(
+      newVoqs.begin(),
+      newVoqs.end(),
+      std::back_inserter(queueIds),
+      [](const int queueId) { return static_cast<uint8_t>(queueId); });
+  newSysPort->resetPortQueues(makeQueueConfig(queueIds));
   saiManagerTable->systemPortManager().changeSystemPort(sysPort, newSysPort);
-  saiManagerTable->systemPortManager().updateStats(newSysPort->getID(), true);
+  saiManagerTable->systemPortManager().updateStats(
+      newSysPort->getID(),
+      true /* updateWatermarks */,
+      true /* updateVoqStats */);
   auto portStat = saiManagerTable->systemPortManager().getLastPortStats(
       newSysPort->getID());
   checkCounterExportAndValue(
-      newSysPort->getPortName(), newVoqs, ExpectExport::EXPORT, portStat);
+      newSysPort->getName(), newVoqs, ExpectExport::EXPORT, portStat);
 
   // Stats for removed voqs should no longer show up
   checkCounterExportAndValue(
-      newSysPort->getPortName(),
+      newSysPort->getName(),
       {oldVoqs.back()},
       ExpectExport::NO_EXPORT,
       portStat);
@@ -466,21 +459,6 @@ TEST_F(QueueManagerTest, portDisableStopsCounterExport) {
       newNewPort->getName(), queueConfig, ExpectExport::NO_EXPORT, portStat);
 }
 
-TEST_F(QueueManagerTest, sysPortDisableStopsVoQStatsExport) {
-  auto sysPort = firstSysPort();
-  auto newSysPort = sysPort->clone();
-  newSysPort->setEnabled(false);
-  saiManagerTable->systemPortManager().changeSystemPort(sysPort, newSysPort);
-  saiManagerTable->systemPortManager().updateStats(newSysPort->getID(), true);
-  auto portStat = saiManagerTable->systemPortManager().getLastPortStats(
-      newSysPort->getID());
-  checkCounterExportAndValue(
-      newSysPort->getPortName(),
-      voqIds(newSysPort->getID()),
-      ExpectExport::NO_EXPORT,
-      portStat);
-}
-
 TEST_F(QueueManagerTest, portReenableRestartsCounterExport) {
   auto p0 = testInterfaces[0].remoteHosts[0].port;
   std::shared_ptr<Port> oldPort = makePort(p0);
@@ -511,30 +489,4 @@ TEST_F(QueueManagerTest, portReenableRestartsCounterExport) {
   EXPECT_NE(portStat, nullptr);
   checkCounterExportAndValue(
       evenNewerPort->getName(), queueConfig, ExpectExport::EXPORT, portStat);
-}
-
-TEST_F(QueueManagerTest, sysPortReenableRestartsVoQStatsExport) {
-  auto sysPort = firstSysPort();
-  CHECK(sysPort->isPublished());
-  auto newSysPort = sysPort->clone();
-  newSysPort->setEnabled(false);
-  newSysPort->publish();
-  saiManagerTable->systemPortManager().changeSystemPort(sysPort, newSysPort);
-  saiManagerTable->systemPortManager().updateStats(newSysPort->getID(), true);
-  auto portStat = saiManagerTable->systemPortManager().getLastPortStats(
-      newSysPort->getID());
-  checkCounterExportAndValue(
-      newSysPort->getPortName(),
-      voqIds(newSysPort->getID()),
-      ExpectExport::NO_EXPORT,
-      portStat);
-  // Reverse previous change to re-enable sys port
-  saiManagerTable->systemPortManager().changeSystemPort(newSysPort, sysPort);
-  portStat =
-      saiManagerTable->systemPortManager().getLastPortStats(sysPort->getID());
-  checkCounterExportAndValue(
-      sysPort->getPortName(),
-      voqIds(sysPort->getID()),
-      ExpectExport::EXPORT,
-      portStat);
 }

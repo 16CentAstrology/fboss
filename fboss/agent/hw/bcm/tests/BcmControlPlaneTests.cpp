@@ -100,7 +100,11 @@ class BcmControlPlaneTest : public BcmCosQueueManagerTest {
   }
 
   QueueConfig getSwQueues() override {
-    return getProgrammedState()->getControlPlane()->getQueues()->impl();
+    return getProgrammedState()
+        ->getControlPlane()
+        ->cbegin()
+        ->second->getQueues()
+        ->impl();
   }
 };
 
@@ -180,6 +184,7 @@ TEST_F(BcmControlPlaneTest, ChangeCPULowQueueSettings) {
     auto& lowQueue = cfg.cpuQueues()->at(cfg.cpuQueues()->size() - 1);
     lowQueue.portQueueRate() = cfg::PortQueueRate();
     lowQueue.portQueueRate()->pktsPerSec_ref() = utility::getRange(0, 1000);
+    lowQueue.scalingFactor() = cfg::MMUScalingFactor::ONE_8TH;
 
     applyNewConfig(cfg);
   };
@@ -205,6 +210,8 @@ TEST_F(BcmControlPlaneTest, ChangeCPULowQueueSettings) {
     EXPECT_EQ(portQueueRate.getType(), cfg::PortQueueRate::Type::pktsPerSec);
     EXPECT_EQ(portQueueRate.get_pktsPerSec().minimum(), 0);
     EXPECT_EQ(portQueueRate.get_pktsPerSec().maximum(), 1000);
+
+    EXPECT_EQ(lowQ->getScalingFactor(), cfg::MMUScalingFactor::ONE_8TH);
 
     // other queues shouldn't be affected
     for (int i = 1; i < swQueuesAfter.size(); i++) {
@@ -302,7 +309,8 @@ TEST_F(BcmControlPlaneTest, VerifyReasonToQueueMapping) {
         getHwSwitch()->getControlPlane()->getRxReasonToQueue();
     const auto swReasonToQueue = getProgrammedState()
                                      ->getControlPlane()
-                                     ->getRxReasonToQueue()
+                                     ->cbegin()
+                                     ->second->getRxReasonToQueue()
                                      ->toThrift();
     EXPECT_EQ(hwReasonToQueue, cfgReasonToQueue);
     EXPECT_EQ(swReasonToQueue, cfgReasonToQueue);

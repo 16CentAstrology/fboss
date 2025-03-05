@@ -15,7 +15,6 @@
 #include "fboss/agent/hw/sai/switch/SaiNeighborManager.h"
 #include "fboss/agent/hw/sai/switch/tests/ManagerTestBase.h"
 #include "fboss/agent/state/ArpEntry.h"
-#include "fboss/agent/state/NdpEntry.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/types.h"
 
@@ -33,8 +32,9 @@ class NeighborManagerTest : public ManagerTestBase {
         42, /*sys port id*/
         42 /* switch id */);
     auto newState = programmedState;
+    HwSwitchMatcher matcher(std::unordered_set<SwitchID>({SwitchID(0)}));
     auto sysPortMap = newState->getRemoteSystemPorts()->modify(&newState);
-    sysPortMap->addSystemPort(remoteSysPort);
+    sysPortMap->addNode(remoteSysPort, matcher);
     remoteRif = makeInterface(
         *remoteSysPort,
         {
@@ -42,7 +42,7 @@ class NeighborManagerTest : public ManagerTestBase {
             {folly::IPAddress("100.0.0.1"), 24},
         });
     auto rifMap = newState->getRemoteInterfaces()->modify(&newState);
-    rifMap->addInterface(remoteRif);
+    rifMap->addNode(remoteRif, matcher);
     applyNewState(newState);
   }
 
@@ -53,7 +53,8 @@ class NeighborManagerTest : public ManagerTestBase {
       cfg::InterfaceType expectedRifType = cfg::InterfaceType::VLAN,
       sai_uint32_t expectedMetadata = 0,
       sai_uint32_t expectedEncapIndex = 0,
-      bool expectedIsLocal = true) const {
+      bool expectedIsLocal = true,
+      bool expectedNoHostRoute = false) const {
     auto saiEntry =
         saiManagerTable->neighborManager().saiEntryFromSwEntry(neighborEntry);
     auto gotMac = saiApiTable->neighborApi().getAttribute(
@@ -68,6 +69,9 @@ class NeighborManagerTest : public ManagerTestBase {
     auto gotIsLocal = saiApiTable->neighborApi().getAttribute(
         saiEntry, SaiNeighborTraits::Attributes::IsLocal{});
     EXPECT_EQ(gotIsLocal, expectedIsLocal);
+    auto gotNoHostRoute = saiApiTable->neighborApi().getAttribute(
+        saiEntry, SaiNeighborTraits::Attributes::NoHostRoute{});
+    EXPECT_EQ(gotNoHostRoute, expectedNoHostRoute);
     auto saiNeighborHandle =
         saiManagerTable->neighborManager().getNeighborHandle(saiEntry);
     EXPECT_TRUE(saiNeighborHandle);
@@ -79,6 +83,7 @@ class NeighborManagerTest : public ManagerTestBase {
       case cfg::InterfaceType::VLAN:
         EXPECT_TRUE(saiNeighborHandle->fdbEntry);
         break;
+      case cfg::InterfaceType::PORT:
       case cfg::InterfaceType::SYSTEM_PORT:
         EXPECT_EQ(saiNeighborHandle->fdbEntry, nullptr);
         break;
@@ -134,6 +139,31 @@ TEST_F(NeighborManagerTest, addResolvedNeighbor) {
 
 TEST_F(NeighborManagerTest, addResolvedPortRifNeighbor) {
   resolvePortRifArp();
+}
+
+TEST_F(NeighborManagerTest, addResolvedNoHostRouteNeighbor) {
+  auto arpEntry = resolveArp(
+      intf0.id,
+      h0,
+      cfg::InterfaceType::VLAN,
+      std::nullopt,
+      std::nullopt,
+      true,
+      true);
+  checkEntry(arpEntry, h0.mac, cfg::InterfaceType::VLAN, 0, 0, true, true);
+}
+
+TEST_F(NeighborManagerTest, addResolvedNoHostRoutePortRifNeighbor) {
+  auto arpEntry = resolveArp(
+      intf0.id,
+      h0,
+      cfg::InterfaceType::SYSTEM_PORT,
+      std::nullopt,
+      42,
+      true,
+      true);
+  checkEntry(
+      arpEntry, h0.mac, cfg::InterfaceType::SYSTEM_PORT, 0, 42, true, true);
 }
 
 TEST_F(NeighborManagerTest, addResolvedPortRifNeighborRemote) {
@@ -228,6 +258,45 @@ TEST_F(NeighborManagerTest, changeResolvedNeighborAddMetadata) {
       42);
 }
 
+TEST_F(NeighborManagerTest, changeResolvedNeighborSetClearNoHostRoute) {
+  auto arpEntry = resolveArp(intf0.id, h0);
+  checkEntry(arpEntry, h0.mac);
+  auto arpEntryNew = makeArpEntry(
+      intf0.id,
+      testInterfaces[1].remoteHosts[0],
+      std::nullopt,
+      std::nullopt,
+      true,
+      cfg::InterfaceType::VLAN,
+      true);
+  saiManagerTable->neighborManager().changeNeighbor(arpEntry, arpEntryNew);
+  checkEntry(
+      arpEntryNew,
+      testInterfaces[1].remoteHosts[0].mac,
+      cfg::InterfaceType::VLAN,
+      0,
+      0,
+      true,
+      true);
+  auto arpEntryNewer = makeArpEntry(
+      intf0.id,
+      testInterfaces[1].remoteHosts[0],
+      std::nullopt,
+      std::nullopt,
+      true,
+      cfg::InterfaceType::VLAN,
+      false);
+  saiManagerTable->neighborManager().changeNeighbor(arpEntryNew, arpEntryNewer);
+  checkEntry(
+      arpEntryNew,
+      testInterfaces[1].remoteHosts[0].mac,
+      cfg::InterfaceType::VLAN,
+      0,
+      0,
+      true,
+      false);
+}
+
 TEST_F(NeighborManagerTest, changeResolvedPortRifNeighborAddMetadata) {
   auto [arpEntry, encapIndex] = resolvePortRifArp(42);
   auto arpEntryNew = makeArpEntry(
@@ -244,6 +313,52 @@ TEST_F(NeighborManagerTest, changeResolvedPortRifNeighborAddMetadata) {
       cfg::InterfaceType::SYSTEM_PORT,
       42,
       encapIndex);
+}
+
+TEST_F(NeighborManagerTest, changeResolvedPortRifNeighborSetClearNoHostRoute) {
+  auto [arpEntry, encapIndex] = resolvePortRifArp();
+  checkEntry(
+      arpEntry,
+      h0.mac,
+      cfg::InterfaceType::SYSTEM_PORT,
+      0,
+      encapIndex,
+      true,
+      false);
+  auto arpEntryNew = makeArpEntry(
+      intf0.id,
+      h0,
+      std::nullopt,
+      encapIndex,
+      true,
+      cfg::InterfaceType::SYSTEM_PORT,
+      true);
+  saiManagerTable->neighborManager().changeNeighbor(arpEntry, arpEntryNew);
+  checkEntry(
+      arpEntryNew,
+      h0.mac,
+      cfg::InterfaceType::SYSTEM_PORT,
+      0,
+      encapIndex,
+      true,
+      true);
+  auto arpEntryNewer = makeArpEntry(
+      intf0.id,
+      h0,
+      std::nullopt,
+      encapIndex,
+      true,
+      cfg::InterfaceType::SYSTEM_PORT,
+      false);
+  saiManagerTable->neighborManager().changeNeighbor(arpEntryNew, arpEntryNewer);
+  checkEntry(
+      arpEntryNew,
+      h0.mac,
+      cfg::InterfaceType::SYSTEM_PORT,
+      0,
+      encapIndex,
+      true,
+      false);
 }
 
 TEST_F(NeighborManagerTest, changeResolvedNeighborAddEncapIndex) {

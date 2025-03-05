@@ -2,16 +2,10 @@
 
 #include "fboss/lib/bsp/BspTransceiverIO.h"
 
-#include <fcntl.h>
 #include <folly/Format.h>
 #include <folly/Range.h>
-#include <folly/lang/Bits.h>
 #include <folly/logging/xlog.h>
-#include <gflags/gflags.h>
-#include <linux/i2c-dev.h>
-#include <linux/i2c.h>
 #include <stdint.h>
-#include <sys/ioctl.h>
 #include "fboss/lib/CommonFileUtils.h"
 #include "fboss/lib/bsp/gen-cpp2/bsp_platform_mapping_types.h"
 
@@ -34,8 +28,10 @@ BspTransceiverIO::BspTransceiverIO(
 void BspTransceiverIO::write(
     const TransceiverAccessParameter& param,
     const uint8_t* buf) {
-  uint8_t addr =
-      param.i2cAddress ? *param.i2cAddress : TransceiverI2CApi::ADDR_QSFP;
+  auto startTime = std::chrono::steady_clock::now();
+
+  uint8_t addr = param.i2cAddress ? *param.i2cAddress
+                                  : TransceiverAccessParameter::ADDR_QSFP;
   uint8_t offset = param.offset;
   uint8_t len = param.len;
   // Increment the counter for I2C write transaction issued
@@ -43,7 +39,7 @@ void BspTransceiverIO::write(
 
   try {
     i2cDev_->write(addr, offset, buf, len);
-    XLOG(DBG1) << fmt::format(
+    XLOG(DBG4) << fmt::format(
         "BspTransceiverIOTrace: write() successfully wrote to tcvr {:d}",
         tcvrID_);
 
@@ -56,13 +52,22 @@ void BspTransceiverIO::write(
         tcvrID_,
         ex.what()));
   }
+
+  if (ioRdWrProfilingInProgress_) {
+    auto endTime = std::chrono::steady_clock::now();
+    auto writeTime = endTime - startTime;
+    ioWriteProfilingTime_ +=
+        std::chrono::duration_cast<std::chrono::milliseconds>(writeTime);
+  }
 }
 
 void BspTransceiverIO::read(
     const TransceiverAccessParameter& param,
     uint8_t* buf) {
-  uint8_t addr =
-      param.i2cAddress ? *param.i2cAddress : TransceiverI2CApi::ADDR_QSFP;
+  auto startTime = std::chrono::steady_clock::now();
+
+  uint8_t addr = param.i2cAddress ? *param.i2cAddress
+                                  : TransceiverAccessParameter::ADDR_QSFP;
   uint8_t offset = param.offset;
   uint8_t len = param.len;
   // Increment the counter for I2C read transaction issued
@@ -70,7 +75,7 @@ void BspTransceiverIO::read(
 
   try {
     i2cDev_->read(addr, offset, buf, len);
-    XLOG(DBG1) << fmt::format(
+    XLOG(DBG4) << fmt::format(
         "BspTransceiverIOTrace: read() successfully read from tcvr {:d}",
         tcvrID_);
     // Increment the number of I2c bytes read successfully
@@ -82,6 +87,32 @@ void BspTransceiverIO::read(
         tcvrID_,
         ex.what()));
   }
+
+  if (ioRdWrProfilingInProgress_) {
+    auto endTime = std::chrono::steady_clock::now();
+    auto readTime = endTime - startTime;
+    ioReadProfilingTime_ +=
+        std::chrono::duration_cast<std::chrono::milliseconds>(readTime);
+  }
+}
+
+void BspTransceiverIO::i2cTimeProfilingStart() {
+  ioRdWrProfilingInProgress_ = true;
+  ioWriteProfilingTime_.zero();
+  ioReadProfilingTime_.zero();
+}
+
+void BspTransceiverIO::i2cTimeProfilingEnd() {
+  ioRdWrProfilingInProgress_ = false;
+}
+
+/*
+ * Return the result of i2c timing profiling in the format of
+ * <readTimeMsec, writeTimeMsec>
+ */
+std::pair<uint64_t, uint64_t> BspTransceiverIO::getI2cTimeProfileMsec() {
+  return std::make_pair(
+      ioReadProfilingTime_.count(), ioWriteProfilingTime_.count());
 }
 
 } // namespace facebook::fboss

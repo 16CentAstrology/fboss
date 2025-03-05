@@ -18,7 +18,6 @@
 #include "fboss/agent/RxPacket.h"
 #include "fboss/agent/packet/PktFactory.h"
 #include "fboss/agent/packet/PktUtil.h"
-#include "fboss/agent/state/LoadBalancer.h"
 #include "fboss/agent/test/EcmpSetupHelper.h"
 
 #include "fboss/agent/hw/test/HwHashPolarizationTestUtils.h"
@@ -41,8 +40,8 @@ class HwHashPolarizationTests : public HwLinkStateDependentTest {
   cfg::SwitchConfig initialConfig() const override {
     auto cfg = utility::onePortPerInterfaceConfig(
         getHwSwitch(),
-        masterLogicalPortIds(),
-        getAsic()->desiredLoopbackMode());
+        masterLogicalInterfacePortIds(),
+        getAsic()->desiredLoopbackModes());
     return cfg;
   }
   void packetReceived(RxPacket* pkt) noexcept override {
@@ -90,8 +89,19 @@ class HwHashPolarizationTests : public HwLinkStateDependentTest {
       const cfg::LoadBalancer& firstHash,
       const cfg::LoadBalancer& secondHash,
       bool expectPolarization) {
-    std::vector<cfg::LoadBalancer> firstHashes = {firstHash};
-    std::vector<cfg::LoadBalancer> secondHashes = {secondHash};
+    std::vector<cfg::LoadBalancer> firstHashes;
+    std::vector<cfg::LoadBalancer> secondHashes;
+    if (getHwSwitchEnsemble()->isSai()) {
+      firstHashes = {
+          firstHash,
+          utility::getTrunkHalfHashConfig({getPlatform()->getAsic()})};
+      secondHashes = {
+          secondHash,
+          utility::getTrunkHalfHashConfig({getPlatform()->getAsic()})};
+    } else {
+      firstHashes = {firstHash};
+      secondHashes = {secondHash};
+    }
     runTest(firstHashes, secondHashes, expectPolarization);
   }
 
@@ -123,12 +133,16 @@ class HwHashPolarizationTests : public HwLinkStateDependentTest {
               ecmpPorts.begin(), ecmpPorts.begin() + kEcmpWidth / 2});
       // Set first hash
       applyNewState(utility::addLoadBalancers(
-          getPlatform(), getProgrammedState(), firstHashes));
+          getHwSwitchEnsemble(),
+          getProgrammedState(),
+          firstHashes,
+          scopeResolver()));
 
       for (auto isV6 : {true, false}) {
         utility::pumpTraffic(
             isV6,
-            getHwSwitch(),
+            utility::getAllocatePktFn(getHwSwitchEnsemble()),
+            utility::getSendPktFunc(getHwSwitchEnsemble()),
             mac,
             firstVlan,
             masterLogicalInterfacePortIds()[kEcmpWidth]);
@@ -153,8 +167,12 @@ class HwHashPolarizationTests : public HwLinkStateDependentTest {
 
     // Set second hash
     applyNewState(utility::addLoadBalancers(
-        getPlatform(), getProgrammedState(), secondHashes));
-    auto makeTxPacket = [=](folly::MacAddress srcMac, const auto& ipPayload) {
+        getHwSwitchEnsemble(),
+        getProgrammedState(),
+        secondHashes,
+        scopeResolver()));
+    auto makeTxPacket = [=, this](
+                            folly::MacAddress srcMac, const auto& ipPayload) {
       return utility::makeUDPTxPacket(
           getHwSwitch(),
           firstVlan,
@@ -162,8 +180,8 @@ class HwHashPolarizationTests : public HwLinkStateDependentTest {
           mac,
           ipPayload.header().srcAddr,
           ipPayload.header().dstAddr,
-          ipPayload.payload()->header().srcPort,
-          ipPayload.payload()->header().dstPort);
+          ipPayload.udpPayload()->header().srcPort,
+          ipPayload.udpPayload()->header().dstPort);
     };
     for (auto& ethFrame : rxPackets) {
       std::unique_ptr<TxPacket> pkt;
@@ -194,18 +212,20 @@ class HwHashPolarizationTests : public HwLinkStateDependentTest {
 };
 
 TEST_F(HwHashPolarizationTests, fullXfullHash) {
-  auto fullHashCfg = utility::getEcmpFullHashConfig(getPlatform());
+  auto fullHashCfg = utility::getEcmpFullHashConfig({getPlatform()->getAsic()});
   runTest(fullHashCfg, fullHashCfg, true /*expect polarization*/);
 }
 
 TEST_F(HwHashPolarizationTests, fullXHalfHash) {
-  auto firstHashes = utility::getEcmpFullTrunkHalfHashConfig(getPlatform());
+  auto firstHashes =
+      utility::getEcmpFullTrunkHalfHashConfig({getPlatform()->getAsic()});
   firstHashes[0].seed() = getHwSwitch()->generateDeterministicSeed(
       LoadBalancerID::ECMP, kMacAddress01);
   firstHashes[1].seed() = getHwSwitch()->generateDeterministicSeed(
       LoadBalancerID::AGGREGATE_PORT, kMacAddress01);
 
-  auto secondHashes = utility::getEcmpFullTrunkHalfHashConfig(getPlatform());
+  auto secondHashes =
+      utility::getEcmpFullTrunkHalfHashConfig({getPlatform()->getAsic()});
   secondHashes[0].seed() = getHwSwitch()->generateDeterministicSeed(
       LoadBalancerID::ECMP, kMacAddress02);
   secondHashes[1].seed() = getHwSwitch()->generateDeterministicSeed(
@@ -216,12 +236,14 @@ TEST_F(HwHashPolarizationTests, fullXHalfHash) {
 
 TEST_F(HwHashPolarizationTests, fullXfullHashWithDifferentSeeds) {
   // Setup 2 identical hashes with only the seed changed
-  auto firstHashes = utility::getEcmpFullTrunkHalfHashConfig(getPlatform());
+  auto firstHashes =
+      utility::getEcmpFullTrunkHalfHashConfig({getPlatform()->getAsic()});
   firstHashes[0].seed() = getHwSwitch()->generateDeterministicSeed(
       LoadBalancerID::ECMP, kMacAddress01);
   firstHashes[1].seed() = getHwSwitch()->generateDeterministicSeed(
       LoadBalancerID::AGGREGATE_PORT, kMacAddress01);
-  auto secondHashes = utility::getEcmpFullTrunkHalfHashConfig(getPlatform());
+  auto secondHashes =
+      utility::getEcmpFullTrunkHalfHashConfig({getPlatform()->getAsic()});
   secondHashes[0].seed() = getHwSwitch()->generateDeterministicSeed(
       LoadBalancerID::ECMP, kMacAddress02);
   secondHashes[1].seed() = getHwSwitch()->generateDeterministicSeed(
@@ -248,9 +270,9 @@ struct HwHashPolarizationTestForAsic : public HwHashPolarizationTests {
       programRoutes<folly::IPAddressV4>();
       programRoutes<folly::IPAddressV6>();
     };
-    auto verify = [=]() {
+    auto verify = [=, this]() {
       auto secondHashes =
-          utility::getEcmpFullTrunkHalfHashConfig(getPlatform());
+          utility::getEcmpFullTrunkHalfHashConfig({getPlatform()->getAsic()});
       secondHashes[0].seed() = getHwSwitch()->generateDeterministicSeed(
           LoadBalancerID::ECMP, kMacAddress02);
       secondHashes[1].seed() = getHwSwitch()->generateDeterministicSeed(
@@ -262,61 +284,6 @@ struct HwHashPolarizationTestForAsic : public HwHashPolarizationTests {
   }
 };
 
-struct HwHashPolarizationTestForTD2
-    : HwHashPolarizationTestForAsic<cfg::AsicType::ASIC_TYPE_TRIDENT2, false> {
-};
-
-TEST_F(HwHashPolarizationTestForTD2, With_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
-}
-
-TEST_F(HwHashPolarizationTestForTD2, With_SAI_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
-}
-
-TEST_F(HwHashPolarizationTestForTD2, With_SAI_TH) {
-  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
-}
-
-TEST_F(HwHashPolarizationTestForTD2, With_TH) {
-  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, false);
-}
-
-TEST_F(HwHashPolarizationTestForTD2, With_TH3) {
-  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
-}
-
-TEST_F(HwHashPolarizationTestForTD2, With_TH4) {
-  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK4, false);
-}
-
-struct HwHashPolarizationTestForSAITD2
-    : HwHashPolarizationTestForAsic<cfg::AsicType::ASIC_TYPE_TRIDENT2, true> {};
-
-TEST_F(HwHashPolarizationTestForSAITD2, With_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
-}
-
-TEST_F(HwHashPolarizationTestForSAITD2, With_SAI_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
-}
-
-TEST_F(HwHashPolarizationTestForSAITD2, With_SAI_TH) {
-  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
-}
-
-TEST_F(HwHashPolarizationTestForSAITD2, With_TH) {
-  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, false);
-}
-
-TEST_F(HwHashPolarizationTestForSAITD2, With_TH3) {
-  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
-}
-
-TEST_F(HwHashPolarizationTestForSAITD2, With_TH4) {
-  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK4, false);
-}
-
 struct HwHashPolarizationTestForTH
     : HwHashPolarizationTestForAsic<cfg::AsicType::ASIC_TYPE_TOMAHAWK, false> {
 };
@@ -327,14 +294,6 @@ TEST_F(HwHashPolarizationTestForTH, With_TH) {
 
 TEST_F(HwHashPolarizationTestForTH, With_SAI_TH) {
   runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
-}
-
-TEST_F(HwHashPolarizationTestForTH, With_SAI_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
-}
-
-TEST_F(HwHashPolarizationTestForTH, With_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
 }
 
 TEST_F(HwHashPolarizationTestForTH, With_TH3) {
@@ -354,14 +313,6 @@ TEST_F(HwHashPolarizationTestForSAITH, With_TH) {
 
 TEST_F(HwHashPolarizationTestForSAITH, With_SAI_TH) {
   runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
-}
-
-TEST_F(HwHashPolarizationTestForSAITH, With_SAI_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
-}
-
-TEST_F(HwHashPolarizationTestForSAITH, With_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
 }
 
 TEST_F(HwHashPolarizationTestForSAITH, With_TH3) {
@@ -384,14 +335,6 @@ TEST_F(HwHashPolarizationTestForTH3, With_SAI_TH) {
   runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
 }
 
-TEST_F(HwHashPolarizationTestForTH3, With_SAI_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
-}
-
-TEST_F(HwHashPolarizationTestForTH3, With_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
-}
-
 TEST_F(HwHashPolarizationTestForTH3, With_TH3) {
   runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
 }
@@ -410,14 +353,6 @@ TEST_F(HwHashPolarizationTestForSAITH3, With_TH) {
 
 TEST_F(HwHashPolarizationTestForSAITH3, With_SAI_TH) {
   runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
-}
-
-TEST_F(HwHashPolarizationTestForSAITH3, With_SAI_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
-}
-
-TEST_F(HwHashPolarizationTestForSAITH3, With_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
 }
 
 TEST_F(HwHashPolarizationTestForSAITH3, With_TH3) {
@@ -440,14 +375,6 @@ TEST_F(HwHashPolarizationTestForTH4, With_SAI_TH) {
   runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
 }
 
-TEST_F(HwHashPolarizationTestForTH4, With_SAI_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
-}
-
-TEST_F(HwHashPolarizationTestForTH4, With_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
-}
-
 TEST_F(HwHashPolarizationTestForTH4, With_TH3) {
   runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
 }
@@ -468,19 +395,31 @@ TEST_F(HwHashPolarizationTestSAITH4, With_SAI_TH) {
   runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
 }
 
-TEST_F(HwHashPolarizationTestSAITH4, With_SAI_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
-}
-
-TEST_F(HwHashPolarizationTestSAITH4, With_TD2) {
-  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
-}
-
 TEST_F(HwHashPolarizationTestSAITH4, With_TH3) {
   runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
 }
 
 TEST_F(HwHashPolarizationTestSAITH4, With_TH4) {
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK4, false);
+}
+
+struct HwHashPolarizationTestSAITH5
+    : HwHashPolarizationTestForAsic<cfg::AsicType::ASIC_TYPE_TOMAHAWK5, true> {
+};
+
+TEST_F(HwHashPolarizationTestSAITH5, With_TH) {
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, false);
+}
+
+TEST_F(HwHashPolarizationTestSAITH5, With_SAI_TH) {
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
+}
+
+TEST_F(HwHashPolarizationTestSAITH5, With_TH3) {
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
+}
+
+TEST_F(HwHashPolarizationTestSAITH5, With_TH4) {
   runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK4, false);
 }
 
@@ -490,8 +429,8 @@ class HwHashTrunkPolarizationTests : public HwHashPolarizationTests {
   cfg::SwitchConfig initialConfig() const override {
     auto cfg = utility::onePortPerInterfaceConfig(
         getHwSwitch(),
-        masterLogicalPortIds(),
-        getAsic()->desiredLoopbackMode());
+        masterLogicalInterfacePortIds(),
+        getAsic()->desiredLoopbackModes());
     return cfg;
   }
 
@@ -500,7 +439,8 @@ class HwHashTrunkPolarizationTests : public HwHashPolarizationTests {
     for (auto i = 0; i < kNumAggregatePorts; ++i) {
       std::vector<int32_t> members(kAggregatePortWidth);
       for (auto j = 0; j < kAggregatePortWidth; ++j) {
-        members[j] = masterLogicalPortIds()[i * kAggregatePortWidth + j];
+        members[j] =
+            masterLogicalInterfacePortIds()[i * kAggregatePortWidth + j];
       }
       utility::addAggPort(curAggId++, members, cfg);
     }
@@ -537,11 +477,12 @@ class HwHashTrunkPolarizationTests : public HwHashPolarizationTests {
 
   std::vector<PortID> getEgressPorts(
       int numAggregatePorts = kNumAggregatePorts) const {
-    auto masterLogicalPorts = masterLogicalPortIds();
+    auto masterLogicalPorts = masterLogicalInterfacePortIds();
     std::vector<PortID> egressPorts{};
     for (auto i = 0; i < numAggregatePorts; ++i) {
       for (auto j = 0; j < kAggregatePortWidth; ++j) {
-        auto port = masterLogicalPortIds()[i * kAggregatePortWidth + j];
+        auto port =
+            masterLogicalInterfacePortIds()[i * kAggregatePortWidth + j];
         egressPorts.push_back(port);
       }
     }
@@ -571,13 +512,22 @@ class HwHashTrunkPolarizationTests : public HwHashPolarizationTests {
           getHwSwitch(), std::set<PortID>{ports.begin(), ports.end()});
       // Set first hash
       applyNewState(utility::addLoadBalancers(
-          getPlatform(), getProgrammedState(), hashes));
+          getHwSwitchEnsemble(),
+          getProgrammedState(),
+          hashes,
+          scopeResolver()));
 
-      auto logicalPorts = masterLogicalPortIds();
+      auto logicalPorts = masterLogicalInterfacePortIds();
       auto portIter = logicalPorts.end() - 1;
 
       for (auto isV6 : {true, false}) {
-        utility::pumpTraffic(isV6, getHwSwitch(), mac, firstVlan, *portIter);
+        utility::pumpTraffic(
+            isV6,
+            utility::getAllocatePktFn(getHwSwitchEnsemble()),
+            utility::getSendPktFunc(getHwSwitchEnsemble()),
+            mac,
+            firstVlan,
+            *portIter);
       }
     } // stop capture
 
@@ -599,8 +549,12 @@ class HwHashTrunkPolarizationTests : public HwHashPolarizationTests {
 
     // Set second hash
     applyNewState(utility::addLoadBalancers(
-        getPlatform(), getProgrammedState(), secondHashes));
-    auto makeTxPacket = [=](folly::MacAddress srcMac, const auto& ipPayload) {
+        getHwSwitchEnsemble(),
+        getProgrammedState(),
+        secondHashes,
+        scopeResolver()));
+    auto makeTxPacket = [=, this](
+                            folly::MacAddress srcMac, const auto& ipPayload) {
       return utility::makeUDPTxPacket(
           getHwSwitch(),
           firstVlan,
@@ -608,11 +562,11 @@ class HwHashTrunkPolarizationTests : public HwHashPolarizationTests {
           mac,
           ipPayload.header().srcAddr,
           ipPayload.header().dstAddr,
-          ipPayload.payload()->header().srcPort,
-          ipPayload.payload()->header().dstPort);
+          ipPayload.udpPayload()->header().srcPort,
+          ipPayload.udpPayload()->header().dstPort);
     };
 
-    auto logicalPorts = masterLogicalPortIds();
+    auto logicalPorts = masterLogicalInterfacePortIds();
     auto portIter = logicalPorts.end() - 1;
 
     for (auto& ethFrame : rxPackets) {
@@ -641,13 +595,15 @@ class HwHashTrunkPolarizationTests : public HwHashPolarizationTests {
 
  public:
   void runFullHalfxFullHalfTest() {
-    auto firstHashes = utility::getEcmpFullTrunkHalfHashConfig(getPlatform());
+    auto firstHashes =
+        utility::getEcmpFullTrunkHalfHashConfig({getPlatform()->getAsic()});
     firstHashes[0].seed() = getHwSwitch()->generateDeterministicSeed(
         LoadBalancerID::ECMP, kMacAddress01);
     firstHashes[1].seed() = getHwSwitch()->generateDeterministicSeed(
         LoadBalancerID::AGGREGATE_PORT, kMacAddress01);
 
-    auto secondHashes = utility::getEcmpFullTrunkHalfHashConfig(getPlatform());
+    auto secondHashes =
+        utility::getEcmpFullTrunkHalfHashConfig({getPlatform()->getAsic()});
     secondHashes[0].seed() = getHwSwitch()->generateDeterministicSeed(
         LoadBalancerID::ECMP, kMacAddress02);
     secondHashes[1].seed() = getHwSwitch()->generateDeterministicSeed(

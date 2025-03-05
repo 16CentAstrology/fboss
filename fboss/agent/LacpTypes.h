@@ -15,8 +15,8 @@
 
 #include <folly/MacAddress.h>
 #include <folly/Range.h>
-#include <folly/dynamic.h>
 #include <folly/io/Cursor.h>
+#include <folly/json/dynamic.h>
 
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
@@ -33,12 +33,12 @@ class LACPError : public FbossError {
   explicit LACPError(Args&&... args)
       : FbossError(std::forward<Args>(args)...) {}
 
-  ~LACPError() throw() override {}
+  ~LACPError() noexcept override {}
 };
 
 enum LacpState : int {
   NONE = 0x00,
-  ACTIVE = 0x01,
+  LACP_ACTIVE = 0x01,
   SHORT_TIMEOUT = 0x02,
   AGGREGATABLE = 0x04,
   IN_SYNC = 0x08,

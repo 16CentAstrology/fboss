@@ -17,13 +17,24 @@
 namespace facebook::fboss::utility {
 
 std::vector<int> kLosslessPgs(const HwSwitch* hwSwitch) {
-  auto mode = hwSwitch->getPlatform()->getMode();
-  switch (mode) {
-    case PlatformMode::FUJI:
-      return {6};
+  auto type = hwSwitch->getPlatform()->getType();
+  switch (type) {
+    case PlatformType::PLATFORM_FUJI:
+      return {2};
     default:
       //  this is for fake bcm
       return {6, 7};
+  }
+}
+
+std::vector<int> kLossyPgs(const HwSwitch* hwSwitch) {
+  auto type = hwSwitch->getPlatform()->getType();
+  switch (type) {
+    case PlatformType::PLATFORM_FUJI:
+      return {0, 6, 7};
+    default:
+      //  this is for fake bcm
+      return {};
   }
 }
 
@@ -32,14 +43,16 @@ int kPgMinLimitCells() {
 }
 
 int kGlobalSharedBufferCells(const HwSwitch* hwSwitch) {
-  auto mode = hwSwitch->getPlatform()->getMode();
-  switch (mode) {
-    case PlatformMode::WEDGE400:
-    case PlatformMode::MINIPACK:
-    case PlatformMode::YAMP:
+  auto type = hwSwitch->getPlatform()->getType();
+  switch (type) {
+    case PlatformType::PLATFORM_WEDGE400:
+    case PlatformType::PLATFORM_WEDGE400_GRANDTETON:
+    case PlatformType::PLATFORM_MINIPACK:
+    case PlatformType::PLATFORM_YAMP:
       return 117436;
     // Using default value for FUJI till Buffer tuning value is finalized.
-    case PlatformMode::FUJI:
+    case PlatformType::PLATFORM_FUJI:
+      return 203834;
     default:
       //  this is for fake bcm
       return 115196;
@@ -47,9 +60,9 @@ int kGlobalSharedBufferCells(const HwSwitch* hwSwitch) {
   }
 }
 int kGlobalHeadroomBufferCells(const HwSwitch* hwSwitch) {
-  auto mode = hwSwitch->getPlatform()->getMode();
-  switch (mode) {
-    case PlatformMode::FUJI:
+  auto type = hwSwitch->getPlatform()->getType();
+  switch (type) {
+    case PlatformType::PLATFORM_FUJI:
       return 25383;
     default:
       //  this is for fake bcm
@@ -57,9 +70,9 @@ int kGlobalHeadroomBufferCells(const HwSwitch* hwSwitch) {
   }
 }
 int kDownlinkPgHeadroomLimitCells(const HwSwitch* hwSwitch) {
-  auto mode = hwSwitch->getPlatform()->getMode();
-  switch (mode) {
-    case PlatformMode::FUJI:
+  auto type = hwSwitch->getPlatform()->getType();
+  switch (type) {
+    case PlatformType::PLATFORM_FUJI:
       return 2160;
     default:
       //  this is for fake bcm
@@ -67,9 +80,9 @@ int kDownlinkPgHeadroomLimitCells(const HwSwitch* hwSwitch) {
   }
 }
 int kUplinkPgHeadroomLimitCells(const HwSwitch* hwSwitch) {
-  auto mode = hwSwitch->getPlatform()->getMode();
-  switch (mode) {
-    case PlatformMode::FUJI:
+  auto type = hwSwitch->getPlatform()->getType();
+  switch (type) {
+    case PlatformType::PLATFORM_FUJI:
       return 3184;
     default:
       //  this is for fake bcm
@@ -117,6 +130,19 @@ void enablePfcMapsConfig(cfg::SwitchConfig& cfg) {
   }
 }
 
+void createPortPgConfig(
+    const int& pgId,
+    const int mmuCellBytes,
+    cfg::PortPgConfig& pgConfig) {
+  CHECK_LE(pgId, cfg::switch_config_constants::PORT_PG_VALUE_MAX());
+  pgConfig.id() = pgId;
+  pgConfig.bufferPoolName() = "bufferNew";
+  // provide atleast 1 cell worth of minLimit
+  pgConfig.minLimitBytes() = kPgMinLimitCells() * mmuCellBytes;
+  pgConfig.scalingFactor() = cfg::MMUScalingFactor::ONE;
+  pgConfig.resumeOffsetBytes() = kPgResumeLimitCells() * mmuCellBytes;
+}
+
 void enablePgConfigConfig(
     cfg::SwitchConfig& cfg,
     const int mmuCellBytes,
@@ -127,17 +153,16 @@ void enablePgConfigConfig(
   for (const auto& [pgProfileName, useUplinkProfile] : pgProfileMap) {
     for (const auto& pgId : kLosslessPgs(hwSwitch)) {
       cfg::PortPgConfig pgConfig;
-      CHECK_LE(pgId, cfg::switch_config_constants::PORT_PG_VALUE_MAX());
-      pgConfig.id() = pgId;
-      pgConfig.bufferPoolName() = "bufferNew";
-      // provide atleast 1 cell worth of minLimit
-      pgConfig.minLimitBytes() = kPgMinLimitCells() * mmuCellBytes;
+      createPortPgConfig(pgId, mmuCellBytes, pgConfig);
       pgConfig.headroomLimitBytes() =
           (useUplinkProfile ? kUplinkPgHeadroomLimitCells(hwSwitch)
                             : kDownlinkPgHeadroomLimitCells(hwSwitch)) *
           mmuCellBytes;
-      pgConfig.scalingFactor() = cfg::MMUScalingFactor::ONE;
-      pgConfig.resumeOffsetBytes() = kPgResumeLimitCells() * mmuCellBytes;
+      portPgConfigs.emplace_back(pgConfig);
+    }
+    for (const auto& pgId : kLossyPgs(hwSwitch)) {
+      cfg::PortPgConfig pgConfig;
+      createPortPgConfig(pgId, mmuCellBytes, pgConfig);
       portPgConfigs.emplace_back(pgConfig);
     }
     portPgConfigMap.insert({pgProfileName, portPgConfigs});

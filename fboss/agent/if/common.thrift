@@ -7,6 +7,17 @@ namespace py.asyncio neteng.fboss.asyncio.common
 
 include "fboss/agent/if/mpls.thrift"
 include "common/network/if/Address.thrift"
+include "thrift/annotation/cpp.thrift"
+
+@cpp.Type{name = "::folly::fbstring"}
+typedef binary fbbinary
+@cpp.Type{name = "::folly::fbstring"}
+typedef string fbstring
+
+struct ClientInformation {
+  1: optional fbstring username;
+  2: optional fbstring hostname;
+}
 
 struct NextHopThrift {
   1: Address.BinaryAddress address;
@@ -22,6 +33,7 @@ struct NextHopThrift {
   2: i32 weight = 0;
   // MPLS encapsulation information for IP->MPLS and MPLS routes
   3: optional mpls.MplsAction mplsAction;
+  4: optional bool disableTTLDecrement;
 }
 
 /*
@@ -33,8 +45,8 @@ struct NextHopThrift {
 * if any next hop has MPLS pop action, then all next hops must have MPLS pop action, address of nexthop is ignored.
 */
 struct NamedNextHopGroup {
-  1: required string name;
-  2: required list<NextHopThrift> nexthops;
+  1: string name;
+  2: list<NextHopThrift> nexthops;
 }
 
 /*
@@ -77,14 +89,62 @@ union NamedRouteDestination {
   2: string policyName;
 }
 
-struct SystemPortThrift {
-  1: i64 portId;
-  2: i64 switchId;
-  3: string portName; // switchId::portName
-  4: i64 coreIndex;
-  5: i64 corePortIndex;
-  6: i64 speedMbps;
-  7: i64 numVoqs;
-  9: bool enabled;
-  10: optional string qosPolicy;
+// SwSwitch run states. SwSwitch moves forward from a
+// lower numbered state to the next
+enum SwitchRunState {
+  UNINITIALIZED = 0,
+  INITIALIZED = 1,
+  CONFIGURED = 2,
+  FIB_SYNCED = 3,
+  EXITING = 4,
+}
+
+enum RemoteInterfaceType {
+  /*
+   * Remote interfaces dynamically created by DSF Control Plane Sync.
+   */
+  DYNAMIC_ENTRY = 0,
+
+  /*
+   * Remote interfaces statically created by DSF Node map processing.
+   */
+  STATIC_ENTRY = 1,
+}
+
+enum RemoteSystemPortType {
+  /*
+   * Remote System ports dynamically created by DSF Control Plane Sync.
+   */
+  DYNAMIC_ENTRY = 0,
+
+  /*
+   * Remote System ports statically created by DSF Node map processing.
+   */
+  STATIC_ENTRY = 1,
+}
+
+enum LivenessStatus {
+  /*
+   * Remote System Ports or Remote Interfaces confirmed by DSF Control Plane.
+   */
+  LIVE = 0,
+
+  /*
+   * Remote System Ports or Remote Interfaces not confirmed by DSF Control Plane
+   */
+  STALE = 1,
+}
+
+enum HwWriteBehavior {
+  FAIL = 0,
+  SKIP = 1,
+  WRITE = 2,
+  LOG_FAIL = 3,
+}
+
+struct BufferPoolFields {
+  1: string id;
+  2: optional i32 headroomBytes;
+  3: i32 sharedBytes;
+  4: optional i32 reservedBytes;
 }

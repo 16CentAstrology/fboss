@@ -200,6 +200,36 @@ TEST_F(CmdShowRouteDetailsTestFixture, queryClient) {
   EXPECT_THRIFT_EQ(model, normalizedModel);
 }
 
+TEST_F(CmdShowRouteDetailsTestFixture, queryNetworkEntries) {
+  setupMockedAgentServer();
+  EXPECT_CALL(getMockAgent(), getRouteTableDetails(_))
+      .WillOnce(Invoke([&](auto& entries) { entries = routeEntries; }));
+
+  auto cmd = CmdShowRouteDetails();
+  std::vector<std::string> entries = {"2401:db00::/32", "176.161.6.0/32"};
+  CmdShowRouteDetailsTraits::ObjectArgType queriedEntries(entries);
+  auto model = cmd.queryClient(localhost(), queriedEntries);
+
+  EXPECT_THRIFT_EQ(model, normalizedModel);
+}
+
+TEST_F(CmdShowRouteDetailsTestFixture, queryIpRouteEntries) {
+  setupMockedAgentServer();
+  EXPECT_CALL(getMockAgent(), getRouteTableDetails(_))
+      .WillOnce(Invoke([&](auto& entries) { entries = routeEntries; }));
+  EXPECT_CALL(getMockAgent(), getIpRouteDetails(_, _, _))
+      .WillOnce(
+          Invoke([&](auto& entry, auto, auto) { entry = routeEntries[0]; }));
+
+  auto cmd = CmdShowRouteDetails();
+  std::vector<std::string> entries = {
+      "2401:db00::/32", "176.161.6.0/32", "1.1.1.1"};
+  CmdShowRouteDetailsTraits::ObjectArgType queriedEntries(entries);
+  auto model = cmd.queryClient(localhost(), queriedEntries);
+
+  EXPECT_THRIFT_EQ(model, normalizedModel);
+}
+
 TEST_F(CmdShowRouteDetailsTestFixture, printOutput) {
   std::stringstream ss;
   CmdShowRouteDetails().printOutput(normalizedModel, ss);
@@ -207,7 +237,7 @@ TEST_F(CmdShowRouteDetailsTestFixture, printOutput) {
   std::string output = ss.str();
   std::string expectOutput = R"(
 Network Address: 2401:db00::/32
-  Nexthops from client 0
+  Nexthops from client BGPD
     2401:db00:e32f:8fc::2 weight 1 MPLS -> SWAP : 1
   Action: Nexthops
   Forwarding via:
@@ -217,7 +247,7 @@ Network Address: 2401:db00::/32
   Class Id: DST_CLASS_L3_DPR(20)
 
 Network Address: 176.161.6.0/32 (connected)
-  Nexthops from client 1
+  Nexthops from client STATIC_ROUTE
     240.161.6.0
   Action: Nexthops
   Forwarding via:

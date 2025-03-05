@@ -13,7 +13,6 @@
 
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/hw/bcm/BcmCosQueueFBConvertors.h"
-#include "fboss/agent/hw/bcm/tests/BcmUnitTestUtils.h"
 
 // Need to define bde in a single cpp_unittest
 extern "C" {
@@ -51,8 +50,12 @@ namespace facebook::fboss {
 using namespace facebook::fboss::utility;
 
 TEST(CosQueueBcmConvertors, cfgAlphaToFromBcm) {
-  for (auto cfgAlphaAndName : cfg::_MMUScalingFactor_VALUES_TO_NAMES) {
-    auto cfgAlpha = cfgAlphaAndName.first;
+  for (auto cfgAlpha :
+       apache::thrift::TEnumTraits<cfg::MMUScalingFactor>::values) {
+    if (cfgAlpha == cfg::MMUScalingFactor::ONE_32768TH) {
+      // Unsupported on XGS
+      continue;
+    }
     auto bcmAlpha = cfgAlphaToBcmAlpha(cfgAlpha);
     EXPECT_EQ(cfgAlpha, bcmAlphaToCfgAlpha(bcmAlpha));
   }

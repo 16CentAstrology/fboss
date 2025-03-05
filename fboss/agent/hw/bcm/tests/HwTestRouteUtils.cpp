@@ -12,7 +12,6 @@
 
 #include "fboss/agent/hw/bcm/BcmAddressFBConvertors.h"
 #include "fboss/agent/hw/bcm/BcmRouteCounter.h"
-#include "fboss/agent/hw/bcm/BcmSdkVer.h"
 #include "fboss/agent/hw/bcm/BcmSwitch.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 
@@ -74,7 +73,6 @@ uint64_t getBcmRouteCounter(
   auto counterIndex = hwCounterId.getHwId();
   if (bcmSwitch->getPlatform()->getAsic()->isSupported(
           HwAsic::Feature::ROUTE_FLEX_COUNTERS)) {
-#if defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_20)
     uint32 counterOffset = hwCounterId.getHwOffset();
     bcm_flexctr_counter_value_t counterValue;
     CHECK_EQ(
@@ -85,9 +83,6 @@ uint64_t getBcmRouteCounter(
                << " offset: " << counterIndex
                << " bytes: " << COMPILER_64_LO(counterValue.value[1]);
     return COMPILER_64_LO(counterValue.value[1]);
-#else
-    return 0;
-#endif
   } else {
     CHECK_EQ(
         bcm_stat_flex_counter_sync_get(
@@ -258,6 +253,15 @@ bool isHwRoutePresent(
 bool isRouteCounterSupported(const HwSwitch* hwSwitch) {
   return hwSwitch->getPlatform()->getAsic()->isSupported(
       HwAsic::Feature::ROUTE_COUNTERS);
+}
+
+bool isRouteUnresolvedToCpuClassId(
+    const HwSwitch* hwSwitch,
+    RouterID rid,
+    const folly::CIDRNetwork& cidrNetwork) {
+  auto classId = getHwRouteClassID(hwSwitch, rid, cidrNetwork);
+  return classId.has_value() &&
+      classId.value() == cfg::AclLookupClass::DST_CLASS_L3_LOCAL_2;
 }
 
 } // namespace facebook::fboss::utility

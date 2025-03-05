@@ -13,7 +13,6 @@
 #include "fboss/agent/hw/bcm/BcmError.h"
 #include "fboss/agent/hw/bcm/BcmPortUtils.h"
 #include "fboss/agent/hw/bcm/tests/BcmTest.h"
-#include "fboss/agent/platforms/tests/utils/BcmTestPlatform.h"
 #include "fboss/agent/types.h"
 
 namespace {
@@ -159,27 +158,90 @@ int getProgrammedPfcWatchdogControlParam(
   return readHwConfig[bcmParam];
 }
 
+// Maps BCM specific value to cfg::PfcWatchdogRecoveryAction
+cfg::PfcWatchdogRecoveryAction pfcWatchdogRecoveryAction(int programmedAction) {
+  cfg::PfcWatchdogRecoveryAction configuredRecoveryAction;
+  if (programmedAction == bcmSwitchPFCDeadlockActionTransmit) {
+    configuredRecoveryAction = cfg::PfcWatchdogRecoveryAction::NO_DROP;
+  } else {
+    configuredRecoveryAction = cfg::PfcWatchdogRecoveryAction::DROP;
+  }
+
+  return configuredRecoveryAction;
+}
+
 // Reads the BCM bcmSwitchPFCDeadlockRecoveryAction from HW
-int getPfcWatchdogRecoveryAction() {
+// and returns the configured one
+cfg::PfcWatchdogRecoveryAction getPfcWatchdogRecoveryAction(
+    const HwSwitch* /* hw */,
+    const PortID& /* portId */) {
   int value = -1;
   const int unit = 0;
   auto rv =
       bcm_switch_control_get(unit, bcmSwitchPFCDeadlockRecoveryAction, &value);
   bcmCheckError(rv, "Failed to get PFC watchdog recovery action");
-  return value;
+  return pfcWatchdogRecoveryAction(value);
 }
 
-// Maps cfg::PfcWatchdogRecoveryAction to BCM specific value
-int pfcWatchdogRecoveryAction(
-    cfg::PfcWatchdogRecoveryAction configuredRecoveryAction) {
-  int bcmPfcWatchdogRecoveryAction;
-  if (configuredRecoveryAction == cfg::PfcWatchdogRecoveryAction::NO_DROP) {
-    bcmPfcWatchdogRecoveryAction = bcmSwitchPFCDeadlockActionTransmit;
-  } else {
-    bcmPfcWatchdogRecoveryAction = bcmSwitchPFCDeadlockActionDrop;
-  }
+void checkSwHwPgCfgMatch(
+    const HwSwitch* hw,
+    const std::shared_ptr<Port>& swPort,
+    bool pfcEnable) {
+  PortPgConfigs portPgsHw;
+  const PortID portId = swPort->getID();
 
-  return bcmPfcWatchdogRecoveryAction;
+  auto bcmSwitch = static_cast<const BcmSwitch*>(hw);
+  auto bcmPort = bcmSwitch->getPortTable()->getBcmPort(portId);
+
+  portPgsHw = bcmPort->getCurrentProgrammedPgSettings();
+  const auto bufferPoolHwPtr = bcmPort->getCurrentIngressPoolSettings();
+
+  auto swPgConfig = swPort->getPortPgConfigs();
+
+  EXPECT_EQ(swPort->getPortPgConfigs()->size(), portPgsHw.size());
+
+  int i = 0;
+  // both vectors are sorted to start with lowest pg id
+  for (const auto& pgConfig : std::as_const(*swPgConfig)) {
+    auto id = pgConfig->cref<switch_state_tags::id>()->cref();
+    EXPECT_EQ(id, portPgsHw[i]->getID());
+
+    cfg::MMUScalingFactor scalingFactor;
+    if (auto scalingFactorStr =
+            pgConfig->cref<switch_state_tags::scalingFactor>()) {
+      scalingFactor =
+          nameToEnum<cfg::MMUScalingFactor>(scalingFactorStr->cref());
+      EXPECT_EQ(scalingFactor, *portPgsHw[i]->getScalingFactor());
+    } else {
+      EXPECT_EQ(std::nullopt, portPgsHw[i]->getScalingFactor());
+    }
+    EXPECT_EQ(
+        pgConfig->cref<switch_state_tags::resumeOffsetBytes>()->cref(),
+        portPgsHw[i]->getResumeOffsetBytes().value());
+    EXPECT_EQ(
+        pgConfig->cref<switch_state_tags::minLimitBytes>()->cref(),
+        portPgsHw[i]->getMinLimitBytes());
+
+    int pgHeadroom = 0;
+    // for pgs with headroom, lossless mode + pfc should be enabled
+    if (auto pgHdrmOpt =
+            pgConfig->cref<switch_state_tags::headroomLimitBytes>()) {
+      pgHeadroom = pgHdrmOpt->cref();
+    }
+    EXPECT_EQ(pgHeadroom, portPgsHw[i]->getHeadroomLimitBytes());
+    const auto bufferPool =
+        pgConfig->cref<switch_state_tags::bufferPoolConfig>();
+    EXPECT_EQ(
+        bufferPool->cref<common_if_tags::sharedBytes>()->cref(),
+        (*bufferPoolHwPtr).getSharedBytes());
+    EXPECT_EQ(
+        bufferPool->safe_cref<common_if_tags::headroomBytes>()->toThrift(),
+        *((*bufferPoolHwPtr).getHeadroomBytes()));
+    // we are in lossless mode if headroom > 0, else lossless mode = 0
+    EXPECT_EQ(bcmPort->getProgrammedPgLosslessMode(id), pgHeadroom ? 1 : 0);
+    EXPECT_EQ(bcmPort->getProgrammedPfcStatusInPg(id), pfcEnable ? 1 : 0);
+    i++;
+  }
 }
 
 } // namespace facebook::fboss::utility

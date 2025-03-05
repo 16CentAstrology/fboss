@@ -17,7 +17,7 @@ class Tomahawk3Asic;
 
 class SaiBcmDarwinPlatform : public SaiBcmPlatform {
  public:
-  explicit SaiBcmDarwinPlatform(
+  SaiBcmDarwinPlatform(
       std::unique_ptr<PlatformProductInfo> productInfo,
       folly::MacAddress localMac,
       const std::string& platformMappingStr);
@@ -39,9 +39,9 @@ class SaiBcmDarwinPlatform : public SaiBcmPlatform {
 
  private:
   void setupAsic(
-      cfg::SwitchType switchType,
       std::optional<int64_t> switchId,
-      std::optional<cfg::Range64> systemPortRange) override;
+      const cfg::SwitchInfo& switchInfo,
+      std::optional<HwAsic::FabricNodeRole> fabricRole) override;
   std::unique_ptr<Tomahawk3Asic> asic_;
 };
 

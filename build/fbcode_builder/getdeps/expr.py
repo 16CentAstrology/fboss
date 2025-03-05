@@ -3,6 +3,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import re
 import shlex
 
@@ -149,8 +151,10 @@ class Parser(object):
 
     def ident(self) -> str:
         ident = self.lex.get_token()
+        # pyre-fixme[6]: For 2nd argument expected `str` but got `Optional[str]`.
         if not re.match("[a-zA-Z]+", ident):
             raise Exception("expected identifier found %s" % ident)
+        # pyre-fixme[7]: Expected `str` but got `Optional[str]`.
         return ident
 
     def parse_not(self) -> NotExpr:

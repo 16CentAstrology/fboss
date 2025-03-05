@@ -16,16 +16,19 @@
 #include "fboss/agent/hw/sai/api/AclApi.h"
 #include "fboss/agent/hw/sai/store/SaiStore.h"
 #include "fboss/agent/hw/sai/switch/SaiAclTableGroupManager.h"
+#include "fboss/agent/hw/sai/switch/SaiHostifManager.h"
 #include "fboss/agent/hw/sai/switch/SaiManagerTable.h"
 #include "fboss/agent/hw/sai/switch/SaiMirrorManager.h"
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiSwitch.h"
 #include "fboss/agent/hw/sai/switch/SaiSwitchManager.h"
+#include "fboss/agent/hw/sai/switch/SaiUdfManager.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/platforms/sai/SaiPlatform.h"
 
 #include <folly/MacAddress.h>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 
 using namespace std::chrono;
@@ -96,7 +99,7 @@ AclTableSaiId SaiAclTableManager::addAclTable(
     const std::shared_ptr<AclTable>& addedAclTable,
     cfg::AclStage aclStage) {
   auto saiAclStage =
-      managerTable_->aclTableGroupManager().cfgAclStageToSaiAclStage(aclStage);
+      SaiAclTableGroupManager::cfgAclStageToSaiAclStage(aclStage);
 
   /*
    * TODO(skhare)
@@ -105,7 +108,7 @@ AclTableSaiId SaiAclTableManager::addAclTable(
    * addAclTable.
    *
    * After ACL table is added, add it to appropriate ACL group:
-   * managerTable_->switchManager().addTableGroupMember(SAI_ACL_STAGE_INGRESS,
+   * managerTable_->switchManager().addTableGroupMember(aclStage,
    * aclTableSaiId);
    */
 
@@ -148,7 +151,7 @@ AclTableSaiId SaiAclTableManager::addAclTable(
   // Add ACL Table to group based on the stage
   if (platform_->getAsic()->isSupported(HwAsic::Feature::ACL_TABLE_GROUP)) {
     managerTable_->aclTableGroupManager().addAclTableGroupMember(
-        SAI_ACL_STAGE_INGRESS, aclTableSaiId, aclTableName);
+        saiAclStage, aclTableSaiId, aclTableName);
   }
 
   return aclTableSaiId;
@@ -156,17 +159,58 @@ AclTableSaiId SaiAclTableManager::addAclTable(
 
 void SaiAclTableManager::removeAclTable(
     const std::shared_ptr<AclTable>& removedAclTable,
-    cfg::AclStage /*aclStage*/) {
+    cfg::AclStage aclStage) {
+  auto saiAclStage =
+      SaiAclTableGroupManager::cfgAclStageToSaiAclStage(aclStage);
   auto aclTableName = removedAclTable->getID();
 
   // remove from acl table group
   if (hasTableGroups_) {
     managerTable_->aclTableGroupManager().removeAclTableGroupMember(
-        SAI_ACL_STAGE_INGRESS, aclTableName);
+        saiAclStage, aclTableName);
   }
 
   // remove from handles
   handles_.erase(aclTableName);
+}
+
+bool SaiAclTableManager::needsAclTableRecreate(
+    const std::shared_ptr<AclTable>& oldAclTable,
+    const std::shared_ptr<AclTable>& newAclTable) {
+  if (oldAclTable->getActionTypes() != newAclTable->getActionTypes() ||
+      oldAclTable->getPriority() != newAclTable->getPriority() ||
+      oldAclTable->getQualifiers() != newAclTable->getQualifiers() ||
+      oldAclTable->getUdfGroups()->toThrift() !=
+          newAclTable->getUdfGroups()->toThrift()) {
+    XLOG(DBG2) << "Recreating ACL table";
+    return true;
+  }
+  return false;
+}
+
+void SaiAclTableManager::removeAclEntriesFromTable(
+    const std::shared_ptr<AclTable>& aclTable) {
+  auto aclMap = aclTable->getAclMap().unwrap();
+  for (auto const& iter : std::as_const(*aclMap)) {
+    const auto& entry = iter.second;
+    auto aclEntry = aclMap->getEntry(entry->getID());
+    removeAclEntry(aclEntry, aclTable->getID());
+  }
+}
+
+void SaiAclTableManager::addAclEntriesToTable(
+    const std::shared_ptr<AclTable>& aclTable,
+    std::shared_ptr<AclMap>& aclMap) {
+  auto newAclMap = aclTable->getAclMap().unwrap();
+  for (auto const& iter : std::as_const(*aclMap)) {
+    const auto& entry = iter.second;
+    // only re-add the ACL entry if present in new table
+    if (!newAclMap->getEntryIf(entry->getID())) {
+      continue;
+    }
+    auto aclEntry = aclMap->getEntry(entry->getID());
+    addAclEntry(aclEntry, aclTable->getID());
+  }
 }
 
 void SaiAclTableManager::changedAclTable(
@@ -174,19 +218,20 @@ void SaiAclTableManager::changedAclTable(
     const std::shared_ptr<AclTable>& newAclTable,
     cfg::AclStage aclStage) {
   /*
-   * TODO(skhare)
-   * Extend SwitchState to carry AclTable, and then process it to change
-   * AclTable.
-   * (We would likely have to removeAclTable() and re addAclTable() due to ASIC
-   * limitations.
-   */
+   * If the only change in acl table is in acl entries, then the acl entry delta
+   * processing will take care of changing those.
+   * Changes to ACL table properties will need a remove and readd
+   * Ensure that the newly added table also adds the old acls*/
+  if (needsAclTableRecreate(oldAclTable, newAclTable)) {
+    // Remove acl entries from old acl table before removing the table
+    removeAclEntriesFromTable(oldAclTable);
+    removeAclTable(oldAclTable, aclStage);
+    addAclTable(newAclTable, aclStage);
 
-  /*
-   * TODO(saranicholas)
-   * Modify this to process acl entries delta, instead of removing and re adding
-   */
-  removeAclTable(oldAclTable, aclStage);
-  addAclTable(newAclTable, aclStage);
+    // Add the old acl Entries back to new acl table
+    auto oldAclMap = oldAclTable->getAclMap().unwrap();
+    addAclEntriesToTable(newAclTable, oldAclMap);
+  }
 }
 
 const SaiAclTableHandle* FOLLY_NULLABLE
@@ -240,6 +285,12 @@ sai_acl_ip_type_t SaiAclTableManager::cfgIpTypeToSaiIpType(
       return SAI_ACL_IP_TYPE_IPV4ANY;
     case cfg::IpType::IP6:
       return SAI_ACL_IP_TYPE_IPV6ANY;
+    case cfg::IpType::ARP_REQUEST:
+      return SAI_ACL_IP_TYPE_ARP_REQUEST;
+    case cfg::IpType::ARP_REPLY:
+      return SAI_ACL_IP_TYPE_ARP_REPLY;
+    case cfg::IpType::NON_IP:
+      return SAI_ACL_IP_TYPE_NON_IP;
   }
   // should return in one of the cases
   throw FbossError("Unsupported IP Type option");
@@ -254,6 +305,8 @@ uint16_t SaiAclTableManager::cfgEtherTypeToSaiEtherType(
     case cfg::EtherType::EAPOL:
     case cfg::EtherType::MACSEC:
     case cfg::EtherType::LLDP:
+    case cfg::EtherType::ARP:
+    case cfg::EtherType::LACP:
       return static_cast<uint16_t>(cfgEtherType);
   }
   // should return in one of the cases
@@ -350,6 +403,14 @@ SaiAclTableManager::cfgActionTypeListToSaiActionTypeList(
       case cfg::AclTableActionType::MIRROR_EGRESS:
         saiActionType = SAI_ACL_ACTION_TYPE_MIRROR_EGRESS;
         break;
+      case cfg::AclTableActionType::SET_USER_DEFINED_TRAP:
+        saiActionType = SAI_ACL_ACTION_TYPE_SET_USER_TRAP_ID;
+        break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+      case cfg::AclTableActionType::DISABLE_ARS_FORWARDING:
+        saiActionType = SAI_ACL_ACTION_TYPE_DISABLE_ARS_FORWARDING;
+        break;
+#endif
       default:
         // should return in one of the cases
         throw FbossError("Unsupported Acl Table action type");
@@ -360,19 +421,24 @@ SaiAclTableManager::cfgActionTypeListToSaiActionTypeList(
   return saiActionTypeList;
 }
 
-bool isSameAclCounterAttributes(
+bool SaiAclTableManager::isSameAclCounterAttributes(
     const SaiAclCounterTraits::CreateAttributes& fromStore,
     const SaiAclCounterTraits::CreateAttributes& fromSw) {
-  return GET_ATTR(AclCounter, TableId, fromStore) ==
-      GET_ATTR(AclCounter, TableId, fromSw) &&
-#if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
-      GET_OPT_ATTR(AclCounter, Label, fromStore) ==
-      GET_OPT_ATTR(AclCounter, Label, fromSw) &&
-#endif
+  bool result = GET_ATTR(AclCounter, TableId, fromStore) ==
+          GET_ATTR(AclCounter, TableId, fromSw) &&
       GET_OPT_ATTR(AclCounter, EnablePacketCount, fromStore) ==
-      GET_OPT_ATTR(AclCounter, EnablePacketCount, fromSw) &&
+          GET_OPT_ATTR(AclCounter, EnablePacketCount, fromSw) &&
       GET_OPT_ATTR(AclCounter, EnableByteCount, fromStore) ==
-      GET_OPT_ATTR(AclCounter, EnableByteCount, fromSw);
+          GET_OPT_ATTR(AclCounter, EnableByteCount, fromSw);
+
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::ACL_COUNTER_LABEL)) {
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
+    result = result &&
+        GET_OPT_ATTR(AclCounter, Label, fromStore) ==
+            GET_OPT_ATTR(AclCounter, Label, fromSw);
+#endif
+  }
+  return result;
 }
 
 std::pair<
@@ -404,7 +470,10 @@ SaiAclTableManager::addAclCounter(
       counterLabel.begin());
 
   std::optional<SaiAclCounterTraits::Attributes::Label> aclCounterLabel{
-      counterLabel};
+      std::nullopt};
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::ACL_COUNTER_LABEL)) {
+    aclCounterLabel = counterLabel;
+  }
 #endif
 
   std::optional<SaiAclCounterTraits::Attributes::EnablePacketCount>
@@ -432,25 +501,33 @@ SaiAclTableManager::addAclCounter(
     auto statName =
         folly::to<std::string>(*trafficCount.name(), ".", statSuffix);
     aclCounterTypeAndName.push_back(std::make_pair(counterType, statName));
-    aclStats_.reinitStat(statName, std::nullopt);
+    if (aclCounterRefMap.find(statName) == aclCounterRefMap.end()) {
+      // Create fb303 counter since stat is being added/readded again
+      aclStats_.reinitStat(statName, std::nullopt);
+      aclCounterRefMap[statName] = 1;
+    } else {
+      aclCounterRefMap[statName]++;
+    }
   }
 
-  SaiAclCounterTraits::AdapterHostKey adapterHostKey {
-    aclTableId,
+  SaiAclCounterTraits::AdapterHostKey adapterHostKey{
+      aclTableId,
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
-        aclCounterLabel,
+      aclCounterLabel,
 #endif
-        enablePacketCount, enableByteCount,
+      enablePacketCount,
+      enableByteCount,
   };
 
-  SaiAclCounterTraits::CreateAttributes attributes {
-    aclTableId,
+  SaiAclCounterTraits::CreateAttributes attributes{
+      aclTableId,
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
-        aclCounterLabel,
+      aclCounterLabel,
 #endif
-        enablePacketCount, enableByteCount,
-        std::nullopt, // counterPackets
-        std::nullopt, // counterBytes
+      enablePacketCount,
+      enableByteCount,
+      std::nullopt, // counterPackets
+      std::nullopt, // counterBytes
   };
 
   // The following logic is added temporarily for 5.1 -> 7.2 warmboot
@@ -485,6 +562,96 @@ SaiAclTableManager::addAclCounter(
 
   return std::make_pair(saiAclCounter, aclCounterTypeAndName);
 }
+
+#if (                                                                  \
+    (SAI_API_VERSION >= SAI_VERSION(1, 14, 0) ||                       \
+     (defined(BRCM_SAI_SDK_GTE_11_0) && defined(BRCM_SAI_SDK_XGS))) && \
+    !defined(TAJO_SDK))
+void SaiAclTableManager::updateUdfGroupAttributes(
+    const std::shared_ptr<AclEntry>& addedAclEntry,
+    const std::string& aclTableName,
+    std::optional<AclEntryUdfGroup0>& udfGroup0,
+    std::optional<AclEntryUdfGroup1>& udfGroup1,
+    std::optional<AclEntryUdfGroup2>& udfGroup2,
+    std::optional<AclEntryUdfGroup3>& udfGroup3,
+    std::optional<AclEntryUdfGroup4>& udfGroup4) {
+  auto convertSignedCharsToUnsignedChars =
+      [](const std::vector<signed char>& vec) {
+        std::vector<unsigned char> unsignedVec;
+
+        std::transform(
+            vec.begin(),
+            vec.end(),
+            std::back_inserter(unsignedVec),
+            [](signed char c) { return static_cast<unsigned char>(c); });
+
+        return unsignedVec;
+      };
+
+  /*
+   * UDF fields in ACL entries have to match the attribute ID offset where
+   * group is defined in the ACL table
+   * If udfGroup1 is at (SAI_ACL_TABLE_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 1),
+   * the corresponding ACL entry fields should also use
+   * (SAI_ACL_ENTRY_ATTR_USER_DEFINED_FIELD_GROUP_MIN + 1)
+   * https://github.com/opencomputeproject/SAI/blob/master/doc/ACL/UDF-based-ACL.md#example-1
+   *
+   * We have capability to program 5 UDF fields. The below code will try
+   * to match the UDF group SAI ID currently processed with the attribute used
+   * in the ACL table
+   */
+  if (addedAclEntry->getUdfTable()) {
+    auto& aclApi = SaiApiTable::getInstance()->aclApi();
+    auto aclTableHandle = getAclTableHandle(aclTableName);
+    auto aclTableSaiId = aclTableHandle->aclTable->adapterKey();
+    // Get the udfGroup IDs, if programmed, from each of the 5 attributes
+    auto udfGroupId0 = aclApi.getAttribute(aclTableSaiId, AclTableUdfGroup0());
+    auto udfGroupId1 = aclApi.getAttribute(aclTableSaiId, AclTableUdfGroup1());
+    auto udfGroupId2 = aclApi.getAttribute(aclTableSaiId, AclTableUdfGroup2());
+    auto udfGroupId3 = aclApi.getAttribute(aclTableSaiId, AclTableUdfGroup3());
+    auto udfGroupId4 = aclApi.getAttribute(aclTableSaiId, AclTableUdfGroup4());
+
+    const auto udfTable = addedAclEntry->getUdfTable().value();
+    for (const auto& udfEntry : udfTable) {
+      auto data = convertSignedCharsToUnsignedChars(*udfEntry.roceBytes());
+      auto mask = convertSignedCharsToUnsignedChars(*udfEntry.roceMask());
+      auto udfData = std::make_pair(std::move(data), std::move(mask));
+
+      std::vector<std::string> udfGroupNames = {*udfEntry.udfGroup()};
+      auto udfGroupSaiIds =
+          managerTable_->udfManager().getUdfGroupIds(udfGroupNames);
+      if (udfGroupSaiIds.size() == 0) {
+        throw FbossError(
+            "Invalid UdfGroup {} in ACL entry", *udfEntry.udfGroup());
+      }
+      auto udfGroupSaiId = udfGroupSaiIds[0];
+
+      // for each udfGroup used in this ACL entry, check which attribute it
+      // uses in the ACL table and use the same ACL entry attribute
+      if (udfGroupSaiId == udfGroupId0) {
+        udfGroup0 = AclEntryUdfGroup0{AclEntryFieldU8List{udfData}};
+        continue;
+      }
+      if (udfGroupSaiId == udfGroupId1) {
+        udfGroup1 = AclEntryUdfGroup1{AclEntryFieldU8List{udfData}};
+        continue;
+      }
+      if (udfGroupSaiId == udfGroupId2) {
+        udfGroup2 = AclEntryUdfGroup2{AclEntryFieldU8List{udfData}};
+        continue;
+      }
+      if (udfGroupSaiId == udfGroupId3) {
+        udfGroup3 = AclEntryUdfGroup3{AclEntryFieldU8List{udfData}};
+        continue;
+      }
+      if (udfGroupSaiId == udfGroupId4) {
+        udfGroup4 = AclEntryUdfGroup4{AclEntryFieldU8List{udfData}};
+        continue;
+      }
+    }
+  }
+}
+#endif
 
 AclEntrySaiId SaiAclTableManager::addAclEntry(
     const std::shared_ptr<AclEntry>& addedAclEntry,
@@ -571,9 +738,28 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
           SaiAclEntryTraits::Attributes::FieldSrcPort{AclEntryFieldSaiObjectIdT(
               std::make_pair(portHandle->port->adapterKey(), kMaskDontCare))};
     } else {
+      PortSaiId portSaiId;
+
+      if (platform_->getAsic()->isSupported(
+              HwAsic::Feature::CPU_TX_VIA_RECYCLE_PORT)) {
+        /*
+         * For ASICs that implement CPU tx using recycle port, on tx:
+         *  - FBOSS injects pkt from CPU.
+         *  - SAI impl sends pkt to recycle port with pipeline bypass.
+         *  - Packet is injected into pipeline with srcPort = recycle port.
+         *
+         *  Thus, if we want to program an ACL to trap such packets to CPU, we
+         *  need to use recycle port as the src port qualifier as the packet is
+         *  now "originating" from recycle port.
+         */
+        CHECK(managerTable_->switchManager().getCpuRecyclePort().has_value());
+        portSaiId = managerTable_->switchManager().getCpuRecyclePort().value();
+      } else {
+        portSaiId = managerTable_->switchManager().getCpuPort();
+      }
+
       fieldSrcPort = SaiAclEntryTraits::Attributes::FieldSrcPort{
-          AclEntryFieldSaiObjectIdT(std::make_pair(
-              managerTable_->switchManager().getCpuPort(), kMaskDontCare))};
+          AclEntryFieldSaiObjectIdT(std::make_pair(portSaiId, kMaskDontCare))};
     }
   }
 
@@ -610,13 +796,37 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
             addedAclEntry->getL4DstPort().value(), kL4PortMask))};
   }
 
+  bool matchV4 = !addedAclEntry->getEtherType().has_value() ||
+      addedAclEntry->getEtherType().value() == cfg::EtherType::IPv4;
+#if !defined(TAJO_SDK) && !defined(BRCM_SAI_SDK_XGS)
+  bool matchV6 = !addedAclEntry->getEtherType().has_value() ||
+      addedAclEntry->getEtherType().value() == cfg::EtherType::IPv6;
+#endif
   std::optional<SaiAclEntryTraits::Attributes::FieldIpProtocol> fieldIpProtocol{
       std::nullopt};
-  if (addedAclEntry->getProto()) {
+
+  auto stage = static_cast<sai_acl_stage_t>(
+      GET_ATTR(AclTable, Stage, aclTableHandle->aclTable->attributes()));
+  auto qualifierSet = getSupportedQualifierSet(stage);
+  if (qualifierSet.find(cfg::AclTableQualifier::IP_PROTOCOL_NUMBER) !=
+          qualifierSet.end() &&
+      matchV4 && addedAclEntry->getProto()) {
     fieldIpProtocol = SaiAclEntryTraits::Attributes::FieldIpProtocol{
         AclEntryFieldU8(std::make_pair(
             addedAclEntry->getProto().value(), kIpProtocolMask))};
   }
+
+#if !defined(TAJO_SDK) && !defined(BRCM_SAI_SDK_XGS)
+  std::optional<SaiAclEntryTraits::Attributes::FieldIpv6NextHeader>
+      fieldIpv6NextHeader{std::nullopt};
+  if (qualifierSet.find(cfg::AclTableQualifier::IPV6_NEXT_HEADER) !=
+          qualifierSet.end() &&
+      matchV6 && addedAclEntry->getProto()) {
+    fieldIpv6NextHeader = SaiAclEntryTraits::Attributes::FieldIpv6NextHeader{
+        AclEntryFieldU8(std::make_pair(
+            addedAclEntry->getProto().value(), kIpv6NextHeaderMask))};
+  }
+#endif
 
   std::optional<SaiAclEntryTraits::Attributes::FieldTcpFlags> fieldTcpFlags{
       std::nullopt};
@@ -643,26 +853,34 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
   std::optional<SaiAclEntryTraits::Attributes::FieldIcmpV6Code> fieldIcmpV6Code{
       std::nullopt};
   if (addedAclEntry->getIcmpType()) {
-    if (addedAclEntry->getProto()) {
-      if (addedAclEntry->getProto().value() == AclEntry::kProtoIcmp) {
-        fieldIcmpV4Type = SaiAclEntryTraits::Attributes::FieldIcmpV4Type{
+    if ((addedAclEntry->getProto() &&
+         addedAclEntry->getProto().value() == AclEntry::kProtoIcmp) ||
+        (addedAclEntry->getEtherType() &&
+         addedAclEntry->getEtherType().value() == cfg::EtherType::IPv4)) {
+      fieldIcmpV4Type = SaiAclEntryTraits::Attributes::FieldIcmpV4Type{
+          AclEntryFieldU8(std::make_pair(
+              addedAclEntry->getIcmpType().value(), kIcmpTypeMask))};
+      if (addedAclEntry->getIcmpCode()) {
+        fieldIcmpV4Code = SaiAclEntryTraits::Attributes::FieldIcmpV4Code{
             AclEntryFieldU8(std::make_pair(
-                addedAclEntry->getIcmpType().value(), kIcmpTypeMask))};
-        if (addedAclEntry->getIcmpCode()) {
-          fieldIcmpV4Code = SaiAclEntryTraits::Attributes::FieldIcmpV4Code{
-              AclEntryFieldU8(std::make_pair(
-                  addedAclEntry->getIcmpCode().value(), kIcmpCodeMask))};
-        }
-      } else if (addedAclEntry->getProto().value() == AclEntry::kProtoIcmpv6) {
-        fieldIcmpV6Type = SaiAclEntryTraits::Attributes::FieldIcmpV6Type{
-            AclEntryFieldU8(std::make_pair(
-                addedAclEntry->getIcmpType().value(), kIcmpTypeMask))};
-        if (addedAclEntry->getIcmpCode()) {
-          fieldIcmpV6Code = SaiAclEntryTraits::Attributes::FieldIcmpV6Code{
-              AclEntryFieldU8(std::make_pair(
-                  addedAclEntry->getIcmpCode().value(), kIcmpCodeMask))};
-        }
+                addedAclEntry->getIcmpCode().value(), kIcmpCodeMask))};
       }
+    } else if (
+        (addedAclEntry->getProto() &&
+         addedAclEntry->getProto().value() == AclEntry::kProtoIcmpv6) ||
+        (addedAclEntry->getEtherType() &&
+         addedAclEntry->getEtherType().value() == cfg::EtherType::IPv6)) {
+      fieldIcmpV6Type = SaiAclEntryTraits::Attributes::FieldIcmpV6Type{
+          AclEntryFieldU8(std::make_pair(
+              addedAclEntry->getIcmpType().value(), kIcmpTypeMask))};
+      if (addedAclEntry->getIcmpCode()) {
+        fieldIcmpV6Code = SaiAclEntryTraits::Attributes::FieldIcmpV6Code{
+            AclEntryFieldU8(std::make_pair(
+                addedAclEntry->getIcmpCode().value(), kIcmpCodeMask))};
+      }
+    } else {
+      throw FbossError(
+          "proto or etherType not sepcified in ACL when matching icmp type/code");
     }
   }
 
@@ -731,6 +949,16 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
             addedAclEntry->getVlanID().value(), kOuterVlanIdMask))};
   }
 
+#if !defined(TAJO_SDK) || defined(TAJO_SDK_GTE_24_4_90)
+  std::optional<SaiAclEntryTraits::Attributes::FieldBthOpcode> fieldBthOpcode{
+      std::nullopt};
+  if (addedAclEntry->getRoceOpcode()) {
+    fieldBthOpcode = SaiAclEntryTraits::Attributes::FieldBthOpcode{
+        AclEntryFieldU8(std::make_pair(
+            addedAclEntry->getRoceOpcode().value(), kBthOpcodeMask))};
+  }
+#endif
+
   std::optional<SaiAclEntryTraits::Attributes::FieldFdbDstUserMeta>
       fieldFdbDstUserMeta{std::nullopt};
   if (addedAclEntry->getLookupClassL2()) {
@@ -738,6 +966,26 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
         AclEntryFieldU32(cfgLookupClassToSaiFdbMetaDataAndMask(
             addedAclEntry->getLookupClassL2().value()))};
   }
+
+#if (                                                                  \
+    (SAI_API_VERSION >= SAI_VERSION(1, 14, 0) ||                       \
+     (defined(BRCM_SAI_SDK_GTE_11_0) && defined(BRCM_SAI_SDK_XGS))) && \
+    !defined(TAJO_SDK))
+  std::optional<AclEntryUdfGroup0> userDefinedGroup0{std::nullopt};
+  std::optional<AclEntryUdfGroup1> userDefinedGroup1{std::nullopt};
+  std::optional<AclEntryUdfGroup2> userDefinedGroup2{std::nullopt};
+  std::optional<AclEntryUdfGroup3> userDefinedGroup3{std::nullopt};
+  std::optional<AclEntryUdfGroup4> userDefinedGroup4{std::nullopt};
+
+  updateUdfGroupAttributes(
+      addedAclEntry,
+      aclTableName,
+      userDefinedGroup0,
+      userDefinedGroup1,
+      userDefinedGroup2,
+      userDefinedGroup3,
+      userDefinedGroup4);
+#endif
 
   // TODO(skhare) Support all other ACL actions
   std::optional<SaiAclEntryTraits::Attributes::ActionPacketAction>
@@ -770,9 +1018,20 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
 
   std::optional<std::string> ingressMirror{std::nullopt};
   std::optional<std::string> egressMirror{std::nullopt};
+  std::shared_ptr<SaiHostifUserDefinedTrapHandle> userDefinedTrap{nullptr};
 
   std::optional<SaiAclEntryTraits::Attributes::ActionMacsecFlow>
       aclActionMacsecFlow{std::nullopt};
+
+#if !defined(TAJO_SDK)
+  std::optional<SaiAclEntryTraits::Attributes::ActionSetUserTrap>
+      aclActionSetUserTrap{std::nullopt};
+#endif
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+  std::optional<SaiAclEntryTraits::Attributes::ActionDisableArsForwarding>
+      aclActionDisableArsForwarding{std::nullopt};
+#endif
 
   auto action = addedAclEntry->getAclAction();
   if (action) {
@@ -787,14 +1046,57 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
           AclEntryActionSaiObjectIdT(
               AclCounterSaiId{saiAclCounter->adapterKey()})};
     }
-
+    // SaiAclTableManager assumes queueId is always equal to tcVal when
+    // programming aclActionSetTC. We will remove this assumption by directly
+    // using the tc value from setTcAction instead. Before changing prod
+    // config to use setTc, we still need to keep sendToQueueAction logics
+    // temporaily.
+    std::optional<sai_uint8_t> tc = std::nullopt;
+    std::optional<bool> sendToCpu = std::nullopt;
     if (matchAction.getSendToQueue()) {
       auto sendToQueue = matchAction.getSendToQueue().value();
-      bool sendToCpu = sendToQueue.second;
+      tc = static_cast<sai_uint8_t>(*sendToQueue.first.queueId());
+      sendToCpu = sendToQueue.second;
+    }
+    if (matchAction.getSetTc()) {
+      auto setTc = matchAction.getSetTc().value();
+      tc = static_cast<sai_uint8_t>(*setTc.first.tcValue());
+      if (sendToCpu != std::nullopt && sendToCpu != setTc.second) {
+        throw FbossError(
+            "Inconsistent actions between sendToQueue with sendToCpu ",
+            (sendToCpu ? "true" : "false"),
+            " and setTc with sendToCpu ",
+            (setTc.second ? "true" : "false"));
+      }
+      sendToCpu = setTc.second;
+    }
+
+    auto setCopyOrTrap = [&aclActionPacketAction](
+                             bool supportCopyToCpu,
+                             const MatchAction& matchAction) {
+      if (matchAction.getToCpuAction()) {
+        switch (matchAction.getToCpuAction().value()) {
+          case cfg::ToCpuAction::COPY:
+            if (!supportCopyToCpu) {
+              throw FbossError("COPY_TO_CPU is not supported on this ASIC");
+            }
+            aclActionPacketAction =
+                SaiAclEntryTraits::Attributes::ActionPacketAction{
+                    SAI_PACKET_ACTION_COPY};
+            break;
+          case cfg::ToCpuAction::TRAP:
+            aclActionPacketAction =
+                SaiAclEntryTraits::Attributes::ActionPacketAction{
+                    SAI_PACKET_ACTION_TRAP};
+            break;
+        }
+      }
+    };
+
+    if (tc != std::nullopt) {
       if (!sendToCpu) {
-        auto queueId = static_cast<sai_uint8_t>(*sendToQueue.first.queueId());
         aclActionSetTC = SaiAclEntryTraits::Attributes::ActionSetTC{
-            AclEntryActionU8(queueId)};
+            AclEntryActionU8(tc.value())};
       } else {
         /*
          * When sendToCpu is set, a copy of the packet will be sent
@@ -808,34 +1110,40 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
          * Tajo claims to map TC i to Queue i by default as well.
          * However, explicitly set the QoS Map and associate with the CPU port.
          */
-
-        auto setCopyOrTrap = [&aclActionPacketAction, &aclActionSetTC](
-                                 const MatchAction::SendToQueue& sendToQueue,
-                                 sai_uint32_t packetAction) {
-          aclActionPacketAction =
-              SaiAclEntryTraits::Attributes::ActionPacketAction{packetAction};
-
-          auto queueId = static_cast<sai_uint8_t>(*sendToQueue.first.queueId());
-          aclActionSetTC = SaiAclEntryTraits::Attributes::ActionSetTC{
-              AclEntryActionU8(queueId)};
-        };
-
-        if (matchAction.getToCpuAction()) {
-          switch (matchAction.getToCpuAction().value()) {
-            case cfg::ToCpuAction::COPY:
-              if (!platform_->getAsic()->isSupported(
-                      HwAsic::Feature::ACL_COPY_TO_CPU)) {
-                throw FbossError("COPY_TO_CPU is not supported on this ASIC");
-              }
-
-              setCopyOrTrap(sendToQueue, SAI_PACKET_ACTION_COPY);
-              break;
-            case cfg::ToCpuAction::TRAP:
-              setCopyOrTrap(sendToQueue, SAI_PACKET_ACTION_TRAP);
-              break;
-          }
-        }
+        setCopyOrTrap(
+            platform_->getAsic()->isSupported(HwAsic::Feature::ACL_COPY_TO_CPU),
+            matchAction);
+        aclActionSetTC = SaiAclEntryTraits::Attributes::ActionSetTC{
+            AclEntryActionU8(tc.value())};
       }
+    }
+
+    if (platform_->getAsic()->isSupported(
+            HwAsic::Feature::SAI_USER_DEFINED_TRAP) &&
+        FLAGS_sai_user_defined_trap) {
+      // Some platform requires implementing ACL copy/trap to cpu action
+      // along with user defined trap action mapping to the desrited cpu
+      // queue, so as to make ACL rule take precedence over hostif trap
+      // rule.
+#if !defined(TAJO_SDK)
+      if (matchAction.getUserDefinedTrap()) {
+        auto queueId = *matchAction.getUserDefinedTrap().value().queueId();
+        if (tc != std::nullopt && tc != queueId) {
+          throw FbossError(
+              "Inconsistent ACL action between set tc value",
+              tc.value(),
+              " and set user defined trap with queue id ",
+              queueId);
+        }
+        userDefinedTrap =
+            managerTable_->hostifManager().ensureHostifUserDefinedTrap(queueId);
+        aclActionSetUserTrap = SaiAclEntryTraits::Attributes::ActionSetUserTrap{
+            AclEntryActionSaiObjectIdT(userDefinedTrap->trap->adapterKey())};
+        setCopyOrTrap(
+            platform_->getAsic()->isSupported(HwAsic::Feature::ACL_COPY_TO_CPU),
+            matchAction);
+      }
+#endif
     }
 
     if (matchAction.getIngressMirror().has_value()) {
@@ -878,6 +1186,11 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
             static_cast<sai_object_id_t>(*macsecFlowAction.flowId());
         aclActionMacsecFlow = SaiAclEntryTraits::Attributes::ActionMacsecFlow{
             AclEntryActionSaiObjectIdT(flowId)};
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+        // MACSec flow action should not be set along with regulation packet
+        // action otherwise packet action gets priority
+        aclActionPacketAction = std::nullopt;
+#endif
       } else if (
           *macsecFlowAction.action() == cfg::MacsecFlowPacketAction::FORWARD) {
         aclActionPacketAction =
@@ -896,6 +1209,21 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
             apache::thrift::util::enumNameSafe(*macsecFlowAction.action()));
       }
     }
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+    if (FLAGS_flowletSwitchingEnable &&
+        platform_->getAsic()->isSupported(HwAsic::Feature::FLOWLET)) {
+      if (matchAction.getFlowletAction().has_value()) {
+        auto flowletAction = matchAction.getFlowletAction().value();
+        switch (flowletAction) {
+          case cfg::FlowletAction::FORWARD:
+            aclActionDisableArsForwarding =
+                SaiAclEntryTraits::Attributes::ActionDisableArsForwarding{
+                    false};
+            break;
+        }
+      }
+    }
+#endif
   }
 
   // TODO(skhare) At least one field and one action must be specified.
@@ -913,12 +1241,26 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
        fieldDstMac.has_value() || fieldIpType.has_value() ||
        fieldTtl.has_value() || fieldFdbDstUserMeta.has_value() ||
        fieldRouteDstUserMeta.has_value() || fieldEtherType.has_value() ||
-       fieldNeighborDstUserMeta.has_value() ||
+       fieldNeighborDstUserMeta.has_value() || fieldOuterVlanId.has_value() ||
+#if !defined(TAJO_SDK) || defined(TAJO_SDK_GTE_24_4_90)
+       fieldBthOpcode.has_value() ||
+#endif
+#if !defined(TAJO_SDK) && !defined(BRCM_SAI_SDK_XGS)
+       fieldIpv6NextHeader.has_value() ||
+#endif
+#if (                                                                  \
+    (SAI_API_VERSION >= SAI_VERSION(1, 14, 0) ||                       \
+     (defined(BRCM_SAI_SDK_GTE_11_0) && defined(BRCM_SAI_SDK_XGS))) && \
+    !defined(TAJO_SDK))
+       userDefinedGroup0.has_value() || userDefinedGroup1.has_value() ||
+       userDefinedGroup2.has_value() || userDefinedGroup3.has_value() ||
+       userDefinedGroup4.has_value() ||
+#endif
        platform_->getAsic()->isSupported(HwAsic::Feature::EMPTY_ACL_MATCHER));
   if (fieldSrcPort.has_value()) {
     auto srcPortQualifierSupported = platform_->getAsic()->isSupported(
         HwAsic::Feature::SAI_ACL_ENTRY_SRC_PORT_QUALIFIER);
-#if defined(TAJO_SDK_VERSION_1_42_1) || defined(TAJO_SDK_VERSION_1_42_8)
+#if defined(TAJO_SDK_VERSION_1_42_8)
     srcPortQualifierSupported = false;
 #endif
     matcherIsValid &= srcPortQualifierSupported;
@@ -927,7 +1269,14 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
       (aclActionPacketAction.has_value() || aclActionCounter.has_value() ||
        aclActionSetTC.has_value() || aclActionSetDSCP.has_value() ||
        aclActionMirrorIngress.has_value() ||
-       aclActionMirrorEgress.has_value() || aclActionMacsecFlow.has_value());
+       aclActionMirrorEgress.has_value() || aclActionMacsecFlow.has_value()
+#if !defined(TAJO_SDK)
+       || aclActionSetUserTrap.has_value()
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+       || aclActionDisableArsForwarding.has_value()
+#endif
+      );
 
   if (!(matcherIsValid && actionIsValid)) {
     XLOG(WARNING) << "Unsupported field/action for aclEntry: "
@@ -965,6 +1314,22 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
       fieldNeighborDstUserMeta,
       fieldEtherType,
       fieldOuterVlanId,
+#if !defined(TAJO_SDK) || defined(TAJO_SDK_GTE_24_4_90)
+      fieldBthOpcode,
+#endif
+#if !defined(TAJO_SDK) && !defined(BRCM_SAI_SDK_XGS)
+      fieldIpv6NextHeader,
+#endif
+#if (                                                                  \
+    (SAI_API_VERSION >= SAI_VERSION(1, 14, 0) ||                       \
+     (defined(BRCM_SAI_SDK_GTE_11_0) && defined(BRCM_SAI_SDK_XGS))) && \
+    !defined(TAJO_SDK))
+      userDefinedGroup0,
+      userDefinedGroup1,
+      userDefinedGroup2,
+      userDefinedGroup3,
+      userDefinedGroup4,
+#endif
       aclActionPacketAction,
       aclActionCounter,
       aclActionSetTC,
@@ -972,6 +1337,15 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
       aclActionMirrorIngress,
       aclActionMirrorEgress,
       aclActionMacsecFlow,
+// action not supported by tajo. Besides, user defined trap
+// is used to make ACL take precedence over Hostif trap.
+// Tajo already supports this behavior
+#if !defined(TAJO_SDK)
+      aclActionSetUserTrap,
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+      aclActionDisableArsForwarding,
+#endif
   };
 
   auto saiAclEntry = aclEntryStore.setObject(adapterHostKey, attributes);
@@ -981,6 +1355,7 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
   entryHandle->aclCounterTypeAndName = aclCounterTypeAndName;
   entryHandle->ingressMirror = ingressMirror;
   entryHandle->egressMirror = egressMirror;
+  entryHandle->userDefinedTrap = userDefinedTrap;
   auto [it, inserted] = aclTableHandle->aclTableMembers.emplace(
       addedAclEntry->getPriority(), std::move(entryHandle));
   CHECK(inserted);
@@ -1012,8 +1387,8 @@ void SaiAclTableManager::removeAclEntry(
   if (itr == aclTableHandle->aclTableMembers.end()) {
     // an acl entry that uses cpu port as qualifier may not have been created
     // even if it exists in switch state.
-    XLOG(ERR) << "attempted to remove aclEntry which does not exist: ",
-        removedAclEntry->getID();
+    XLOG(ERR) << "attempted to remove aclEntry which does not exist: "
+              << removedAclEntry->getID();
     return;
   }
 
@@ -1034,7 +1409,17 @@ void SaiAclTableManager::removeAclCounter(
   for (const auto& counterType : *trafficCount.types()) {
     auto statName =
         utility::statNameFromCounterType(*trafficCount.name(), counterType);
-    aclStats_.removeStat(statName);
+    auto entry = aclCounterRefMap.find(statName);
+    if (entry != aclCounterRefMap.end()) {
+      entry->second--;
+      if (entry->second == 0) {
+        // Counter no longer used. Remove from fb303 counters
+        aclStats_.removeStat(statName);
+        aclCounterRefMap.erase(entry);
+      }
+    } else {
+      throw FbossError("Acl counter ", statName, " not found om counter map");
+    }
   }
 }
 
@@ -1144,8 +1529,34 @@ void SaiAclTableManager::updateStats() {
   }
 }
 
-std::set<cfg::AclTableQualifier> SaiAclTableManager::getSupportedQualifierSet()
-    const {
+// Loop through all the ACL tables and compute the free entries and counters
+std::pair<int32_t, int32_t> SaiAclTableManager::getAclResourceUsage() {
+  int32_t aclEntriesFree = 0, aclCountersFree = 0;
+  for (const auto& handle : handles_) {
+    auto aclTableHandle = handle.second.get();
+    auto aclTableId = aclTableHandle->aclTable->adapterKey();
+    auto& aclApi = SaiApiTable::getInstance()->aclApi();
+
+    aclEntriesFree += aclApi.getAttribute(
+        aclTableId, SaiAclTableTraits::Attributes::AvailableEntry{});
+    aclCountersFree += aclApi.getAttribute(
+        aclTableId, SaiAclTableTraits::Attributes::AvailableCounter{});
+  }
+  return std::make_pair(aclEntriesFree, aclCountersFree);
+}
+
+std::set<cfg::AclTableQualifier> SaiAclTableManager::getSupportedQualifierSet(
+    cfg::AclStage stage) const {
+  return getSupportedQualifierSet(
+      SaiAclTableGroupManager::cfgAclStageToSaiAclStage(stage));
+}
+
+std::set<cfg::AclTableQualifier> SaiAclTableManager::getSupportedQualifierSet(
+    sai_acl_stage_t aclStage) const {
+  if (aclStage == SAI_ACL_STAGE_EGRESS &&
+      platform_->getAsic()->isSupported(HwAsic::Feature::EGRESS_ACL_TABLE)) {
+    throw FbossError("egress acl table is not supported on switch asic");
+  }
   /*
    * Not all the qualifiers are supported by every ASIC.
    * Moreover, different ASICs have different max key widths.
@@ -1159,8 +1570,14 @@ std::set<cfg::AclTableQualifier> SaiAclTableManager::getSupportedQualifierSet()
       HwAsic::AsicVendor::ASIC_VENDOR_TAJO;
   bool isTrident2 =
       platform_->getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_TRIDENT2;
-  bool isIndus =
-      platform_->getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_INDUS;
+  bool isJericho2 =
+      platform_->getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_JERICHO2;
+  bool isJericho3 =
+      platform_->getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_JERICHO3;
+  bool isTomahawk5 =
+      platform_->getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_TOMAHAWK5;
+  bool isChenab =
+      platform_->getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_CHENAB;
 
   if (isTajo) {
     std::set<cfg::AclTableQualifier> tajoQualifiers = {
@@ -1168,7 +1585,7 @@ std::set<cfg::AclTableQualifier> SaiAclTableManager::getSupportedQualifierSet()
         cfg::AclTableQualifier::DST_IPV6,
         cfg::AclTableQualifier::SRC_IPV4,
         cfg::AclTableQualifier::DST_IPV4,
-        cfg::AclTableQualifier::IP_PROTOCOL,
+        cfg::AclTableQualifier::IP_PROTOCOL_NUMBER,
         cfg::AclTableQualifier::DSCP,
         cfg::AclTableQualifier::IP_TYPE,
         cfg::AclTableQualifier::TTL,
@@ -1176,24 +1593,89 @@ std::set<cfg::AclTableQualifier> SaiAclTableManager::getSupportedQualifierSet()
         cfg::AclTableQualifier::LOOKUP_CLASS_NEIGHBOR,
         cfg::AclTableQualifier::LOOKUP_CLASS_ROUTE};
 
-#if defined(TAJO_SDK_VERSION_1_58_0) || defined(TAJO_SDK_VERSION_1_60_0)
-    tajoQualifiers.insert(cfg::AclTableQualifier::SRC_PORT);
+#if defined(TAJO_SDK_GTE_24_4_90)
+    std::vector<cfg::AclTableQualifier> tajoExtraQualifierList = {
+        cfg::AclTableQualifier::ETHER_TYPE,
+        cfg::AclTableQualifier::BTH_OPCODE,
+        cfg::AclTableQualifier::SRC_PORT,
+        cfg::AclTableQualifier::L4_SRC_PORT,
+        cfg::AclTableQualifier::L4_DST_PORT,
+        cfg::AclTableQualifier::TCP_FLAGS,
+        cfg::AclTableQualifier::IP_FRAG,
+        cfg::AclTableQualifier::ICMPV4_TYPE,
+        cfg::AclTableQualifier::ICMPV4_CODE,
+        cfg::AclTableQualifier::ICMPV6_TYPE,
+        cfg::AclTableQualifier::ICMPV6_CODE,
+        cfg::AclTableQualifier::DST_MAC,
+    };
+    for (const auto& qualifier : tajoExtraQualifierList) {
+      tajoQualifiers.insert(qualifier);
+    }
 #endif
     return tajoQualifiers;
-  } else if (isIndus) {
+  } else if (isJericho2) {
     // TODO(skhare)
     // Extend this list once the SAI implementation supports more qualifiers
-    std::set<cfg::AclTableQualifier> indusQualifiers = {
+    std::set<cfg::AclTableQualifier> jericho2Qualifiers = {
         cfg::AclTableQualifier::SRC_IPV6,
         cfg::AclTableQualifier::DST_IPV6,
         cfg::AclTableQualifier::SRC_PORT,
         cfg::AclTableQualifier::DSCP,
-        cfg::AclTableQualifier::IP_PROTOCOL,
+        cfg::AclTableQualifier::IP_PROTOCOL_NUMBER,
         cfg::AclTableQualifier::IP_TYPE,
         cfg::AclTableQualifier::TTL,
     };
-
-    return indusQualifiers;
+    return jericho2Qualifiers;
+  } else if (isJericho3) {
+    std::set<cfg::AclTableQualifier> jericho3Qualifiers = {
+        cfg::AclTableQualifier::ETHER_TYPE,
+        cfg::AclTableQualifier::SRC_IPV6,
+        cfg::AclTableQualifier::DST_IPV6,
+        cfg::AclTableQualifier::SRC_IPV4,
+        cfg::AclTableQualifier::DST_IPV4,
+        cfg::AclTableQualifier::SRC_PORT,
+        cfg::AclTableQualifier::DSCP,
+        cfg::AclTableQualifier::TTL,
+        cfg::AclTableQualifier::IP_PROTOCOL_NUMBER,
+        cfg::AclTableQualifier::IPV6_NEXT_HEADER,
+        cfg::AclTableQualifier::IP_TYPE,
+        cfg::AclTableQualifier::LOOKUP_CLASS_NEIGHBOR,
+        cfg::AclTableQualifier::LOOKUP_CLASS_ROUTE,
+        cfg::AclTableQualifier::L4_SRC_PORT,
+        cfg::AclTableQualifier::L4_DST_PORT,
+        cfg::AclTableQualifier::ICMPV4_TYPE,
+        cfg::AclTableQualifier::ICMPV4_CODE,
+        cfg::AclTableQualifier::ICMPV6_TYPE,
+        cfg::AclTableQualifier::ICMPV6_CODE,
+        cfg::AclTableQualifier::DST_MAC,
+        cfg::AclTableQualifier::BTH_OPCODE};
+    return jericho3Qualifiers;
+  } else if (isChenab) {
+    /* TODO(pshaikh): review the qualifiers */
+    if (aclStage == SAI_ACL_STAGE_INGRESS) {
+      return {
+          cfg::AclTableQualifier::DST_IPV6,
+          cfg::AclTableQualifier::DST_IPV4,
+          cfg::AclTableQualifier::L4_SRC_PORT,
+          cfg::AclTableQualifier::L4_DST_PORT,
+          cfg::AclTableQualifier::IP_PROTOCOL_NUMBER,
+          cfg::AclTableQualifier::IPV6_NEXT_HEADER,
+          cfg::AclTableQualifier::SRC_PORT,
+          cfg::AclTableQualifier::DSCP,
+          cfg::AclTableQualifier::TTL,
+          cfg::AclTableQualifier::IP_TYPE,
+          cfg::AclTableQualifier::ETHER_TYPE,
+          cfg::AclTableQualifier::OUTER_VLAN,
+          // TODO(pshaikh): Add UDF?
+      };
+    } else {
+      return {
+          cfg::AclTableQualifier::DSCP,
+          cfg::AclTableQualifier::OUT_PORT,
+          cfg::AclTableQualifier::LOOKUP_CLASS_L2,
+          cfg::AclTableQualifier::LOOKUP_CLASS_ROUTE,
+      };
+    }
   } else {
     std::set<cfg::AclTableQualifier> bcmQualifiers = {
         cfg::AclTableQualifier::SRC_IPV6,
@@ -1202,7 +1684,7 @@ std::set<cfg::AclTableQualifier> SaiAclTableManager::getSupportedQualifierSet()
         cfg::AclTableQualifier::DST_IPV4,
         cfg::AclTableQualifier::L4_SRC_PORT,
         cfg::AclTableQualifier::L4_DST_PORT,
-        cfg::AclTableQualifier::IP_PROTOCOL,
+        cfg::AclTableQualifier::IP_PROTOCOL_NUMBER,
         cfg::AclTableQualifier::TCP_FLAGS,
         cfg::AclTableQualifier::SRC_PORT,
         cfg::AclTableQualifier::OUT_PORT,
@@ -1230,33 +1712,44 @@ std::set<cfg::AclTableQualifier> SaiAclTableManager::getSupportedQualifierSet()
     if (isTrident2) {
       bcmQualifiers.erase(cfg::AclTableQualifier::LOOKUP_CLASS_L2);
     }
+    // TH5 fails creating ACL table after adding vlan as qualifier with 10.0
+    // CS00012342272
+    if (isTomahawk5) {
+      bcmQualifiers.erase(cfg::AclTableQualifier::OUTER_VLAN);
+    }
 
     return bcmQualifiers;
   }
 }
 
-void SaiAclTableManager::addDefaultAclTable() {
-  if (handles_.find(kAclTable1) != handles_.end()) {
-    throw FbossError("default acl table already exists.");
+void SaiAclTableManager::addDefaultAclTable(
+    cfg::AclStage stage,
+    const std::string& name) {
+  if (handles_.find(name) != handles_.end()) {
+    throw FbossError("default acl table ", name, " already exists.");
   }
   // TODO(saranicholas): set appropriate table priority
   state::AclTableFields aclTableFields{};
   aclTableFields.priority() = 0;
-  aclTableFields.id() = kAclTable1;
+  aclTableFields.id() = name;
   auto table1 = std::make_shared<AclTable>(std::move(aclTableFields));
-  addAclTable(table1, cfg::AclStage::INGRESS);
+  addAclTable(table1, stage);
 }
 
-void SaiAclTableManager::removeDefaultAclTable() {
-  if (handles_.find(kAclTable1) == handles_.end()) {
+void SaiAclTableManager::removeDefaultAclTable(
+    cfg::AclStage stage,
+    const std::string& name) {
+  if (handles_.find(name) == handles_.end()) {
     return;
   }
   // remove from acl table group
+  sai_acl_stage_t saiAclStage =
+      SaiAclTableGroupManager::cfgAclStageToSaiAclStage(stage);
   if (platform_->getAsic()->isSupported(HwAsic::Feature::ACL_TABLE_GROUP)) {
     managerTable_->aclTableGroupManager().removeAclTableGroupMember(
-        SAI_ACL_STAGE_INGRESS, kAclTable1);
+        saiAclStage, name);
   }
-  handles_.erase(kAclTable1);
+  handles_.erase(cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE());
 }
 
 bool SaiAclTableManager::isQualifierSupported(
@@ -1303,7 +1796,7 @@ bool SaiAclTableManager::isQualifierSupported(
           std::get<
               std::optional<SaiAclTableTraits::Attributes::FieldL4DstPort>>(
               attributes));
-    case cfg::AclTableQualifier::IP_PROTOCOL:
+    case cfg::AclTableQualifier::IP_PROTOCOL_NUMBER:
       return hasField(
           std::get<
               std::optional<SaiAclTableTraits::Attributes::FieldIpProtocol>>(
@@ -1384,6 +1877,27 @@ bool SaiAclTableManager::isQualifierSupported(
           std::get<
               std::optional<SaiAclTableTraits::Attributes::FieldOuterVlanId>>(
               attributes));
+
+    case cfg::AclTableQualifier::BTH_OPCODE:
+#if !defined(TAJO_SDK) || defined(TAJO_SDK_GTE_24_4_90)
+      return hasField(
+          std::get<
+              std::optional<SaiAclTableTraits::Attributes::FieldBthOpcode>>(
+              attributes));
+#else
+      return false;
+#endif
+    case cfg::AclTableQualifier::IPV6_NEXT_HEADER:
+#if !defined(TAJO_SDK) && !defined(BRCM_SAI_SDK_XGS)
+      return hasField(
+          std::get<std::optional<
+              SaiAclTableTraits::Attributes::FieldIpv6NextHeader>>(attributes));
+#else
+      return false;
+#endif
+    case cfg::AclTableQualifier::UDF:
+      /* not supported */
+      return false;
   }
   return false;
 }
@@ -1401,7 +1915,8 @@ bool SaiAclTableManager::areQualifiersSupported(
 
 bool SaiAclTableManager::areQualifiersSupportedInDefaultAclTable(
     const std::set<cfg::AclTableQualifier>& qualifiers) const {
-  return areQualifiersSupported(kAclTable1, qualifiers);
+  return areQualifiersSupported(
+      cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE(), qualifiers);
 }
 
 void SaiAclTableManager::recreateAclTable(
@@ -1409,7 +1924,7 @@ void SaiAclTableManager::recreateAclTable(
     const SaiAclTableTraits::CreateAttributes& newAttributes) {
   bool aclTableUpdateSupport =
       platform_->getAsic()->isSupported(HwAsic::Feature::SAI_ACL_TABLE_UPDATE);
-#if defined(TAJO_SDK_VERSION_1_42_1) || defined(TAJO_SDK_VERSION_1_42_8)
+#if defined(TAJO_SDK_VERSION_1_42_8)
   aclTableUpdateSupport = false;
 #endif
   if (!aclTableUpdateSupport) {
@@ -1497,4 +2012,41 @@ void SaiAclTableManager::removeUnclaimedAclCounter() {
       });
 }
 
+AclStats SaiAclTableManager::getAclStats() const {
+  AclStats aclStats;
+  for (const auto& handle : handles_) {
+    for (const auto& aclMember : handle.second->aclTableMembers) {
+      for (const auto& [counterType, counterName] :
+           aclMember.second->aclCounterTypeAndName) {
+        aclStats.statNameToCounterMap()->insert(
+            {counterName, aclStats_.getCumulativeValueIf(counterName)});
+      }
+    }
+  }
+  return aclStats;
+}
+
+std::shared_ptr<AclTable> SaiAclTableManager::reconstructAclTable(
+    int /*priority*/,
+    const std::string& /*name*/) const {
+  throw FbossError("reconstructAclTable not implemented in SaiAclTableManager");
+}
+
+std::shared_ptr<AclEntry> SaiAclTableManager::reconstructAclEntry(
+    const std::string& /*tableName*/,
+    const std::string& /*aclEntryName*/,
+    int /*priority*/) const {
+  throw FbossError("reconstructAclEntry not implemented in SaiAclTableManager");
+}
+
+void SaiAclTableManager::addDefaultIngressAclTable() {
+  addDefaultAclTable(
+      cfg::AclStage::INGRESS,
+      cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE());
+}
+void SaiAclTableManager::removeDefaultIngressAclTable() {
+  removeDefaultAclTable(
+      cfg::AclStage::INGRESS,
+      cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE());
+}
 } // namespace facebook::fboss

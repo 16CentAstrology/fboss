@@ -9,12 +9,13 @@
  */
 #include "fboss/qsfp_service/test/hw_test/HwTest.h"
 
+#include <folly/gen/Base.h>
 #include <folly/logging/xlog.h>
 #include "fboss/agent/FbossError.h"
+#include "fboss/lib/CommonFileUtils.h"
 #include "fboss/lib/CommonUtils.h"
 #include "fboss/lib/fpga/MultiPimPlatformSystemContainer.h"
 #include "fboss/lib/phy/PhyManager.h"
-#include "fboss/lib/platforms/PlatformProductInfo.h"
 #include "fboss/qsfp_service/QsfpServer.h"
 #include "fboss/qsfp_service/test/hw_test/HwPortUtils.h"
 #include "fboss/qsfp_service/test/hw_test/HwQsfpEnsemble.h"
@@ -25,6 +26,11 @@ DEFINE_bool(
     "Set up test for QSFP warmboot. Useful for testing individual "
     "tests doing a full process warmboot and verifying expectations");
 
+DEFINE_bool(
+    list_production_feature,
+    false,
+    "List production feature needed for every single test.");
+
 namespace facebook::fboss {
 
 using namespace std::chrono_literals;
@@ -33,9 +39,13 @@ HwTest::HwTest(bool setupOverrideTcvrToPortAndProfile)
     : setupOverrideTcvrToPortAndProfile_(setupOverrideTcvrToPortAndProfile) {}
 
 void HwTest::SetUp() {
+  if (FLAGS_list_production_feature) {
+    printProductionFeatures();
+    return;
+  }
+
   // First use QsfpConfig to init default command line arguments
   initFlagDefaultsFromQsfpConfig();
-
   // Change the default remediation interval to 0 to avoid waiting
   gflags::SetCommandLineOptionWithMode(
       "remediate_interval", "0", gflags::SET_FLAGS_DEFAULT);
@@ -73,10 +83,19 @@ void HwTest::SetUp() {
 void HwTest::TearDown() {
   // At the end of the test, expect the watchdog fired count to be 0 because we
   // don't expect any deadlocked threads
-  EXPECT_EQ(
-      ensemble_->getWedgeManager()->getStateMachineThreadHeartbeatMissedCount(),
-      0);
-  ensemble_.reset();
+
+  // ensemble_ is nullptr when --list_production_feature feature is enabled,
+  // because SetUp() code returns early after printing production features –
+  // skipping over ensemble initialization.
+  if (ensemble_ != nullptr) {
+    EXPECT_EQ(
+        ensemble_->getWedgeManager()
+            ->getStateMachineThreadHeartbeatMissedCount(),
+        0);
+    ensemble_.reset();
+  }
+  // We expect that any coldboot flag set during the test should be cleared
+  EXPECT_FALSE(checkFileExists(TransceiverManager::forceColdBootFileName()));
 }
 
 bool HwTest::didWarmBoot() const {
@@ -95,9 +114,7 @@ void HwTest::setupForWarmboot() const {
 // Refresh transceivers and retry after some unsuccessful attempts
 std::vector<TransceiverID> HwTest::refreshTransceiversWithRetry(
     int numRetries) {
-  auto agentConfig = ensemble_->getWedgeManager()->getAgentConfig();
-  auto expectedIds =
-      utility::getCabledPortTranceivers(*agentConfig, getHwQsfpEnsemble());
+  auto expectedIds = utility::getCabledPortTranceivers(getHwQsfpEnsemble());
   std::map<int32_t, TransceiverInfo> transceiversBeforeRefresh;
   std::vector<TransceiverID> transceiverIds;
   ensemble_->getWedgeManager()->getTransceiversInfo(
@@ -130,9 +147,9 @@ std::vector<TransceiverID> HwTest::refreshTransceiversWithRetry(
             continue;
           }
           auto timeAfter =
-              transceiversAfterRefresh[id].timeCollected().value_or({});
+              *transceiversAfterRefresh[id].tcvrState()->timeCollected();
           auto timeBefore =
-              transceiversBeforeRefresh[id].timeCollected().value_or({});
+              *transceiversBeforeRefresh[id].tcvrState()->timeCollected();
           // Confirm that the timestamp advanced which will only happen when
           // refresh is successful
           if (timeAfter <= timeBefore) {
@@ -158,9 +175,8 @@ std::vector<TransceiverID> HwTest::refreshTransceiversWithRetry(
 // TransceiverManager::refreshStateMachines()
 void HwTest::waitTillCabledTcvrProgrammed(int numRetries) {
   // First get all expected transceivers based on cabled ports from agent.conf
-  auto agentConfig = ensemble_->getWedgeManager()->getAgentConfig();
   const auto& expectedIds =
-      utility::getCabledPortTranceivers(*agentConfig, getHwQsfpEnsemble());
+      utility::getCabledPortTranceivers(getHwQsfpEnsemble());
 
   // Due to some platforms are easy to have i2c issue which causes the current
   // refresh not work as expected. Adding enough retries to make sure that we
@@ -186,5 +202,58 @@ void HwTest::waitTillCabledTcvrProgrammed(int numRetries) {
       numRetries /* retries */,
       std::chrono::milliseconds(5000) /* msBetweenRetry */,
       "Never got all transceivers programmed");
+}
+
+std::vector<int> HwTest::getCabledOpticalTransceiverIDs() {
+  auto transceivers = utility::legacyTransceiverIds(
+      utility::getCabledPortTranceivers(getHwQsfpEnsemble()));
+  std::map<int32_t, TransceiverInfo> transceiversInfo;
+  getHwQsfpEnsemble()->getWedgeManager()->getTransceiversInfo(
+      transceiversInfo, std::make_unique<std::vector<int32_t>>(transceivers));
+
+  return folly::gen::from(transceivers) |
+      folly::gen::filter([&transceiversInfo](int32_t tcvrId) {
+           auto& tcvrInfo = transceiversInfo[tcvrId];
+           auto transmitterTech =
+               *tcvrInfo.tcvrState()->cable().value_or({}).transmitterTech();
+           return transmitterTech == TransmitterTechnology::OPTICAL;
+         }) |
+      folly::gen::as<std::vector>();
+}
+
+std::vector<qsfp_production_features::QsfpProductionFeature>
+HwTest::getProductionFeatures() const {
+  return {};
+}
+
+void HwTest::printProductionFeatures() const {
+  std::vector<std::string> supportedFeatures;
+  for (const auto& feature : getProductionFeatures()) {
+    supportedFeatures.push_back(apache::thrift::util::enumNameSafe(feature));
+  }
+  std::cout << "Feature List: " << folly::join(",", supportedFeatures) << "\n";
+  GTEST_SKIP();
+}
+
+TEST_F(HwTest, CheckTcvrNameAndInterfaces) {
+  auto wedgeManager = getHwQsfpEnsemble()->getWedgeManager();
+  std::map<int32_t, TransceiverInfo> transceivers;
+  wedgeManager->getTransceiversInfo(
+      transceivers, std::make_unique<std::vector<int32_t>>());
+  CHECK(!transceivers.empty());
+  for (auto& [id, tcvr] : transceivers) {
+    auto tcvrStateName = *tcvr.tcvrState()->tcvrName();
+    auto tcvrStatsName = *tcvr.tcvrState()->tcvrName();
+    EXPECT_EQ(tcvrStateName, tcvrStatsName);
+    EXPECT_TRUE(
+        tcvrStateName.starts_with("eth") || tcvrStateName.starts_with("fab"));
+    auto portName = wedgeManager->getPortName(TransceiverID(id));
+    EXPECT_EQ(tcvrStateName + "/1", portName);
+
+    auto ports = wedgeManager->getPortNames(TransceiverID(id));
+    EXPECT_FALSE(ports.empty());
+    EXPECT_EQ(*tcvr.tcvrState()->interfaces(), ports);
+    EXPECT_EQ(*tcvr.tcvrStats()->interfaces(), ports);
+  }
 }
 } // namespace facebook::fboss

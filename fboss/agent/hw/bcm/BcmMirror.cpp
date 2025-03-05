@@ -13,8 +13,6 @@
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/state/Mirror.h"
 
-#include <boost/container/flat_map.hpp>
-
 #include <folly/MacAddress.h>
 #include <folly/logging/xlog.h>
 #include <optional>
@@ -29,6 +27,7 @@ int getMirrorFlags(const std::optional<facebook::fboss::MirrorTunnel>& tunnel) {
   }
   return BCM_MIRROR_DEST_TUNNEL_IP_GRE;
 }
+const uint16_t kGreProtocol = 0x88be;
 } // namespace
 namespace facebook::fboss {
 
@@ -72,7 +71,7 @@ BcmMirrorDestination::BcmMirrorDestination(
                << "/" << mirrorTunnel.dstMac << ")";
 
   } else {
-    mirror_destination.gre_protocol = mirrorTunnel.greProtocol;
+    mirror_destination.gre_protocol = kGreProtocol;
     mirror_destination.flags = BCM_MIRROR_DEST_TUNNEL_IP_GRE;
     XLOG(DBG2) << "ERSPAN(I) tunnel: source(" << mirrorTunnel.srcIp << "/"
                << mirrorTunnel.srcMac << "), destination(" << mirrorTunnel.dstIp
@@ -143,8 +142,10 @@ void BcmMirror::program(const std::shared_ptr<Mirror>& mirror) {
   }
 
   CHECK(!destination_);
-  auto* bcmPort =
-      hw_->getPortTable()->getBcmPortIf(mirror->getEgressPort().value());
+  auto egressPort = mirror->getEgressPortDesc().has_value()
+      ? mirror->getEgressPortDesc().value().phyPortID()
+      : mirror->getEgressPort().value();
+  auto* bcmPort = hw_->getPortTable()->getBcmPortIf(egressPort);
   auto* warmBootCache = hw_->getWarmBootCache();
   auto iter = warmBootCache->findMirror(
       bcmPort->getBcmGport(), mirror->getMirrorTunnel());

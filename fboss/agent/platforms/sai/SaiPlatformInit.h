@@ -15,7 +15,7 @@
 
 namespace facebook::fboss {
 
-class AgentConfig;
+struct AgentConfig;
 class Platform;
 class SaiPlatform;
 class PlatformProductInfo;
@@ -28,12 +28,12 @@ std::unique_ptr<SaiPlatform> chooseSaiPlatform(
 
 std::unique_ptr<Platform> initSaiPlatform(
     std::unique_ptr<AgentConfig> config,
-    uint32_t hwFeaturesDesired);
+    uint32_t hwFeaturesDesired,
+    int16_t switchIndex);
 
 std::unique_ptr<SaiPlatform> getLEBPlatform(
     std::unique_ptr<PlatformProductInfo> productInfo,
     folly::MacAddress localMac,
     const std::string& platformMappingStr);
-bool isLEB();
 
 } // namespace facebook::fboss

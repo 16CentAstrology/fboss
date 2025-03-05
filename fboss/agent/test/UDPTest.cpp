@@ -22,7 +22,6 @@
 #include "fboss/agent/test/HwTestHandle.h"
 #include "fboss/agent/test/TestUtils.h"
 
-#include <boost/cast.hpp>
 #include <gtest/gtest.h>
 
 using namespace facebook::fboss;
@@ -89,7 +88,7 @@ TEST(UDPTest, Write) {
 
   UDPHeader hdr2;
   Cursor cursor(buf.get());
-  SwitchStats switchStats;
+  SwitchStats switchStats(1 /*numSwitches*/);
   PortStats portStats(PortID(0), "foo", &switchStats);
   hdr2.parse(&cursor, &portStats);
   EXPECT_TRUE(hdr1 == hdr2);

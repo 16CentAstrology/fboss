@@ -29,6 +29,9 @@ TEST(QcmConfigTest, applyConfig) {
   *policy.name() = "qosPolicy";
   auto state0 = publishAndApplyConfig(state, &config, platform.get());
   EXPECT_EQ(state0->getQcmCfg(), nullptr);
+  EXPECT_EQ(
+      utility::getFirstNodeIf(state0->getSwitchSettings())->getQcmCfg(),
+      nullptr);
 
   cfg::QcmConfig qcmCfg;
   *qcmCfg.numFlowsClear() = 22;
@@ -43,6 +46,9 @@ TEST(QcmConfigTest, applyConfig) {
   auto qcmConfig1 = state1->getQcmCfg();
   EXPECT_TRUE(qcmConfig1);
   EXPECT_FALSE(qcmConfig1->isPublished());
+  EXPECT_EQ(
+      qcmConfig1,
+      utility::getFirstNodeIf(state1->getSwitchSettings())->getQcmCfg());
   EXPECT_EQ(qcmConfig1->getNumFlowsClear(), 22);
   EXPECT_EQ(qcmConfig1->getFlowWeightMap()->toThrift(), map);
   // default should kick in
@@ -94,6 +100,9 @@ TEST(QcmConfigTest, applyConfig) {
   EXPECT_NE(nullptr, state2);
   auto qcmConfig2 = state2->getQcmCfg();
   EXPECT_FALSE(qcmConfig2->isPublished());
+  EXPECT_EQ(
+      qcmConfig2,
+      utility::getFirstNodeIf(state2->getSwitchSettings())->getQcmCfg());
   EXPECT_EQ(qcmConfig2->getNumFlowsClear(), 22);
   EXPECT_EQ(qcmConfig2->getNumFlowSamplesPerView(), 11);
   EXPECT_EQ(qcmConfig2->getFlowWeightMap()->toThrift(), map);
@@ -150,5 +159,8 @@ TEST(QcmConfigTest, verifyQcmWithSwitchSettingsChange) {
   // verify that QCM configs are preserved
   auto qcmConfig1 = state1->getQcmCfg();
   EXPECT_NE(nullptr, qcmConfig1);
+  EXPECT_EQ(
+      qcmConfig1,
+      utility::getFirstNodeIf(state1->getSwitchSettings())->getQcmCfg());
   EXPECT_EQ(qcmConfig1->getNumFlowsClear(), 22);
 }

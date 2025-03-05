@@ -15,6 +15,7 @@
 #include <folly/String.h>
 #include <cstdint>
 #include "fboss/agent/if/gen-cpp2/common_types.h"
+#include "fboss/agent/if/gen-cpp2/ctrl_types.h"
 #include "fboss/cli/fboss2/CmdHandler.h"
 #include "fboss/cli/fboss2/commands/show/route/CmdShowRoute.h"
 #include "fboss/cli/fboss2/commands/show/route/gen-cpp2/model_types.h"
@@ -23,6 +24,8 @@
 namespace facebook::fboss {
 
 struct CmdShowRouteDetailsTraits : public BaseCommandTraits {
+  static constexpr utils::ObjectArgTypeId ObjectArgTypeId =
+      utils::ObjectArgTypeId::OBJECT_ARG_TYPE_ID_IP_LIST;
   using ParentCmd = CmdShowRoute;
   using ObjectArgType = utils::IPList;
   using RetType = cli::ShowRouteDetailsModel;
@@ -39,7 +42,33 @@ class CmdShowRouteDetails
         utils::createClient<facebook::fboss::FbossCtrlAsyncClient>(hostInfo);
 
     client->sync_getRouteTableDetails(entries);
-    return createModel(entries, queriedRoutes);
+
+    // queriedRoutes can take 2 forms, ip address or network address
+    // Treat the address as IP only if no mask is provided. Lookup the
+    // network address for this IP and add it to a new list for output
+    std::vector<std::string> finalRoutes;
+    std::transform(
+        queriedRoutes.begin(),
+        queriedRoutes.end(),
+        std::back_inserter(finalRoutes),
+        [&client](std::string queryRoute) -> std::string {
+          if (queryRoute.find("/") == std::string::npos) {
+            facebook::fboss::RouteDetails route;
+            auto addr =
+                facebook::network::toAddress(folly::IPAddress(queryRoute));
+            client->sync_getIpRouteDetails(route, addr, 0);
+            if (route.get_nextHopMulti().size() > 0) {
+              auto ipStr = utils::getAddrStr(*route.dest()->ip());
+              auto ipPrefix =
+                  ipStr + "/" + std::to_string(*route.dest()->prefixLength());
+              return ipPrefix;
+            }
+          }
+          return queryRoute;
+        });
+
+    ObjectArgType finalQueriedRoutes(finalRoutes);
+    return createModel(entries, finalQueriedRoutes);
   }
 
   void printOutput(const RetType& model, std::ostream& out = std::cout) {
@@ -51,8 +80,9 @@ class CmdShowRouteDetails
           entry.get_isConnected() ? " (connected)" : "");
 
       for (const auto& clAndNxthops : entry.get_nextHopMulti()) {
-        out << fmt::format(
-            "  Nexthops from client {}\n", clAndNxthops.get_clientId());
+        auto clientId = static_cast<ClientID>(*clAndNxthops.clientId());
+        auto clientName = apache::thrift::util::enumNameSafe(clientId);
+        out << fmt::format("  Nexthops from client {}\n", clientName);
         for (const auto& nextHop : clAndNxthops.get_nextHops()) {
           out << fmt::format(
               "    {}\n", show::route::utils::getNextHopInfoStr(nextHop));
@@ -157,10 +187,10 @@ class CmdShowRouteDetails
   std::string getClassID(cfg::AclLookupClass classID) {
     int classId = static_cast<int>(classID);
     switch (classID) {
-      case cfg::AclLookupClass::DST_CLASS_L3_LOCAL_IP4:
-        return fmt::format("DST_CLASS_L3_LOCAL_IP4({})", classId);
-      case cfg::AclLookupClass::DST_CLASS_L3_LOCAL_IP6:
-        return fmt::format("DST_CLASS_L3_LOCAL_IP6({})", classId);
+      case cfg::AclLookupClass::DST_CLASS_L3_LOCAL_1:
+        return fmt::format("DST_CLASS_L3_LOCAL_1({})", classId);
+      case cfg::AclLookupClass::DST_CLASS_L3_LOCAL_2:
+        return fmt::format("DST_CLASS_L3_LOCAL_2({})", classId);
       case cfg::AclLookupClass::CLASS_DROP:
         return fmt::format("CLASS_DROP({})", classId);
       case cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_0:
@@ -185,6 +215,10 @@ class CmdShowRouteDetails
         return fmt::format("CLASS_QUEUE_PER_HOST_QUEUE_9({})", classId);
       case cfg::AclLookupClass::DST_CLASS_L3_DPR:
         return fmt::format("DST_CLASS_L3_DPR({})", classId);
+      case cfg::AclLookupClass::DEPRECATED_CLASS_UNRESOLVED_ROUTE_TO_CPU:
+        return fmt::format("CLASS_UNRESOLVED_ROUTE_TO_CPU({})", classId);
+      case cfg::AclLookupClass::DEPRECATED_CLASS_CONNECTED_ROUTE_TO_INTF:
+        return fmt::format("CLASS_CONNECTED_ROUTE_TO_INTF({})", classId);
     }
     throw std::runtime_error(
         "Unsupported ClassID: " + std::to_string(static_cast<int>(classID)));

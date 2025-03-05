@@ -9,45 +9,23 @@
  */
 #include "fboss/agent/DsfSubscriber.h"
 #include "fboss/agent/SwSwitch.h"
+#include "fboss/agent/SwitchStats.h"
 #include "fboss/agent/state/SwitchState.h"
+#include "fboss/agent/test/CounterCache.h"
 #include "fboss/agent/test/HwTestHandle.h"
 #include "fboss/agent/test/TestUtils.h"
+#include "fboss/fsdb/if/FsdbModel.h" // @manual
 
-#include <folly/logging/xlog.h>
 #include <gtest/gtest.h>
 #include <optional>
+
+#include "fboss/agent/HwSwitchMatcher.h"
 
 using namespace facebook::fboss;
 
 namespace {
-constexpr auto kRemoteSwitchId = 42;
-constexpr auto kSysPortRangeMin = 1000;
-std::shared_ptr<SystemPortMap> makeSysPorts() {
-  auto sysPorts = std::make_shared<SystemPortMap>();
-  for (auto sysPortId = kSysPortRangeMin + 1; sysPortId < kSysPortRangeMin + 3;
-       ++sysPortId) {
-    sysPorts->addNode(makeSysPort(std::nullopt, sysPortId, kRemoteSwitchId));
-  }
-  return sysPorts;
+constexpr auto kIntfNodeStart = 100;
 }
-std::shared_ptr<InterfaceMap> makeRifs(const SystemPortMap* sysPorts) {
-  auto rifs = std::make_shared<InterfaceMap>();
-  for (const auto& [id, sysPort] : *sysPorts) {
-    auto rif = std::make_shared<Interface>(
-        InterfaceID(id),
-        RouterID(0),
-        std::optional<VlanID>(std::nullopt),
-        folly::StringPiece("rif"),
-        folly::MacAddress("01:02:03:04:05:06"),
-        9000,
-        false,
-        true,
-        cfg::InterfaceType::SYSTEM_PORT);
-    rifs->addNode(rif);
-  }
-  return rifs;
-}
-} // namespace
 
 namespace facebook::fboss {
 class DsfSubscriberTest : public ::testing::Test {
@@ -59,6 +37,27 @@ class DsfSubscriberTest : public ::testing::Test {
     // Create a separate instance of DsfSubscriber (vs
     // using one from SwSwitch) for ease of testing.
     dsfSubscriber_ = std::make_unique<DsfSubscriber>(sw_);
+    FLAGS_dsf_num_parallel_sessions_per_remote_interface_node =
+        std::numeric_limits<uint32_t>::max();
+  }
+
+  HwSwitchMatcher matcher(uint32_t switchID = 0) const {
+    return HwSwitchMatcher(std::unordered_set<SwitchID>({SwitchID(switchID)}));
+  }
+
+  void updateDsfInNode(
+      MultiSwitchDsfNodeMap* dsfNodes,
+      cfg::DsfNode& dsfConfig,
+      bool add) {
+    if (add) {
+      auto dsfNode = std::make_shared<DsfNode>(SwitchID(*dsfConfig.switchId()));
+      dsfNode->setName(*dsfConfig.name());
+      dsfNode->setType(*dsfConfig.type());
+      dsfNode->setLoopbackIps(*dsfConfig.loopbackIps());
+      dsfNodes->addNode(dsfNode, matcher());
+    } else {
+      dsfNodes->removeNode(*dsfConfig.switchId());
+    }
   }
 
  protected:
@@ -67,139 +66,159 @@ class DsfSubscriberTest : public ::testing::Test {
   std::unique_ptr<DsfSubscriber> dsfSubscriber_;
 };
 
-TEST_F(DsfSubscriberTest, scheduleUpdate) {
-  auto sysPorts = makeSysPorts();
-  auto rifs = makeRifs(sysPorts.get());
-  dsfSubscriber_->scheduleUpdate(
-      sysPorts, rifs, "switch", SwitchID(kRemoteSwitchId));
-  // Don't wait for state update to mimic async scheduling of
-  // state updates.
+TEST_F(DsfSubscriberTest, addSubscription) {
+  auto verifySubscriptionState = [&](cfg::DsfNode& nodeConfig,
+                                     const auto& subscriptionInfoList) {
+    auto ipv6Loopback = (*nodeConfig.loopbackIps())[0];
+    auto serverStr = ipv6Loopback.substr(0, ipv6Loopback.find("/"));
+    for (const auto& subscriptionInfo : subscriptionInfoList) {
+      if (subscriptionInfo.server == serverStr) {
+        EXPECT_EQ(subscriptionInfo.paths.size(), 3);
+        EXPECT_EQ(
+            subscriptionInfo.state,
+            fsdb::FsdbStreamClient::State::DISCONNECTED);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  auto verifyDsfSessionState = [&](cfg::DsfNode& nodeConfig,
+                                   const auto dsfSessionsThrift) {
+    std::set<std::string> remoteEndpoints;
+    std::for_each(
+        nodeConfig.loopbackIps()->begin(),
+        nodeConfig.loopbackIps()->end(),
+        [&](const auto loopbackSubnet) {
+          auto loopbackIp = folly::IPAddress::createNetwork(
+                                loopbackSubnet, -1 /*defaultCidr*/, false)
+                                .first;
+          remoteEndpoints.insert(DsfSubscription::makeRemoteEndpoint(
+              *nodeConfig.name(), loopbackIp));
+        });
+    for (const auto& dsfSession : dsfSessionsThrift) {
+      if (remoteEndpoints.find(*dsfSession.remoteName()) !=
+          remoteEndpoints.end()) {
+        EXPECT_EQ(*dsfSession.state(), DsfSessionState::CONNECT);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  EXPECT_EQ(sw_->getDsfSubscriber()->getSubscriptionInfo().size(), 0);
+
+  // Insert 2 IN nodes
+  auto intfNodeCfg0 = makeDsfNodeCfg(kIntfNodeStart);
+  sw_->updateStateBlocking(
+      "Add IN node", [&](const std::shared_ptr<SwitchState>& state) {
+        auto newState = state->clone();
+        updateDsfInNode(
+            newState->getDsfNodes()->modify(&newState),
+            intfNodeCfg0,
+            /* add */ true);
+        return newState;
+      });
+  EXPECT_EQ(
+      sw_->getDsfSubscriber()->getSubscriptionInfo().size(),
+      intfNodeCfg0.loopbackIps()->size());
+
+  EXPECT_TRUE(verifySubscriptionState(
+      intfNodeCfg0, sw_->getDsfSubscriber()->getSubscriptionInfo()));
+  EXPECT_TRUE(verifyDsfSessionState(
+      intfNodeCfg0, sw_->getDsfSubscriber()->getDsfSessionsThrift()));
+
+  auto intfNodeCfg1 = makeDsfNodeCfg(kIntfNodeStart + 1);
+  sw_->updateStateBlocking(
+      "Add IN node", [&](const std::shared_ptr<SwitchState>& state) {
+        auto newState = state->clone();
+        updateDsfInNode(
+            newState->getDsfNodes()->modify(&newState),
+            intfNodeCfg1,
+            /* add */ true);
+        return newState;
+      });
+
+  EXPECT_EQ(
+      sw_->getDsfSubscriber()->getSubscriptionInfo().size(),
+      intfNodeCfg0.loopbackIps()->size() + intfNodeCfg1.loopbackIps()->size());
+
+  EXPECT_TRUE(verifySubscriptionState(
+      intfNodeCfg1, sw_->getDsfSubscriber()->getSubscriptionInfo()));
+  EXPECT_TRUE(verifyDsfSessionState(
+      intfNodeCfg1, sw_->getDsfSubscriber()->getDsfSessionsThrift()));
+
+  // Remove 2 IN nodes
+  sw_->updateStateBlocking(
+      "Remove IN nodes", [&](const std::shared_ptr<SwitchState>& state) {
+        auto newState = state->clone();
+        updateDsfInNode(
+            newState->getDsfNodes()->modify(&newState),
+            intfNodeCfg0,
+            /* add */ false);
+        updateDsfInNode(
+            newState->getDsfNodes()->modify(&newState),
+            intfNodeCfg1,
+            /* add */ false);
+        return newState;
+      });
+  EXPECT_EQ(sw_->getDsfSubscriber()->getSubscriptionInfo().size(), 0);
+  EXPECT_EQ(sw_->getDsfSubscriber()->getDsfSessionsThrift().size(), 0);
 }
 
-TEST_F(DsfSubscriberTest, setupNeighbors) {
-  auto updateAndCompareTables = [this](
-                                    const auto& sysPorts,
-                                    const auto& rifs,
-                                    bool publishState,
-                                    bool noNeighbors = false) {
-    if (publishState) {
-      rifs->publish();
-    }
+TEST_F(DsfSubscriberTest, failedDsfCounter) {
+  // Remove the other subscriber to avoid double counting
+  dsfSubscriber_.reset();
 
-    // dsfSubscriber_->scheduleUpdate is expected to set isLocal to False,
-    // and rest of the structure should remain the same.
-    auto expectedRifs = InterfaceMap(rifs->toThrift());
-    for (auto intfIter : expectedRifs) {
-      auto& intf = intfIter.second;
-      for (auto& ndpEntry : *intf->getNdpTable()) {
-        ndpEntry.second->setIsLocal(false);
-      }
-      for (auto& arpEntry : *intf->getArpTable()) {
-        arpEntry.second->setIsLocal(false);
-      }
-    }
+  CounterCache counters(sw_);
+  auto failedDsfCounter = SwitchStats::kCounterPrefix + "failedDsfSubscription";
+  auto intfNodeCfg0 = makeDsfNodeCfg(kIntfNodeStart);
+  sw_->updateStateBlocking(
+      "Add IN node", [&](const std::shared_ptr<SwitchState>& state) {
+        auto newState = state->clone();
+        updateDsfInNode(
+            newState->getDsfNodes()->modify(&newState),
+            intfNodeCfg0,
+            /* add */ true);
+        return newState;
+      });
+  counters.update();
 
-    dsfSubscriber_->scheduleUpdate(
-        sysPorts, rifs, "switch", SwitchID(kRemoteSwitchId));
-    waitForStateUpdates(sw_);
-    EXPECT_EQ(
-        sysPorts->toThrift(),
-        sw_->getState()->getRemoteSystemPorts()->toThrift());
-    EXPECT_EQ(
-        expectedRifs.toThrift(),
-        sw_->getState()->getRemoteInterfaces()->toThrift());
+  EXPECT_TRUE(counters.checkExist(failedDsfCounter));
+  EXPECT_EQ(
+      counters.value(failedDsfCounter), intfNodeCfg0.loopbackIps()->size());
 
-    // neighbor entries are modified to set isLocal=false
-    // Thus, if neighbor table is non-empty, programmed vs. actually
-    // programmed would be unequal for published state.
-    // for unpublished state, the passed state would be modified, and thus,
-    // programmed vs actually programmed state would be equal.
-    EXPECT_TRUE(
-        rifs->toThrift() !=
-            sw_->getState()->getRemoteInterfaces()->toThrift() ||
-        noNeighbors || !publishState);
-  };
+  auto intfNodeCfg1 = makeDsfNodeCfg(kIntfNodeStart + 1);
+  sw_->updateStateBlocking(
+      "Add IN node", [&](const std::shared_ptr<SwitchState>& state) {
+        auto newState = state->clone();
+        updateDsfInNode(
+            newState->getDsfNodes()->modify(&newState),
+            intfNodeCfg1,
+            /* add */ true);
+        return newState;
+      });
+  counters.update();
 
-  auto makeNbrs = []() {
-    state::NeighborEntries ndpTable, arpTable;
-    std::map<std::string, int> ip2Rif = {
-        {"fc00::1", kSysPortRangeMin + 1},
-        {"fc01::1", kSysPortRangeMin + 2},
-        {"10.0.1.1", kSysPortRangeMin + 1},
-        {"10.0.2.1", kSysPortRangeMin + 2},
-    };
-    for (const auto& [ip, rif] : ip2Rif) {
-      state::NeighborEntryFields nbr;
-      nbr.ipaddress() = ip;
-      nbr.mac() = "01:02:03:04:05:06";
-      cfg::PortDescriptor port;
-      port.portId() = rif;
-      port.portType() = cfg::PortDescriptorType::SystemPort;
-      nbr.portId() = port;
-      nbr.interfaceId() = rif;
-      nbr.isLocal() = true;
-      folly::IPAddress ipAddr(ip);
-      if (ipAddr.isV6()) {
-        ndpTable.insert({ip, nbr});
-      } else {
-        arpTable.insert({ip, nbr});
-      }
-    }
-    return std::make_pair(ndpTable, arpTable);
-  };
+  EXPECT_EQ(
+      counters.value(failedDsfCounter),
+      intfNodeCfg0.loopbackIps()->size() + intfNodeCfg1.loopbackIps()->size());
 
-  auto verifySetupNeighbors = [&](bool publishState) {
-    {
-      // No neighbors
-      auto sysPorts = makeSysPorts();
-      auto rifs = makeRifs(sysPorts.get());
-      updateAndCompareTables(
-          sysPorts, rifs, publishState, true /* noNeighbors */);
-    }
-    {
-      // add neighbors
-      auto sysPorts = makeSysPorts();
-      auto rifs = makeRifs(sysPorts.get());
-      auto firstRif = kSysPortRangeMin + 1;
-      auto [ndpTable, arpTable] = makeNbrs();
-      (*rifs)[firstRif]->setNdpTable(ndpTable);
-      (*rifs)[firstRif]->setArpTable(arpTable);
-      updateAndCompareTables(sysPorts, rifs, publishState);
-    }
-    {
-      // update neighbors
-      auto sysPorts = makeSysPorts();
-      auto rifs = makeRifs(sysPorts.get());
-      auto firstRif = kSysPortRangeMin + 1;
-      auto [ndpTable, arpTable] = makeNbrs();
-      ndpTable.begin()->second.mac() = "06:05:04:03:02:01";
-      arpTable.begin()->second.mac() = "06:05:04:03:02:01";
-      (*rifs)[firstRif]->setNdpTable(ndpTable);
-      (*rifs)[firstRif]->setArpTable(arpTable);
-      updateAndCompareTables(sysPorts, rifs, publishState);
-    }
-    {
-      // delete neighbors
-      auto sysPorts = makeSysPorts();
-      auto rifs = makeRifs(sysPorts.get());
-      auto firstRif = kSysPortRangeMin + 1;
-      auto [ndpTable, arpTable] = makeNbrs();
-      ndpTable.erase(ndpTable.begin());
-      arpTable.erase(arpTable.begin());
-      (*rifs)[firstRif]->setNdpTable(ndpTable);
-      (*rifs)[firstRif]->setArpTable(arpTable);
-      updateAndCompareTables(sysPorts, rifs, publishState);
-    }
-    {
-      // clear neighbors
-      auto sysPorts = makeSysPorts();
-      auto rifs = makeRifs(sysPorts.get());
-      updateAndCompareTables(
-          sysPorts, rifs, publishState, true /* noNeighbors */);
-    }
-  };
-
-  verifySetupNeighbors(false /* publishState */);
-  verifySetupNeighbors(true /* publishState */);
+  // Remove 2 IN nodes
+  sw_->updateStateBlocking(
+      "Remove IN nodes", [&](const std::shared_ptr<SwitchState>& state) {
+        auto newState = state->clone();
+        updateDsfInNode(
+            newState->getDsfNodes()->modify(&newState),
+            intfNodeCfg0,
+            /* add */ false);
+        updateDsfInNode(
+            newState->getDsfNodes()->modify(&newState),
+            intfNodeCfg1,
+            /* add */ false);
+        return newState;
+      });
+  counters.update();
+  EXPECT_EQ(counters.value(failedDsfCounter), 0);
 }
 } // namespace facebook::fboss

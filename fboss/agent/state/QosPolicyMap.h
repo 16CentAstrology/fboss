@@ -36,6 +36,8 @@ using QosPolicyMapTraits = ThriftMapNodeTraits<
 class QosPolicyMap : public ThriftMapNode<QosPolicyMap, QosPolicyMapTraits> {
  public:
   using BaseT = ThriftMapNode<QosPolicyMap, QosPolicyMapTraits>;
+  using BaseT::modify;
+  using Traits = QosPolicyMapTraits;
   QosPolicyMap();
   ~QosPolicyMap() override;
 
@@ -43,14 +45,48 @@ class QosPolicyMap : public ThriftMapNode<QosPolicyMap, QosPolicyMapTraits> {
     return getNodeIf(name);
   }
 
-  QosPolicyMap* modify(std::shared_ptr<SwitchState>* state);
-
  private:
   // Inherit the constructors required for clone()
   using BaseT::BaseT;
   friend class CloneAllocator;
 };
 
-using QosPolicyMapDelta = thrift_cow::ThriftMapDelta<QosPolicyMap>;
+using QosPolicyMapDelta = ThriftMapDelta<QosPolicyMap>;
+
+using MultiSwitchQosPolicyMapTypeClass = apache::thrift::type_class::
+    map<apache::thrift::type_class::string, QosPolicyMapTypeClass>;
+using MultiSwitchQosPolicyMapThriftType =
+    std::map<std::string, QosPolicyMapThriftType>;
+
+class MultiSwitchQosPolicyMap;
+
+using MultiSwitchQosPolicyMapTraits = ThriftMultiSwitchMapNodeTraits<
+    MultiSwitchQosPolicyMap,
+    MultiSwitchQosPolicyMapTypeClass,
+    MultiSwitchQosPolicyMapThriftType,
+    QosPolicyMap>;
+
+class HwSwitchMatcher;
+
+class MultiSwitchQosPolicyMap : public ThriftMultiSwitchMapNode<
+                                    MultiSwitchQosPolicyMap,
+                                    MultiSwitchQosPolicyMapTraits> {
+ public:
+  using Traits = MultiSwitchQosPolicyMapTraits;
+  using BaseT = ThriftMultiSwitchMapNode<
+      MultiSwitchQosPolicyMap,
+      MultiSwitchQosPolicyMapTraits>;
+  using BaseT::modify;
+
+  MultiSwitchQosPolicyMap() = default;
+  virtual ~MultiSwitchQosPolicyMap() = default;
+
+  MultiSwitchQosPolicyMap* modify(std::shared_ptr<SwitchState>* state);
+
+ private:
+  // Inherit the constructors required for clone()
+  using BaseT::BaseT;
+  friend class CloneAllocator;
+};
 
 } // namespace facebook::fboss

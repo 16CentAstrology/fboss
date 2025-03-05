@@ -21,4 +21,16 @@ target_link_libraries(wedge_qsfp_util
   phy_management_base
   transceiver_manager
   qsfp_platforms_wedge
+  fboss_common_cpp2
+)
+
+install(TARGETS wedge_qsfp_util)
+
+add_executable(thrift_state_updater
+  fboss/util/ThriftStateUpdater.cpp
+)
+
+target_link_libraries(thrift_state_updater
+  ctrl_cpp2
+  FBThrift::thriftcpp2
 )

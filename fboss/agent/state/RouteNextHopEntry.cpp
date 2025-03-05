@@ -20,11 +20,6 @@
 #include "folly/IPAddress.h"
 
 namespace {
-constexpr auto kNexthops = "nexthops";
-constexpr auto kAction = "action";
-constexpr auto kAdminDistance = "adminDistance";
-constexpr auto kCounterID = "counterID";
-constexpr auto kClassID = "classID";
 static constexpr int kMinSizeForWideEcmp{128};
 
 std::vector<facebook::fboss::NextHopThrift> thriftNextHopsFromAddresses(
@@ -100,7 +95,7 @@ RouteNextHopEntry::RouteNextHopEntry(
     AdminDistance distance,
     std::optional<RouteCounterID> counterID,
     std::optional<AclLookupClass> classID) {
-  if (nhopSet.size() == 0) {
+  if (nhopSet.empty()) {
     throw FbossError("Empty nexthop set is passed to the RouteNextHopEntry");
   }
   auto data = getRouteNextHopEntryThrift(
@@ -476,7 +471,7 @@ RouteNextHopEntry RouteNextHopEntry::from(
 
   auto adminDistance = route.adminDistance().value_or(defaultAdminDistance);
 
-  if (nexthops.size()) {
+  if (!nexthops.empty()) {
     if (route.action() &&
         *route.action() != facebook::fboss::RouteForwardAction::NEXTHOPS) {
       throw FbossError(
@@ -502,7 +497,7 @@ RouteNextHopEntry RouteNextHopEntry::from(
     std::optional<AclLookupClass> classID) {
   RouteNextHopSet nexthops = util::toRouteNextHopSet(*route.nextHops());
   auto adminDistance = route.adminDistance().value_or(defaultAdminDistance);
-  if (nexthops.size()) {
+  if (!nexthops.empty()) {
     return {std::move(nexthops), adminDistance, counterID, classID};
   }
   return {RouteForwardAction::TO_CPU, adminDistance, counterID, classID};

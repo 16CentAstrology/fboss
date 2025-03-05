@@ -8,17 +8,23 @@
  *
  */
 
-#include "fboss/agent/Platform.h"
-#include "fboss/agent/SwitchStats.h"
+#include "fboss/agent/AgentFeatures.h"
+#include "fboss/agent/HwSwitch.h"
+
+#include "fboss/agent/DsfStateUpdaterUtil.h"
+#include "fboss/agent/SwAgentInitializer.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
 #include "fboss/agent/hw/test/HwSwitchEnsemble.h"
-#include "fboss/agent/hw/test/HwSwitchEnsembleFactory.h"
-
-#include "fboss/agent/benchmarks/AgentBenchmarks.h"
+#include "fboss/agent/test/AgentEnsemble.h"
+#include "fboss/agent/test/utils/CoppTestUtils.h"
+#include "fboss/agent/test/utils/DsfConfigUtils.h"
+#include "fboss/agent/test/utils/LoadBalancerTestUtils.h"
+#include "fboss/agent/test/utils/NetworkAITestUtils.h"
+#include "fboss/agent/test/utils/OlympicTestUtils.h"
+#include "fboss/agent/test/utils/VoqTestUtils.h"
 
 #include <folly/Benchmark.h>
 #include <folly/IPAddress.h>
-#include <folly/logging/xlog.h>
 
 namespace facebook::fboss {
 
@@ -55,38 +61,94 @@ BENCHMARK(HwStatsCollection) {
   int numRouteCounters = 255;
 
   AgentEnsembleSwitchConfigFn initialConfigFn =
-      [numPortsToCollectStats, numRouteCounters](
-          HwSwitch* hwSwitch, const std::vector<PortID>& ports) {
+      [numPortsToCollectStats,
+       numRouteCounters](const AgentEnsemble& ensemble) {
+        // Disable stats collection thread.
+        FLAGS_enable_stats_update_thread = false;
+        // Always collect VOQ stats for VOQ switches
+        FLAGS_update_voq_stats_interval_s = 0;
+        // Disable DSF subscription on single-box test
+        FLAGS_dsf_subscribe = false;
+        // Enable fabric ports
+        FLAGS_hide_fabric_ports = false;
+        // Don't disable looped fabric ports
+        FLAGS_disable_looped_fabric_ports = false;
+
+        auto ports = ensemble.masterLogicalPortIds();
         auto portsNew = ports;
-        portsNew.resize(std::min((int)ports.size(), numPortsToCollectStats));
+
+        bool hasFabric =
+            ensemble.getSw()->getSwitchInfoTable().haveFabricSwitches();
+        bool hasVoq = ensemble.getSw()->getSwitchInfoTable().haveVoqSwitches();
+
+        if (!hasVoq && !hasFabric) {
+          // Limit ports for non-VOQ and non-fabric switches
+          portsNew.resize(std::min((int)ports.size(), numPortsToCollectStats));
+        }
 
         auto config = utility::onePortPerInterfaceConfig(
-            hwSwitch, portsNew, cfg::PortLoopbackMode::MAC);
-        config.switchSettings()->maxRouteCounterIDs() = numRouteCounters;
+            ensemble.getSw(),
+            portsNew,
+            !hasFabric /* interfaceHasSubnet */,
+            !hasFabric /* setInterfaceMac */,
+            utility::kBaseVlanId,
+            hasFabric || hasVoq /*enable fabric ports*/);
+        if (ensemble.getSw()->getHwAsicTable()->isFeatureSupportedOnAllAsic(
+                HwAsic::Feature::ROUTE_COUNTERS)) {
+          config.switchSettings()->maxRouteCounterIDs() = numRouteCounters;
+        }
+        if (ensemble.getSw()->getSwitchInfoTable().haveVoqSwitches()) {
+          utility::addNetworkAIQosMaps(config, ensemble.getL3Asics());
+          utility::setDefaultCpuTrafficPolicyConfig(
+              config, ensemble.getL3Asics(), ensemble.isSai());
+          utility::addCpuQueueConfig(
+              config, ensemble.getL3Asics(), ensemble.isSai());
+          config.dsfNodes() =
+              *utility::addRemoteIntfNodeCfg(*config.dsfNodes());
+          config.loadBalancers()->push_back(
+              utility::getEcmpFullHashConfig(ensemble.getL3Asics()));
+        }
         return config;
       };
-  ensemble = createAgentEnsemble(initialConfigFn);
-  auto hwSwitch = ensemble->getHw();
+
+  ensemble =
+      createAgentEnsemble(initialConfigFn, false /*disableLinkStateToggler*/);
+  int iterations = 10'000;
+
+  // Setup Remote Intf and System Ports
+  if (ensemble->getSw()->getSwitchInfoTable().haveVoqSwitches()) {
+    utility::setupRemoteIntfAndSysPorts(
+        ensemble->getSw(),
+        ensemble->getSw()->getHwAsicTable()->isFeatureSupportedOnAllAsic(
+            HwAsic::Feature::RESERVED_ENCAP_INDEX_RANGE));
+    // For VOQ switches we have 2K - 4K remote system ports (each with 4-8
+    // VOQs). This is >10x of local ports on NPU platforms. Therefore, only run
+    // 100 iterations.
+    iterations = 100;
+  }
 
   std::vector<PortID> ports = ensemble->masterLogicalPortIds();
   ports.resize(std::min((int)ports.size(), numPortsToCollectStats));
 
-  auto updater = ensemble->getSw()->getRouteUpdater();
-  for (auto i = 0; i < numRouteCounters; i++) {
-    folly::CIDRNetwork nw{
-        folly::IPAddress(folly::sformat("2401:db00:0021:{:x}::", i)), 64};
-    std::optional<RouteCounterID> counterID(std::to_string(i));
-    UnicastRoute route = util::toUnicastRoute(
-        nw,
-        RouteNextHopEntry(
-            makeNextHops({"1::"}), AdminDistance::EBGP, counterID));
-    updater.addRoute(RouterID(0), ClientID::BGPD, route);
+  if (ensemble->getSw()->getHwAsicTable()->isFeatureSupportedOnAnyAsic(
+          HwAsic::Feature::ROUTE_COUNTERS)) {
+    auto updater = ensemble->getSw()->getRouteUpdater();
+    for (auto i = 0; i < numRouteCounters; i++) {
+      folly::CIDRNetwork nw{
+          folly::IPAddress(folly::sformat("2401:db00:0021:{:x}::", i)), 64};
+      std::optional<RouteCounterID> counterID(std::to_string(i));
+      UnicastRoute route = util::toUnicastRoute(
+          nw,
+          RouteNextHopEntry(
+              makeNextHops({"1::"}), AdminDistance::EBGP, counterID));
+      updater.addRoute(RouterID(0), ClientID::BGPD, route);
+    }
+    updater.program();
   }
-  updater.program();
-  SwitchStats dummy;
+
   suspender.dismiss();
-  for (auto i = 0; i < 10'000; ++i) {
-    hwSwitch->updateStats(&dummy);
+  for (auto i = 0; i < iterations; ++i) {
+    ensemble->getSw()->updateStats();
   }
   suspender.rehire();
 }

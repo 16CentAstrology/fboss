@@ -247,8 +247,7 @@ TEST_F(BcmHostTest, CreateV4AndV6L3Host) {
   auto setup = [=]() { applyNewConfig(initialConfig()); };
   auto verify = [=]() {
     InterfaceID intfID = InterfaceID(utility::kBaseVlanId);
-    const auto& swIntf =
-        getProgrammedState()->getInterfaces()->getInterface(intfID);
+    const auto& swIntf = getProgrammedState()->getInterfaces()->getNode(intfID);
     int expectedHostNum{0};
     for (auto iter : std::as_const(*swIntf->getAddresses())) {
       auto addr = folly::IPAddress(iter.first);
@@ -305,6 +304,9 @@ TEST_F(BcmHostTest, DeleteV4AndV6L3Host) {
 
 TEST_F(BcmHostTest, HostRouteLookupClassNotSet) {
   if (!getPlatform()->canUseHostTableForHostRoutes()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   std::array<std::pair<CIDRNetwork, IPAddress>, 2> networkAndNexthops = {

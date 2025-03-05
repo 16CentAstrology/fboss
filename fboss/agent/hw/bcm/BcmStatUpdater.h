@@ -14,7 +14,7 @@
 #include "fboss/agent/hw/bcm/BcmRouteCounter.h"
 #include "fboss/agent/hw/bcm/BcmTableStats.h"
 #include "fboss/agent/hw/bcm/types.h"
-#include "fboss/agent/hw/common/LanePrbsStatsEntry.h"
+#include "fboss/agent/hw/common/PrbsStatsEntry.h"
 #include "fboss/agent/types.h"
 
 #include <boost/container/flat_map.hpp>
@@ -38,7 +38,7 @@ class StateDelta;
 
 class BcmStatUpdater {
  public:
-  using LanePrbsStatsTable = std::vector<LanePrbsStatsEntry>;
+  using PrbsStatsTable = std::vector<PrbsStatsEntry>;
 
   explicit BcmStatUpdater(BcmSwitch* hw);
   ~BcmStatUpdater() {}
@@ -100,8 +100,8 @@ class BcmStatUpdater {
 
   void clearPortStats(const std::unique_ptr<std::vector<int32_t>>& ports);
 
-  std::vector<phy::PrbsLaneStats> getPortAsicPrbsStats(int32_t portId);
-  void clearPortAsicPrbsStats(int32_t portId);
+  std::vector<phy::PrbsLaneStats> getPortAsicPrbsStats(PortID portId);
+  void clearPortAsicPrbsStats(PortID portId);
 
   void toBeAddedRouteCounter(
       BcmRouteCounterID id,
@@ -111,6 +111,8 @@ class BcmStatUpdater {
   HwResourceStats getHwTableStats() {
     return *resourceStats_.rlock();
   }
+
+  AclStats getAclStats() const;
 
  private:
   void updateAclStats();
@@ -159,15 +161,17 @@ class BcmStatUpdater {
   std::queue<std::pair<BcmAclStatDescriptor, cfg::CounterType>>
       toBeUpdatedAclStats_;
   // Outer-map key: BcmAclStatHandle, BcmAclStatActionIndex
-  // Inner-map key: counter type, value: MonotonicCounter
+  // Inner-map key: counter type, value: MonotonicCounter, cumulativeValue
   // Usually one BcmAclStatHandle can get both packets and bytes counters back
   // at one function call.
   folly::Synchronized<std::unordered_map<
       std::pair<BcmAclStatHandle, BcmAclStatActionIndex>,
-      std::unordered_map<cfg::CounterType, std::unique_ptr<MonotonicCounter>>>>
+      std::unordered_map<
+          cfg::CounterType,
+          std::pair<std::unique_ptr<MonotonicCounter>, uint64_t>>>>
       aclStats_;
 
-  folly::Synchronized<std::map<int32_t, LanePrbsStatsTable>> portAsicPrbsStats_;
+  folly::Synchronized<std::map<int32_t, PrbsStatsTable>> portAsicPrbsStats_;
 
   /* Route stats */
   uint64_t getRouteTrafficStats(BcmRouteCounterID id);

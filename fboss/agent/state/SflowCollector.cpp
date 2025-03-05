@@ -12,14 +12,6 @@
 
 #include <folly/Conv.h>
 
-namespace {
-constexpr auto kIp = "ip";
-constexpr auto kPort = "port";
-constexpr auto kId = "id";
-constexpr auto kAddress = "address";
-constexpr auto kHost = "host";
-} // namespace
-
 namespace facebook::fboss {
 
 SflowCollector::SflowCollector(std::string ip, uint16_t port) {
@@ -31,5 +23,5 @@ SflowCollector::SflowCollector(std::string ip, uint16_t port) {
   ref<switch_state_tags::address>()->ref<switch_state_tags::port>() = port;
 }
 
-template class ThriftStructNode<SflowCollector, state::SflowCollectorFields>;
+template struct ThriftStructNode<SflowCollector, state::SflowCollectorFields>;
 } // namespace facebook::fboss

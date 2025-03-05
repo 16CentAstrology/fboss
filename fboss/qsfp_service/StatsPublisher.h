@@ -22,13 +22,21 @@ class StatsPublisher {
   void init();
   void publishStats(folly::EventBase* evb, int32_t stats_publish_interval);
   void publishFbagentCounters(
-      const std::map<int32_t, TransceiverInfo>& infoMap);
+      const std::map<int32_t, TransceiverInfo>& infoMap,
+      const std::map<int32_t, SignalFlags>& signalFlagsMap,
+      const std::map<int32_t, std::map<int, MediaLaneSignals>>&
+          mediaSignalsMap);
   static void bumpPciLockHeld();
   static void bumpReadFailure();
   static void bumpWriteFailure();
   static void bumpModuleErrors();
   static void missingPorts(TransceiverID module);
   static void bumpAOIOverride();
+  static void bumpHighTemp();
+  static void bumpHighVcc();
+  static void bumpHighTempPort(std::string& portName);
+  static void bumpHighVccPort(std::string& portName);
+  static void initPerPortFb303Stats(std::set<std::string>& portNames);
 
  private:
   TransceiverManager* transceiverManager_{nullptr};

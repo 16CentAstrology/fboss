@@ -10,6 +10,8 @@
 #pragma once
 
 #include "fboss/agent/hw/sai/fake/FakeSaiAcl.h"
+#include "fboss/agent/hw/sai/fake/FakeSaiArs.h"
+#include "fboss/agent/hw/sai/fake/FakeSaiArsProfile.h"
 #include "fboss/agent/hw/sai/fake/FakeSaiBridge.h"
 #include "fboss/agent/hw/sai/fake/FakeSaiBuffer.h"
 #include "fboss/agent/hw/sai/fake/FakeSaiCounter.h"
@@ -35,6 +37,7 @@
 #include "fboss/agent/hw/sai/fake/FakeSaiSystemPort.h"
 #include "fboss/agent/hw/sai/fake/FakeSaiTam.h"
 #include "fboss/agent/hw/sai/fake/FakeSaiTunnel.h"
+#include "fboss/agent/hw/sai/fake/FakeSaiUdf.h"
 #include "fboss/agent/hw/sai/fake/FakeSaiVirtualRouter.h"
 #include "fboss/agent/hw/sai/fake/FakeSaiVlan.h"
 #include "fboss/agent/hw/sai/fake/FakeSaiWred.h"
@@ -56,6 +59,8 @@ struct FakeSai {
   FakeAclEntryManager aclEntryManager;
   FakeAclCounterManager aclCounterManager;
   FakeAclTableManager aclTableManager;
+  FakeArsManager arsManager;
+  FakeArsProfileManager arsProfileManager;
   FakeBridgeManager bridgeManager;
   FakeBufferPoolManager bufferPoolManager;
   FakeBufferProfileManager bufferProfileManager;
@@ -65,6 +70,7 @@ struct FakeSai {
   FakeFdbManager fdbManager;
   FakeHashManager hashManager;
   FakeHostifTrapManager hostIfTrapManager;
+  FakeHostifUserDefinedTrapManager hostIfUserDefinedTrapManager;
   FakeHostifTrapGroupManager hostifTrapGroupManager;
   FakeInSegEntryManager inSegEntryManager;
   FakeNeighborManager neighborManager;
@@ -82,15 +88,20 @@ struct FakeSai {
   FakeSamplePacketManager samplePacketManager;
   FakeSchedulerManager scheduleManager;
   FakeSwitchManager switchManager;
+  FakeUdfManager udfManager;
+  FakeUdfGroupManager udfGroupManager;
+  FakeUdfMatchManager udfMatchManager;
   FakeVirtualRouterManager virtualRouteManager;
   FakeVlanManager vlanManager;
   FakeWredManager wredManager;
   FakeTamManager tamManager;
   FakeTamEventManager tamEventManager;
   FakeTamEventActionManager tamEventActionManager;
+  FakeTamReportManager tamReportManager;
+  FakeTamTransportManager tamTransportManager;
+  FakeTamCollectorManager tamCollectorManager;
   FakeTunnelManager tunnelManager;
   FakeTunnelTermManager tunnelTermManager;
-  FakeTamReportManager tamReportManager;
   FakeMacsecManager macsecManager;
   FakeMacsecPortManager macsecPortManager;
   FakeMacsecSAManager macsecSAManager;
@@ -99,7 +110,9 @@ struct FakeSai {
   FakeSystemPortManager systemPortManager;
   bool initialized = false;
   sai_object_id_t cpuPortId;
+  sai_object_id_t cpuSystemPortId;
   sai_object_id_t getCpuPort();
+  sai_object_id_t getCpuSystemPort();
 };
 
 } // namespace facebook::fboss
@@ -115,3 +128,10 @@ sai_status_t sai_api_query(sai_api_t sai_api_id, void** api_method_table);
 sai_status_t sai_log_set(sai_api_t api, sai_log_level_t log_level);
 
 sai_status_t sai_dbg_generate_dump(const char* dump_file_name);
+
+sai_status_t sai_object_type_get_availability(
+    sai_object_id_t switch_id,
+    sai_object_type_t object_type,
+    uint32_t attr_count,
+    const sai_attribute_t* attr_list,
+    uint64_t* count);

@@ -23,8 +23,6 @@
 
 #include "fboss/lib/config/PlatformConfigUtils.h"
 
-#include <boost/container/flat_map.hpp>
-
 #include <thrift/lib/cpp/util/EnumUtils.h>
 
 extern "C" {
@@ -149,7 +147,8 @@ void BcmStatUpdater::updateAclStats() {
     }
     for (auto& stat :
          getAclTrafficStats(entry.first.first, entry.first.second, counters)) {
-      entry.second[stat.first]->updateValue(now, stat.second);
+      entry.second[stat.first].first->updateValue(now, stat.second);
+      entry.second[stat.first].second = stat.second;
     }
   }
 }
@@ -166,7 +165,6 @@ uint64_t BcmStatUpdater::getBcmFlexRouteTrafficStats(
     BcmRouteCounterID routeCounterId) {
   uint64_t byteCounterValue{0};
   uint32 counterOffset = routeCounterId.getHwOffset();
-#if defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_20)
   bcm_flexctr_counter_value_t counterValue{};
   auto rc = bcm_flexctr_stat_get(
       hw_->getUnit(),
@@ -181,7 +179,6 @@ uint64_t BcmStatUpdater::getBcmFlexRouteTrafficStats(
     XLOG(DBG3) << "Failed to read route counter " << routeCounterId.str()
                << " rc: " << rc;
   }
-#endif
   return byteCounterValue;
 }
 
@@ -251,18 +248,22 @@ void BcmStatUpdater::updatePrbsStats() {
   uint32 status;
   auto lockedAsicPrbsStats = portAsicPrbsStats_.wlock();
   for (auto& entry : *lockedAsicPrbsStats) {
-    auto& lanePrbsStatsTable = entry.second;
+    auto& prbsStatsTable = entry.second;
 
-    for (auto& lanePrbsStatsEntry : lanePrbsStatsTable) {
-      bcm_gport_t gport = lanePrbsStatsEntry.getGportId();
+    for (auto& prbsStatsEntry : prbsStatsTable) {
+      bcm_gport_t gport = prbsStatsEntry.getGportId();
       bcm_port_phy_control_get(
           hw_->getUnit(), gport, BCM_PORT_PHY_CONTROL_PRBS_RX_STATUS, &status);
-      if ((int32_t)status == -1) {
-        lanePrbsStatsEntry.lossOfLock();
-      } else if ((int32_t)status == -2) {
-        lanePrbsStatsEntry.locked();
+      if ((int32_t)status == -2) {
+        prbsStatsEntry.handleLossOfLock();
+      } else if ((int32_t)status == -1) {
+        prbsStatsEntry.handleNotLocked();
+      } else if (status == 0) {
+        prbsStatsEntry.handleOk();
+      } else if (status > 0) {
+        prbsStatsEntry.handleLockWithErrors(status);
       } else {
-        lanePrbsStatsEntry.updateLaneStats(status);
+        continue;
       }
     }
   }
@@ -326,7 +327,7 @@ MonotonicCounter* FOLLY_NULLABLE BcmStatUpdater::getAclStatCounterIf(
   if (auto iter = lockedAclStats->find({handle, actionIndex});
       iter != lockedAclStats->end()) {
     auto counterIter = iter->second.find(counterType);
-    return counterIter != iter->second.end() ? counterIter->second.get()
+    return counterIter != iter->second.end() ? counterIter->second.first.get()
                                              : nullptr;
   }
   return nullptr;
@@ -362,33 +363,33 @@ void BcmStatUpdater::clearPortStats(
 }
 
 std::vector<phy::PrbsLaneStats> BcmStatUpdater::getPortAsicPrbsStats(
-    int32_t portId) {
-  std::vector<phy::PrbsLaneStats> prbsStats;
+    PortID portId) {
+  std::vector<phy::PrbsLaneStats> portAsicPrbsStats;
   auto lockedPortAsicPrbsStats = portAsicPrbsStats_.rlock();
   auto portAsicPrbsStatIter = lockedPortAsicPrbsStats->find(portId);
   if (portAsicPrbsStatIter == lockedPortAsicPrbsStats->end()) {
     throw FbossError(
         "Asic prbs lane error map not initialized for port ", portId);
   }
-  auto lanePrbsStatsTable = portAsicPrbsStatIter->second;
-  XLOG(DBG3) << "lanePrbsStatsMap size: " << lanePrbsStatsTable.size();
+  auto prbsStatsTable = portAsicPrbsStatIter->second;
+  XLOG(DBG3) << "prbsStatsMap size: " << prbsStatsTable.size();
 
-  for (const auto& lanePrbsStats : lanePrbsStatsTable) {
-    prbsStats.push_back(lanePrbsStats.getPrbsLaneStats());
+  for (auto& prbsStatsEntry : prbsStatsTable) {
+    portAsicPrbsStats.push_back(prbsStatsEntry.getPrbsStats());
   }
-  return prbsStats;
+  return portAsicPrbsStats;
 }
 
-void BcmStatUpdater::clearPortAsicPrbsStats(int32_t portId) {
+void BcmStatUpdater::clearPortAsicPrbsStats(PortID portId) {
   auto lockedPortAsicPrbsStats = portAsicPrbsStats_.wlock();
   auto portAsicPrbsStatIter = lockedPortAsicPrbsStats->find(portId);
   if (portAsicPrbsStatIter == lockedPortAsicPrbsStats->end()) {
     XLOG(ERR) << "Asic prbs lane error map not initialized for port " << portId;
     return;
   }
-  auto& lanePrbsStatsTable = portAsicPrbsStatIter->second;
-  for (auto& lanePrbsStats : lanePrbsStatsTable) {
-    lanePrbsStats.clearLaneStats();
+  auto& prbsStatsTable = portAsicPrbsStatIter->second;
+  for (auto& prbsStatsEntry : prbsStatsTable) {
+    prbsStatsEntry.clearPrbsStats();
   }
 }
 
@@ -432,16 +433,20 @@ void BcmStatUpdater::refreshAclStats() {
               apache::thrift::util::enumNameSafe(counterType));
         }
         // counter name exists, but counter type doesn't
-        itr->second[counterType] = std::make_unique<MonotonicCounter>(
-            utility::statNameFromCounterType(aclStatName, counterType),
-            fb303::SUM,
-            fb303::RATE);
-      } else {
-        lockedAclStats->operator[]({handle, actionIndex})[counterType] =
+        itr->second[counterType] = std::make_pair(
             std::make_unique<MonotonicCounter>(
                 utility::statNameFromCounterType(aclStatName, counterType),
                 fb303::SUM,
-                fb303::RATE);
+                fb303::RATE),
+            0);
+      } else {
+        lockedAclStats->operator[]({handle, actionIndex})[counterType] =
+            std::make_pair(
+                std::make_unique<MonotonicCounter>(
+                    utility::statNameFromCounterType(aclStatName, counterType),
+                    fb303::SUM,
+                    fb303::RATE),
+                0);
       }
     }
     toBeUpdatedAclStats_.pop();
@@ -499,17 +504,17 @@ void BcmStatUpdater::refreshPrbsStats(const StateDelta& delta) {
               newPort->getName());
         }
 
-        auto lanePrbsStatsTable = LanePrbsStatsTable();
+        auto prbsStatsTable = PrbsStatsTable();
         for (int lane = 0;
              lane < platformPortConfig->second.pins()->iphy()->size();
              lane++) {
           bcm_gport_t gport;
           BCM_PHY_GPORT_LANE_PORT_SET(gport, lane, newPort->getID());
-          lanePrbsStatsTable.push_back(
-              LanePrbsStatsEntry(lane, gport, calculateLaneRate(newPort)));
+          prbsStatsTable.push_back(
+              PrbsStatsEntry(lane, gport, calculateLaneRate(newPort)));
         }
         (*lockedPortAsicPrbsStats)[newPort->getID()] =
-            std::move(lanePrbsStatsTable);
+            std::move(prbsStatsTable);
       });
 }
 
@@ -535,4 +540,17 @@ BcmTrafficCounterStats BcmStatUpdater::getAclTrafficStats(
   }
   return stats;
 }
+
+AclStats BcmStatUpdater::getAclStats() const {
+  AclStats aclStats;
+  auto lockedAclStats = aclStats_.wlock();
+  for (auto& entry : *lockedAclStats) {
+    for (auto& stat : entry.second) {
+      aclStats.statNameToCounterMap()->insert(
+          {stat.second.first->getName(), stat.second.second});
+    }
+  }
+  return aclStats;
+}
+
 } // namespace facebook::fboss

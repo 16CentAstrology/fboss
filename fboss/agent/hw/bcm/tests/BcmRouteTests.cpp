@@ -27,7 +27,6 @@
 #include "fboss/agent/platforms/tests/utils/BcmTestPlatform.h"
 #include "fboss/agent/state/Interface.h"
 #include "fboss/agent/state/Route.h"
-#include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/state/Vlan.h"
 #include "fboss/agent/state/VlanMap.h"
@@ -41,6 +40,8 @@
 extern "C" {
 #include <bcm/l3.h>
 }
+
+DECLARE_bool(intf_nbr_tables);
 
 using folly::ByteRange;
 using folly::CIDRNetwork;
@@ -254,18 +255,20 @@ class BcmRouteTest : public BcmTest {
     int ipv4Routes, ipv6Routes;
 
     ipv4Routes = ipv6Routes = 0;
-    for (auto intfIter :
+    for (const auto& [_, intfMap] :
          std::as_const(*getProgrammedState()->getInterfaces())) {
-      const auto& interface = intfIter.second;
-      for (auto iter : std::as_const(*interface->getAddresses())) {
-        auto mask = iter.second;
-        auto ipAddress = folly::IPAddress(iter.first);
+      for (auto intfIter : std::as_const(*intfMap)) {
+        const auto& interface = intfIter.second;
+        for (auto iter : std::as_const(*interface->getAddresses())) {
+          auto mask = iter.second;
+          auto ipAddress = folly::IPAddress(iter.first);
 
-        if (ipAddress.isV4() && mask != 32) {
-          ipv4Routes++;
-        }
-        if (ipAddress.isV6() && !ipAddress.isLinkLocal() && mask != 128) {
-          ipv6Routes++;
+          if (ipAddress.isV4() && mask != 32) {
+            ipv4Routes++;
+          }
+          if (ipAddress.isV6() && !ipAddress.isLinkLocal() && mask != 128) {
+            ipv6Routes++;
+          }
         }
       }
     }
@@ -616,16 +619,18 @@ TEST_F(BcmRouteHostReferenceTest, AddNoRoutesAndCheckDefaultHostReference) {
     std::vector<int32_t> interfaceIds;
 
     /* entries are created for non-local IP addresses of interface */
-    for (auto intfIter :
+    for (const auto& [_, intfMap] :
          std::as_const(*getProgrammedState()->getInterfaces())) {
-      const auto& interface = intfIter.second;
-      for (auto iter : std::as_const(*interface->getAddresses())) {
-        auto address = folly::IPAddress(iter.first);
-        if (address.isV6() && address.isLinkLocal()) {
-          continue;
+      for (auto intfIter : std::as_const(*intfMap)) {
+        const auto& interface = intfIter.second;
+        for (auto iter : std::as_const(*interface->getAddresses())) {
+          auto address = folly::IPAddress(iter.first);
+          if (address.isV6() && address.isLinkLocal()) {
+            continue;
+          }
+          interfaceIps.push_back(address);
+          interfaceIds.push_back(interface->getID());
         }
-        interfaceIps.push_back(address);
-        interfaceIds.push_back(interface->getID());
       }
     }
     /* verify reference count is one by default for interface address */
@@ -1000,68 +1005,6 @@ TEST_F(BcmRouteTest, EgressUpdateOnHostRouteUpdateOneHopToManyHops) {
   verifyAcrossWarmBoots(setup, verify);
 }
 
-TEST_F(BcmRouteTest, UnresolveResolveNextHop) {
-  auto config = initialConfig();
-  boost::container::flat_set<PortDescriptor> ports;
-  for (auto i = 0; i < 2; i++) {
-    auto portId = masterLogicalPortIds()[i];
-    ports.insert(PortDescriptor(portId));
-  }
-  auto route = RoutePrefixV6{folly::IPAddressV6("2401:dead:beef::"), 112};
-
-  auto setup = [=]() {
-    // add multi path route
-    applyNewConfig(config);
-    auto helper = utility::EcmpSetupTargetedPorts<IPAddressV6>(
-        getProgrammedState(), RouterID(0));
-
-    applyNewState(helper.resolveNextHops(getProgrammedState(), ports));
-
-    std::map<PortDescriptor, std::shared_ptr<NdpEntry>> entries;
-
-    // mark neighbors connected over ports pending
-    auto state0 = getProgrammedState();
-    for (auto port : ports) {
-      auto ecmpNextHop = helper.nhop(port);
-      auto vlanId = helper.getVlan(port, getProgrammedState());
-      auto ntable = state0->getVlans()->getVlan(*vlanId)->getNdpTable()->modify(
-          *vlanId, &state0);
-      auto entry = ntable->getEntry(ecmpNextHop.ip);
-      auto intfId = entry->getIntfID();
-      ntable->removeEntry(ecmpNextHop.ip);
-      ntable->addPendingEntry(ecmpNextHop.ip, intfId);
-      entries[port] = std::move(entry);
-    }
-    applyNewState(state0);
-
-    // mark neighbors connected over ports reachable
-    auto state1 = getProgrammedState();
-    for (auto port : ports) {
-      auto vlanId = helper.getVlan(port, getProgrammedState());
-      auto ntable = state1->getVlans()->getVlan(*vlanId)->getNdpTable()->modify(
-          *vlanId, &state1);
-      auto entry = entries[port];
-      ntable->updateEntry(NeighborEntryFields<folly::IPAddressV6>::fromThrift(
-          entry->toThrift()));
-    }
-    applyNewState(state1);
-    helper.programRoutes(getRouteUpdater(), ports, {route});
-  };
-  auto verify = [=]() {
-    /* route is programmed */
-    auto* bcmRoute = getHwSwitch()->routeTable()->getBcmRoute(
-        0, route.network(), route.mask());
-    EXPECT_NE(bcmRoute, nullptr);
-    auto egressId = bcmRoute->getEgressId();
-    EXPECT_NE(egressId, BcmEgressBase::INVALID);
-
-    /* ecmp is resolved */
-    EXPECT_EQ(getEcmpSizeInHw(getHwSwitch(), egressId, 2), 2);
-  };
-  setup();
-  verify();
-}
-
 TEST_F(BcmTest, VerifyDropEgress) {
   auto setup = [] {
     // Default drop egress should be created during BcmUnit initialization.
@@ -1079,4 +1022,117 @@ TEST_F(BcmTest, VerifyDropEgress) {
     EXPECT_TRUE(expectedEgress.flags & BCM_L3_DST_DISCARD);
   };
   verifyAcrossWarmBoots(setup, verify);
+}
+
+template <bool enableIntfNbrTable>
+struct EnableIntfNbrTable {
+  static constexpr auto intfNbrTable = enableIntfNbrTable;
+};
+
+using NeighborTableTypes =
+    ::testing::Types<EnableIntfNbrTable<false>, EnableIntfNbrTable<true>>;
+
+template <typename EnableIntfNbrTableT>
+class BcmRouteNeighborTest : public BcmRouteTest {
+  static auto constexpr intfNbrTable = EnableIntfNbrTableT::intfNbrTable;
+
+  void SetUp() override {
+    FLAGS_intf_nbr_tables = isIntfNbrTable();
+    HwTest::SetUp();
+  }
+
+ public:
+  bool isIntfNbrTable() const {
+    return intfNbrTable == true;
+  }
+};
+
+TYPED_TEST_SUITE(BcmRouteNeighborTest, NeighborTableTypes);
+
+TYPED_TEST(BcmRouteNeighborTest, UnresolveResolveNextHop) {
+  auto config = this->initialConfig();
+  boost::container::flat_set<PortDescriptor> ports;
+  for (auto i = 0; i < 2; i++) {
+    auto portId = this->masterLogicalPortIds()[i];
+    ports.insert(PortDescriptor(portId));
+  }
+  auto route = RoutePrefixV6{folly::IPAddressV6("2401:dead:beef::"), 112};
+
+  auto setup = [=]() {
+    // add multi path route
+    this->applyNewConfig(config);
+    auto helper = utility::EcmpSetupTargetedPorts<IPAddressV6>(
+        this->getProgrammedState(), RouterID(0));
+
+    this->applyNewState(
+        helper.resolveNextHops(this->getProgrammedState(), ports));
+
+    std::map<PortDescriptor, std::shared_ptr<NdpEntry>> entries;
+
+    // mark neighbors connected over ports pending
+    auto state0 = this->getProgrammedState();
+    for (auto port : ports) {
+      auto ecmpNextHop = helper.nhop(port);
+
+      NdpTable* ntable;
+      if (this->isIntfNbrTable()) {
+        EXPECT_EQ(port.type(), PortDescriptor::PortType::PHYSICAL);
+        auto interfaceID =
+            this->getProgrammedState()->getInterfaceIDForPort(port);
+        ntable = state0->getInterfaces()
+                     ->getNode(interfaceID)
+                     ->getNdpTable()
+                     ->modify(interfaceID, &state0);
+      } else {
+        auto vlanId = helper.getVlan(port, this->getProgrammedState());
+        ntable = state0->getVlans()->getNode(*vlanId)->getNdpTable()->modify(
+            *vlanId, &state0);
+      }
+
+      auto entry = ntable->getEntry(ecmpNextHop.ip);
+      auto intfId = entry->getIntfID();
+      ntable->removeEntry(ecmpNextHop.ip);
+      ntable->addPendingEntry(ecmpNextHop.ip, intfId);
+      entries[port] = std::move(entry);
+    }
+    this->applyNewState(state0);
+
+    // mark neighbors connected over ports reachable
+    auto state1 = this->getProgrammedState();
+    for (auto port : ports) {
+      NdpTable* ntable;
+      if (this->isIntfNbrTable()) {
+        EXPECT_EQ(port.type(), PortDescriptor::PortType::PHYSICAL);
+        auto interfaceID =
+            this->getProgrammedState()->getInterfaceIDForPort(port);
+        ntable = state1->getInterfaces()
+                     ->getNode(interfaceID)
+                     ->getNdpTable()
+                     ->modify(interfaceID, &state1);
+      } else {
+        auto vlanId = helper.getVlan(port, this->getProgrammedState());
+        ntable = state1->getVlans()->getNode(*vlanId)->getNdpTable()->modify(
+            *vlanId, &state1);
+      }
+
+      auto entry = entries[port];
+      ntable->updateEntry(NeighborEntryFields<folly::IPAddressV6>::fromThrift(
+          entry->toThrift()));
+    }
+    this->applyNewState(state1);
+    helper.programRoutes(this->getRouteUpdater(), ports, {route});
+  };
+  auto verify = [=]() {
+    /* route is programmed */
+    auto* bcmRoute = this->getHwSwitch()->routeTable()->getBcmRoute(
+        0, route.network(), route.mask());
+    EXPECT_NE(bcmRoute, nullptr);
+    auto egressId = bcmRoute->getEgressId();
+    EXPECT_NE(egressId, BcmEgressBase::INVALID);
+
+    /* ecmp is resolved */
+    EXPECT_EQ(getEcmpSizeInHw(this->getHwSwitch(), egressId, 2), 2);
+  };
+  setup();
+  verify();
 }

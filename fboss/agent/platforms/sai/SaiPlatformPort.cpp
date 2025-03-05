@@ -9,10 +9,10 @@
  */
 
 #include "fboss/agent/platforms/sai/SaiPlatformPort.h"
+#include <optional>
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/platforms/sai/SaiPlatform.h"
 #include "fboss/lib/config/PlatformConfigUtils.h"
-#include "fboss/qsfp_service/lib/QsfpCache.h"
 
 DEFINE_bool(
     skip_transceiver_programming,
@@ -54,12 +54,6 @@ bool SaiPlatformPort::checkSupportsTransceiver() const {
 }
 
 std::vector<uint32_t> SaiPlatformPort::getHwPortLanes(
-    cfg::PortSpeed speed) const {
-  auto profileID = getProfileIDBySpeed(speed);
-  return getHwPortLanes(profileID);
-}
-
-std::vector<uint32_t> SaiPlatformPort::getHwPortLanes(
     cfg::PortProfileID profileID) const {
   const auto& platformPortEntry = getPlatformPortEntry();
   auto& dataPlanePhyChips = getPlatform()->getDataPlanePhyChips();
@@ -79,8 +73,7 @@ std::vector<uint32_t> SaiPlatformPort::getHwPortLanes(
 }
 
 std::vector<PortID> SaiPlatformPort::getSubsumedPorts(
-    cfg::PortSpeed speed) const {
-  auto profileID = getProfileIDBySpeed(speed);
+    cfg::PortProfileID profileID) const {
   const auto& platformPortEntry = getPlatformPortEntry();
   auto supportedProfilesIter =
       platformPortEntry.supportedProfiles()->find(profileID);
@@ -92,45 +85,16 @@ std::vector<PortID> SaiPlatformPort::getSubsumedPorts(
   }
   std::vector<PortID> subsumedPortList;
   for (auto portId : *supportedProfilesIter->second.subsumedPorts()) {
-    subsumedPortList.push_back(PortID(portId));
+    subsumedPortList.emplace_back(portId);
   }
   return subsumedPortList;
 }
 
-folly::Future<TransmitterTechnology>
-SaiPlatformPort::getTransmitterTechInternal(folly::EventBase* evb) {
-  if (!checkSupportsTransceiver()) {
-    return folly::makeFuture<TransmitterTechnology>(
-        TransmitterTechnology::COPPER);
-  }
-  int32_t transID = static_cast<int32_t>(getTransceiverID().value());
-  auto getTech = [](TransceiverInfo info) {
-    if (auto cable = info.cable()) {
-      return *cable->transmitterTech();
-    }
-    return TransmitterTechnology::UNKNOWN;
-  };
-  auto handleError = [transID](const folly::exception_wrapper& e) {
-    XLOG(ERR) << "Error retrieving info for transceiver " << transID
-              << " Exception: " << folly::exceptionStr(e);
-    return TransmitterTechnology::UNKNOWN;
-  };
-  folly::Future<TransceiverInfo> transceiverInfo = getFutureTransceiverInfo();
-  return transceiverInfo.via(evb).thenValueInline(getTech).thenError(
-      std::move(handleError));
-}
-
-TransmitterTechnology SaiPlatformPort::getTransmitterTech() {
-  folly::EventBase evb;
-  return getTransmitterTechInternal(&evb).getVia(&evb);
-}
-
 TransceiverIdxThrift SaiPlatformPort::getTransceiverMapping(
-    cfg::PortSpeed speed) {
+    cfg::PortProfileID profileID) {
   if (!checkSupportsTransceiver()) {
     return TransceiverIdxThrift();
   }
-  auto profileID = getProfileIDBySpeed(speed);
   const auto& platformPortEntry = getPlatformPortEntry();
   std::vector<int32_t> lanes;
   auto transceiverLanes = utility::getTransceiverLanes(
@@ -144,17 +108,22 @@ TransceiverIdxThrift SaiPlatformPort::getTransceiverMapping(
   return xcvr;
 }
 
-folly::Future<TransceiverInfo> SaiPlatformPort::getFutureTransceiverInfo()
-    const {
+std::shared_ptr<TransceiverSpec> SaiPlatformPort::getTransceiverSpec() const {
   // use this method to query transceiver info
   // for hw test, it uses a map populated by switch ensemble to return
   // transceiver information
-  if (auto transceiver =
+  if (auto overrideTransceiverInfo =
           getPlatform()->getOverrideTransceiverInfo(getPortID())) {
-    return transceiver.value();
+    auto overrideTransceiverSpec = TransceiverSpec::createPresentTransceiver(
+        overrideTransceiverInfo.value());
+    return overrideTransceiverSpec;
   }
-  auto qsfpCache = static_cast<SaiPlatform*>(getPlatform())->getQsfpCache();
-  return qsfpCache->futureGet(getTransceiverID().value());
+  auto transceiverMaps = static_cast<SaiPlatform*>(getPlatform())
+                             ->getHwSwitch()
+                             ->getProgrammedState()
+                             ->getTransceivers();
+  auto transceiverSpec = transceiverMaps->getNodeIf(getTransceiverID().value());
+  return transceiverSpec;
 }
 
 std::optional<ChannelID> SaiPlatformPort::getChannel() const {

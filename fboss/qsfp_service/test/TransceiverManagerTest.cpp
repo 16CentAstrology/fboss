@@ -30,8 +30,11 @@ TEST_F(TransceiverManagerTest, coldBootTest) {
     EXPECT_FALSE(transceiverManager_->canWarmBoot());
     // We expect a cold boot in this case and that should trigger hard resets of
     // QSFP modules
+    MockTransceiverPlatformApi* xcvrApi =
+        static_cast<MockTransceiverPlatformApi*>(
+            transceiverManager_->getQsfpPlatformApi());
     for (int i = 0; i < transceiverManager_->getNumQsfpModules(); i++) {
-      EXPECT_CALL(*transceiverManager_, triggerQsfpHardReset(i)).Times(1);
+      EXPECT_CALL(*xcvrApi, triggerQsfpHardReset(i + 1)).Times(1);
     }
     transceiverManager_->init();
 
@@ -68,6 +71,8 @@ TEST_F(TransceiverManagerTest, coldBootTest) {
 TEST_F(TransceiverManagerTest, warmBootTest) {
   // Trigger a graceful exit
   transceiverManager_->gracefulExit();
+  gflags::SetCommandLineOptionWithMode(
+      "can_qsfp_service_warm_boot", "1", gflags::SET_FLAGS_DEFAULT);
   // Check warm boot flag file is created
   EXPECT_TRUE(checkFileExists(warmBootFlagFile));
 
@@ -75,14 +80,45 @@ TEST_F(TransceiverManagerTest, warmBootTest) {
 
   // We expect a warm boot in this case and that should NOT trigger hard resets
   // of QSFP modules
+  MockTransceiverPlatformApi* xcvrApi =
+      static_cast<MockTransceiverPlatformApi*>(
+          transceiverManager_->getQsfpPlatformApi());
   for (int i = 0; i < transceiverManager_->getNumQsfpModules(); i++) {
-    EXPECT_CALL(*transceiverManager_, triggerQsfpHardReset(i)).Times(0);
+    EXPECT_CALL(*xcvrApi, triggerQsfpHardReset(i + 1)).Times(0);
   }
   transceiverManager_->init();
 
   // Confirm that the warm boot falg was still there
   EXPECT_TRUE(checkFileExists(warmBootFlagFile));
   EXPECT_TRUE(transceiverManager_->canWarmBoot());
+}
+
+TEST_F(TransceiverManagerTest, runState) {
+  resetTransceiverManager();
+  EXPECT_FALSE(transceiverManager_->isSystemInitialized());
+  EXPECT_FALSE(transceiverManager_->isFullyInitialized());
+  EXPECT_FALSE(transceiverManager_->isExiting());
+  EXPECT_EQ(
+      transceiverManager_->getRunState(), QsfpServiceRunState::UNINITIALIZED);
+
+  transceiverManager_->init();
+  EXPECT_TRUE(transceiverManager_->isSystemInitialized());
+  EXPECT_FALSE(transceiverManager_->isFullyInitialized());
+  EXPECT_FALSE(transceiverManager_->isExiting());
+  EXPECT_EQ(
+      transceiverManager_->getRunState(), QsfpServiceRunState::INITIALIZED);
+
+  transceiverManager_->refreshStateMachines();
+  EXPECT_TRUE(transceiverManager_->isSystemInitialized());
+  EXPECT_TRUE(transceiverManager_->isFullyInitialized());
+  EXPECT_FALSE(transceiverManager_->isExiting());
+  EXPECT_EQ(transceiverManager_->getRunState(), QsfpServiceRunState::ACTIVE);
+
+  transceiverManager_->gracefulExit();
+  EXPECT_TRUE(transceiverManager_->isSystemInitialized());
+  EXPECT_TRUE(transceiverManager_->isFullyInitialized());
+  EXPECT_TRUE(transceiverManager_->isExiting());
+  EXPECT_EQ(transceiverManager_->getRunState(), QsfpServiceRunState::EXITING);
 }
 
 ACTION(ThrowFbossError) {
@@ -95,7 +131,7 @@ TEST_F(TransceiverManagerTest, getInterfacePhyInfo) {
   EXPECT_TRUE(phyInfos.find("eth1/1/1") != phyInfos.end());
   // Simulate an exception from xphyInfo and confirm that the map doesn't
   // include that interface's key
-  EXPECT_CALL(*transceiverManager_, getXphyInfo(PortID(5)))
+  EXPECT_CALL(*transceiverManager_, getXphyInfo(PortID(9)))
       .Times(1)
       .WillRepeatedly(ThrowFbossError());
   transceiverManager_->getInterfacePhyInfo(phyInfos, "eth1/2/1");

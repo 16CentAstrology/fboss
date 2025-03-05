@@ -89,7 +89,7 @@ class FakeSwitch {
     profileId_ = profileId;
   }
   void setSwitchId(sai_uint32_t switchId) {
-    switchId_ = switchId;
+    saiSwitchId_ = switchId;
   }
   void setMaxSystemCores(sai_uint32_t maxSystemCores) {
     maxSystemCores_ = maxSystemCores;
@@ -165,7 +165,7 @@ class FakeSwitch {
     return profileId_;
   }
   int32_t switchId() {
-    return switchId_;
+    return saiSwitchId_;
   }
   int32_t maxSystemCores() {
     return maxSystemCores_;
@@ -227,6 +227,12 @@ class FakeSwitch {
   void setIngressAcl(sai_object_id_t oid) {
     ingressAcl_ = oid;
   }
+  sai_object_id_t getArsProfile() {
+    return arsProfile_;
+  }
+  void setArsProfile(sai_object_id_t oid) {
+    arsProfile_ = oid;
+  }
   sai_uint32_t getCounterRefreshInterval() {
     return counterRefreshInterval_;
   }
@@ -252,6 +258,36 @@ class FakeSwitch {
 
   void setEcmpMemberCount(sai_uint32_t count) {
     ecmpMemberCount_ = count;
+  }
+
+  void setCreditWatchdogEnable(bool enable) {
+    creditWatchDogEnable_ = enable;
+  }
+  bool getCreditWatchdogEnable() const {
+    return creditWatchDogEnable_;
+  }
+
+  void setCreditWatchdogMs(uint32_t watchDogMs) {
+    creditWatchDogMs_ = watchDogMs;
+  }
+  uint32_t getCreditWatchdogMs() const {
+    return creditWatchDogMs_;
+  }
+
+  void setPfcDlrPacketAction(sai_packet_action_t pktAction) {
+    pfcDlrPacketAction_ = pktAction;
+  }
+
+  sai_packet_action_t getPfcDlrPacketAction() const {
+    return pfcDlrPacketAction_;
+  }
+
+  void setTamObjectId(sai_object_id_t objectId) {
+    tamObjectId_ = objectId;
+  }
+
+  sai_object_id_t getTamObjectId() const {
+    return tamObjectId_;
   }
 
   sai_object_id_t id;
@@ -280,6 +316,7 @@ class FakeSwitch {
   sai_uint32_t macAgingTime_{0};
   bool UseEcnThresholds_{false};
   sai_object_id_t ingressAcl_{SAI_NULL_OBJECT_ID};
+  sai_object_id_t arsProfile_{SAI_NULL_OBJECT_ID};
   struct FakeSwitchLedState {
     bool reset{};
     std::array<uint8_t, 256> program{};
@@ -293,7 +330,7 @@ class FakeSwitch {
   int32_t hardwareAccessBus_;
   sai_uint64_t platformContext_;
   sai_uint32_t profileId_;
-  sai_uint32_t switchId_;
+  sai_uint32_t saiSwitchId_;
   sai_uint32_t maxSystemCores_;
   std::vector<sai_system_port_config_t> sysPortConfigList_;
   sai_uint32_t switchType_;
@@ -302,6 +339,10 @@ class FakeSwitch {
   sai_object_id_t defaultVlanId_;
   sai_uint32_t maxEcmpMemberCount_{4096};
   sai_uint32_t ecmpMemberCount_{64};
+  bool creditWatchDogEnable_{true};
+  uint32_t creditWatchDogMs_{500};
+  sai_packet_action_t pfcDlrPacketAction_{SAI_PACKET_ACTION_DROP};
+  sai_object_id_t tamObjectId_{SAI_NULL_OBJECT_ID};
 };
 
 using FakeSwitchManager = FakeManager<sai_object_id_t, FakeSwitch>;

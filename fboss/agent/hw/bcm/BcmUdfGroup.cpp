@@ -9,6 +9,7 @@
  */
 #include "fboss/agent/hw/bcm/BcmUdfGroup.h"
 #include "fboss/agent/hw/bcm/BcmError.h"
+#include "fboss/agent/hw/bcm/BcmFieldProcessorUtils.h"
 #include "fboss/agent/hw/bcm/BcmSwitch.h"
 #include "fboss/agent/hw/bcm/BcmWarmBootCache.h"
 
@@ -43,6 +44,7 @@ BcmUdfGroup::BcmUdfGroup(
     const std::shared_ptr<UdfGroup>& udfGroup)
     : hw_(hw) {
   udfGroupName_ = udfGroup->getName();
+  udfGroupType_ = udfGroup->getUdfGroupType();
   bcm_udf_t udfInfo;
   bcm_udf_t_init(&udfInfo);
 
@@ -50,6 +52,7 @@ BcmUdfGroup::BcmUdfGroup(
   udfInfo.layer = convertBaseHeaderToBcmLayer(udfGroup->getUdfBaseHeader());
   udfInfo.start = udfGroup->getStartOffsetInBytes() * 8; // in bits
   udfInfo.width = matchFieldWidth_ * 8; // in bits
+  proto_ = udfInfo.layer;
 
   auto warmBootCache = hw_->getWarmBootCache();
   auto name = udfGroup->getID();
@@ -73,7 +76,8 @@ BcmUdfGroup::~BcmUdfGroup() {
   XLOG(DBG2) << "Destroying BcmUdfGroup";
 
   // Detach the udfPacketMatchedIds associated with the UdfGroup
-  for (auto packetMatcherId : udfPacketMatcherIds_) {
+  auto udfPacketMatcherIdCopy = udfPacketMatcherIds_;
+  for (auto packetMatcherId : udfPacketMatcherIdCopy) {
     udfPacketMatcherDelete(packetMatcherId.first, packetMatcherId.second);
   }
 
@@ -85,7 +89,15 @@ int BcmUdfGroup::udfCreate(bcm_udf_t* udfInfo) {
   bcm_udf_alloc_hints_t hints;
   int rv = 0;
   bcm_udf_alloc_hints_t_init(&hints);
-  hints.flags = BCM_UDF_CREATE_O_UDFHASH;
+  cfg::UdfGroupType udfGroupType =
+      udfGroupType_.value_or(cfg::UdfGroupType::HASH);
+  if (udfGroupType == cfg::UdfGroupType::ACL) {
+    hints.flags |= (BCM_UDF_CREATE_O_FIELD_INGRESS);
+    BCM_FIELD_QSET_INIT(hints.qset);
+    BCM_FIELD_QSET_ADD(hints.qset, bcmFieldQualifyStageIngress);
+  } else {
+    hints.flags |= BCM_UDF_CREATE_O_UDFHASH;
+  }
 
   rv = bcm_udf_create(hw_->getUnit(), &hints, udfInfo, &udfId_);
   bcmCheckError(
@@ -126,6 +138,7 @@ int BcmUdfGroup::udfPacketMatcherDelete(
     bcm_udf_pkt_format_id_t packetMatcherId,
     const std::string& udfPacketMatcherName) {
   int rv = 0;
+  XLOG(DBG2) << "Detaching udf packet matcher " << udfPacketMatcherName;
   /* Detach packet matcher id from Udf Group */
   rv = bcm_udf_pkt_format_delete(hw_->getUnit(), udfId_, packetMatcherId);
   bcmLogFatal(

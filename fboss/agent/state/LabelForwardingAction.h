@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 #include <optional>
 #include <vector>
 
@@ -52,7 +52,7 @@ class LabelForwardingAction {
   LabelForwardingAction(LabelForwardingType type, LabelStack pushStack)
       : type_(type), pushStack_(std::move(pushStack)) {
     if (type_ != LabelForwardingType::PUSH || !pushStack_ ||
-        !pushStack_->size()) {
+        pushStack_->empty()) {
       throw FbossError(folly::to<std::string>(
           kInvalidAction,
           ": either label stack to push is missing or ",

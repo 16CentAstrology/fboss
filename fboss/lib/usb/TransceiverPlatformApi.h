@@ -22,8 +22,10 @@ namespace facebook::fboss {
  */
 class TransceiverPlatformApi {
  public:
-  TransceiverPlatformApi(){};
-  virtual ~TransceiverPlatformApi(){};
+  TransceiverPlatformApi() = default;
+  ;
+  virtual ~TransceiverPlatformApi() = default;
+  ;
 
   /* This function does a hard reset of the QSFP and this will be
    * called when port flap is seen on the port remains down.
@@ -39,6 +41,24 @@ class TransceiverPlatformApi {
    * So function we will stay no op for those platforms.
    */
   virtual void clearAllTransceiverReset() = 0;
+
+  /*
+   * This function will hold the transceiver in reset.
+   */
+  virtual void holdTransceiverReset(unsigned int /* module */) {
+    throw std::runtime_error(
+        "holdTransceiverReset unsupported on this platform");
+  }
+
+  /*
+   * This function will clear the reset pin for the transceiver.
+   * TODO: Make this a pure virtual function when it's implemented for all
+   * platforms
+   */
+  virtual void releaseTransceiverReset(unsigned int /* module */) {
+    throw std::runtime_error(
+        "releaseTransceiverReset unsupported on this platform");
+  }
 };
 
 } // namespace facebook::fboss

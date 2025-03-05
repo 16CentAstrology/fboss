@@ -22,11 +22,12 @@ class StateDelta;
 class SaiStore;
 class SaiPlatform;
 
-using SaiDebugCounter = SaiObject<SaiDebugCounterTraits>;
+using SaiInPortDebugCounter = SaiObject<SaiInPortDebugCounterTraits>;
+using SaiOutPortDebugCounter = SaiObject<SaiOutPortDebugCounterTraits>;
 
 class SaiDebugCounterManager {
  public:
-  explicit SaiDebugCounterManager(
+  SaiDebugCounterManager(
       SaiStore* saiStore,
       SaiManagerTable* managerTable,
       SaiPlatform* platform)
@@ -34,21 +35,41 @@ class SaiDebugCounterManager {
 
   void setupDebugCounters();
   sai_stat_id_t getPortL3BlackHoleCounterStatId() const {
-    CHECK(portL3BlackHoleCounter_);
     return portL3BlackHoleCounterStatId_;
   }
   sai_stat_id_t getMPLSLookupFailedCounterStatId() const {
-    CHECK(mplsLookupFailCounter_);
     return mplsLookupFailCounterStatId_;
   }
+  sai_stat_id_t getAclDropCounterStatId() const {
+    return aclDropCounterStatId_;
+  }
+  sai_stat_id_t getTrapDropCounterStatId() const {
+    return trapDropCounterStatId_;
+  }
+  sai_stat_id_t getEgressForwardingDropStatId() const {
+    return egressForwardingDropCounterStatId_;
+  }
+  std::set<sai_stat_id_t> getConfiguredDebugStatIds() const;
 
  private:
+  static sai_stat_id_t kInvalidStatId() {
+    return std::numeric_limits<sai_stat_id_t>::max();
+  }
   void setupPortL3BlackHoleCounter();
   void setupMPLSLookupFailedCounter();
-  std::shared_ptr<SaiDebugCounter> portL3BlackHoleCounter_;
-  std::shared_ptr<SaiDebugCounter> mplsLookupFailCounter_;
-  sai_stat_id_t portL3BlackHoleCounterStatId_{0};
-  sai_stat_id_t mplsLookupFailCounterStatId_{0};
+  void setupAclDropCounter();
+  void setupTrapDropCounter();
+  void setupEgressForwardingDropCounter();
+  std::shared_ptr<SaiInPortDebugCounter> portL3BlackHoleCounter_;
+  std::shared_ptr<SaiInPortDebugCounter> mplsLookupFailCounter_;
+  std::shared_ptr<SaiInPortDebugCounter> aclDropCounter_;
+  std::shared_ptr<SaiInPortDebugCounter> trapDropCounter_;
+  std::shared_ptr<SaiOutPortDebugCounter> egressForwardingDropCounter_;
+  sai_stat_id_t portL3BlackHoleCounterStatId_{kInvalidStatId()};
+  sai_stat_id_t mplsLookupFailCounterStatId_{kInvalidStatId()};
+  sai_stat_id_t aclDropCounterStatId_{kInvalidStatId()};
+  sai_stat_id_t trapDropCounterStatId_{kInvalidStatId()};
+  sai_stat_id_t egressForwardingDropCounterStatId_{kInvalidStatId()};
   SaiStore* saiStore_;
   SaiManagerTable* managerTable_;
   SaiPlatform* platform_;

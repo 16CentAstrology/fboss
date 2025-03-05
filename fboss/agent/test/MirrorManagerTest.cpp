@@ -9,9 +9,10 @@
  */
 
 #include "fboss/agent/MirrorManager.h"
+#include "fboss/agent/HwSwitchMatcher.h"
 #include "fboss/agent/SwSwitchRouteUpdateWrapper.h"
+#include "fboss/agent/SwitchIdScopeResolver.h"
 #include "fboss/agent/state/Interface.h"
-#include "fboss/agent/state/Route.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/HwTestHandle.h"
 #include "fboss/agent/test/TestUtils.h"
@@ -99,17 +100,40 @@ MirrorManagerTestParams<AddressT> getParams() {
 }
 } // namespace
 
-template <typename AddressT>
+template <typename AddrType, bool enableIntfNbrTable>
+struct IpAddrAndEnableIntfNbrTableT {
+  using IPAddrT = AddrType;
+  static constexpr auto intfNbrTable = enableIntfNbrTable;
+};
+
+using TestTypes = ::testing::Types<
+    IpAddrAndEnableIntfNbrTableT<folly::IPAddressV4, false>,
+    IpAddrAndEnableIntfNbrTableT<folly::IPAddressV4, true>,
+    IpAddrAndEnableIntfNbrTableT<folly::IPAddressV6, false>,
+    IpAddrAndEnableIntfNbrTableT<folly::IPAddressV6, true>>;
+
+template <typename IpAddrAndEnableIntfNbrTableT>
 class MirrorManagerTest : public ::testing::Test {
  public:
   using Func = folly::Function<void()>;
   using StateUpdateFn = SwSwitch::StateUpdateFn;
-  using AddrT = AddressT;
+  using AddrT = typename IpAddrAndEnableIntfNbrTableT::IPAddrT;
+  static auto constexpr intfNbrTable =
+      IpAddrAndEnableIntfNbrTableT::intfNbrTable;
+
+  bool isIntfNbrTable() const {
+    return intfNbrTable == true;
+  }
 
   void SetUp() override {
+    FLAGS_intf_nbr_tables = isIntfNbrTable();
     auto config = testConfigA();
     handle_ = createTestHandle(&config);
     sw_ = handle_->getSw();
+  }
+
+  MirrorManagerTestParams<AddrT> getParamsHelper() {
+    return getParams<AddrT>();
   }
 
   void verifyStateUpdate(Func func) {
@@ -124,7 +148,39 @@ class MirrorManagerTest : public ::testing::Test {
     sw_->updateStateBlocking(name, func);
   }
 
-  std::shared_ptr<SwitchState> addNeighbor(
+  std::shared_ptr<SwitchState> addNewMirror(
+      const std::shared_ptr<SwitchState>& state,
+      std::shared_ptr<Mirror> mirror) {
+    auto newState = state->clone();
+    auto mirrors = newState->getMirrors()->modify(&newState);
+    mirrors->addNode(mirror, sw_->getScopeResolver()->scope(mirror));
+    return newState;
+  }
+  std::shared_ptr<SwitchState> updateMirror(
+      const std::shared_ptr<SwitchState>& state,
+      std::shared_ptr<Mirror> mirror) {
+    auto newState = state->clone();
+    auto mirrors = newState->getMirrors()->modify(&newState);
+    mirrors->updateNode(mirror, sw_->getScopeResolver()->scope(mirror));
+    return newState;
+  }
+
+  std::shared_ptr<SwitchState> addNeighborToIntfTable(
+      const std::shared_ptr<SwitchState>& state,
+      InterfaceID interfaceId,
+      const AddrT& ip,
+      const MacAddress mac,
+      PortID port) {
+    auto newState = state->isPublished() ? state->clone() : state;
+    Interface* intf = newState->getInterfaces()->getNodeIf(interfaceId).get();
+    auto* neighborTable =
+        intf->template getNeighborEntryTable<AddrT>().get()->modify(
+            &intf, &newState);
+    neighborTable->addEntry(ip, mac, PortDescriptor(port), interfaceId);
+    return newState;
+  }
+
+  std::shared_ptr<SwitchState> addNeighborToVlanTable(
       const std::shared_ptr<SwitchState>& state,
       InterfaceID interfaceId,
       const AddrT& ip,
@@ -132,8 +188,8 @@ class MirrorManagerTest : public ::testing::Test {
       PortID port) {
     auto newState = state->isPublished() ? state->clone() : state;
     VlanID vlanId =
-        newState->getInterfaces()->getInterface(interfaceId)->getVlanID();
-    Vlan* vlan = newState->getVlans()->getVlanIf(VlanID(vlanId)).get();
+        newState->getInterfaces()->getNode(interfaceId)->getVlanID();
+    Vlan* vlan = newState->getVlans()->getNodeIf(VlanID(vlanId)).get();
     auto* neighborTable =
         vlan->template getNeighborEntryTable<AddrT>().get()->modify(
             &vlan, &newState);
@@ -141,19 +197,51 @@ class MirrorManagerTest : public ::testing::Test {
     return newState;
   }
 
-  std::shared_ptr<SwitchState> delNeighbor(
+  std::shared_ptr<SwitchState> addNeighbor(
+      const std::shared_ptr<SwitchState>& state,
+      InterfaceID interfaceId,
+      const AddrT& ip,
+      const MacAddress mac,
+      PortID port) {
+    return isIntfNbrTable()
+        ? addNeighborToIntfTable(state, interfaceId, ip, mac, port)
+        : addNeighborToVlanTable(state, interfaceId, ip, mac, port);
+  }
+
+  std::shared_ptr<SwitchState> delNeighborFromIntfTable(
+      const std::shared_ptr<SwitchState>& state,
+      InterfaceID interfaceId,
+      const AddrT& ip) {
+    auto newState = state->isPublished() ? state->clone() : state;
+    Interface* intf = newState->getInterfaces()->getNodeIf(interfaceId).get();
+    auto* neighborTable =
+        intf->template getNeighborEntryTable<AddrT>().get()->modify(
+            &intf, &newState);
+    neighborTable->removeEntry(ip);
+    return newState;
+  }
+
+  std::shared_ptr<SwitchState> delNeighborFromVlanTable(
       const std::shared_ptr<SwitchState>& state,
       InterfaceID interfaceId,
       const AddrT& ip) {
     auto newState = state->isPublished() ? state->clone() : state;
     VlanID vlanId =
-        newState->getInterfaces()->getInterface(interfaceId)->getVlanID();
-    Vlan* vlan = newState->getVlans()->getVlanIf(VlanID(vlanId)).get();
+        newState->getInterfaces()->getNode(interfaceId)->getVlanID();
+    Vlan* vlan = newState->getVlans()->getNodeIf(VlanID(vlanId)).get();
     auto* neighborTable =
         vlan->template getNeighborEntryTable<AddrT>().get()->modify(
             &vlan, &newState);
     neighborTable->removeEntry(ip);
     return newState;
+  }
+
+  std::shared_ptr<SwitchState> delNeighbor(
+      const std::shared_ptr<SwitchState>& state,
+      InterfaceID interfaceId,
+      const AddrT& ip) {
+    return isIntfNbrTable() ? delNeighborFromIntfTable(state, interfaceId, ip)
+                            : delNeighborFromVlanTable(state, interfaceId, ip);
   }
 
   void addRoute(const RoutePrefix<AddrT>& prefix, RouteNextHopSet nexthops) {
@@ -179,12 +267,9 @@ class MirrorManagerTest : public ::testing::Test {
       PortID egressPort) {
     auto mirror = std::make_shared<Mirror>(
         name,
-        std::make_optional<PortID>(egressPort),
+        std::make_optional<PortDescriptor>(egressPort),
         std::optional<IPAddress>());
-    auto newState = state->isPublished() ? state->clone() : state;
-    auto mirrors = newState->getMirrors()->modify(&newState);
-    mirrors->addMirror(mirror);
-    return newState;
+    return addNewMirror(state, mirror);
   }
 
   std::shared_ptr<SwitchState> addErspanMirror(
@@ -192,12 +277,10 @@ class MirrorManagerTest : public ::testing::Test {
       const std::string& name,
       AddrT remoteIp) {
     auto mirror = std::make_shared<Mirror>(
-        name, std::optional<PortID>(), std::make_optional<IPAddress>(remoteIp));
-
-    auto newState = state->isPublished() ? state->clone() : state;
-    auto mirrors = newState->getMirrors()->modify(&newState);
-    mirrors->addMirror(mirror);
-    return newState;
+        name,
+        std::optional<PortDescriptor>(),
+        std::make_optional<IPAddress>(remoteIp));
+    return addNewMirror(state, mirror);
   }
 
   std::shared_ptr<SwitchState> addErspanMirror(
@@ -207,13 +290,9 @@ class MirrorManagerTest : public ::testing::Test {
       PortID egressPort) {
     auto mirror = std::make_shared<Mirror>(
         name,
-        std::make_optional<PortID>(PortID(egressPort)),
+        std::make_optional<PortDescriptor>(PortID(egressPort)),
         std::make_optional<IPAddress>(remoteIp));
-
-    auto newState = state->isPublished() ? state->clone() : state;
-    auto mirrors = newState->getMirrors()->modify(&newState);
-    mirrors->addMirror(mirror);
-    return newState;
+    return addNewMirror(state, mirror);
   }
 
   std::shared_ptr<SwitchState> addSflowMirror(
@@ -224,20 +303,17 @@ class MirrorManagerTest : public ::testing::Test {
       uint16_t dstPort) {
     auto mirror = std::make_shared<Mirror>(
         name,
-        std::optional<PortID>(),
+        std::optional<PortDescriptor>(),
         std::make_optional<IPAddress>(remoteIp),
         std::optional<IPAddress>(),
         std::make_optional<TunnelUdpPorts>(srcPort, dstPort));
-    auto newState = state->isPublished() ? state->clone() : state;
-    auto mirrors = newState->getMirrors()->modify(&newState);
-    mirrors->addMirror(mirror);
-    return newState;
+    return addNewMirror(state, mirror);
   }
 
  protected:
   void runInUpdateEventBaseAndWait(Func func) {
     auto* evb = sw_->getUpdateEvb();
-    evb->runInEventBaseThreadAndWait(std::move(func));
+    evb->runInFbossEventBaseThreadAndWait(std::move(func));
   }
 
   void schedulePendingTestStateUpdates() {
@@ -248,12 +324,10 @@ class MirrorManagerTest : public ::testing::Test {
   SwSwitch* sw_;
 };
 
-using TestTypes = ::testing::Types<folly::IPAddressV4, folly::IPAddressV6>;
-
 TYPED_TEST_SUITE(MirrorManagerTest, TestTypes);
 
 TYPED_TEST(MirrorManagerTest, CanNotUpdateMirrors) {
-  auto params = getParams<TypeParam>();
+  auto params = this->getParamsHelper();
 
   this->updateState(
       "CanNotUpdateMirrors", [=](const std::shared_ptr<SwitchState>& state) {
@@ -263,14 +337,14 @@ TYPED_TEST(MirrorManagerTest, CanNotUpdateMirrors) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->isResolved());
   });
 }
 
 TYPED_TEST(MirrorManagerTest, ResolveNoMirrorWithoutRoutes) {
-  auto params = getParams<TypeParam>();
+  auto params = this->getParamsHelper();
   this->updateState(
       "ResolveNoMirrorWithoutRoutes",
       [=](const std::shared_ptr<SwitchState>& state) {
@@ -286,14 +360,14 @@ TYPED_TEST(MirrorManagerTest, ResolveNoMirrorWithoutRoutes) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->isResolved());
   });
 }
 
 TYPED_TEST(MirrorManagerTest, ResolveNoMirrorWithoutArpEntry) {
-  auto params = getParams<TypeParam>();
+  auto params = this->getParamsHelper();
   this->updateState(
       "ResolveNoMirrorWithoutArpEntry",
       [=](const std::shared_ptr<SwitchState>& state) {
@@ -305,7 +379,7 @@ TYPED_TEST(MirrorManagerTest, ResolveNoMirrorWithoutArpEntry) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->isResolved());
   });
@@ -320,14 +394,14 @@ TYPED_TEST(MirrorManagerTest, LocalMirrorAlreadyResolved) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
   });
 }
 
 TYPED_TEST(MirrorManagerTest, ResolveMirrorWithoutEgressPort) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
 
   this->updateState(
       "ResolveMirrorWithoutEgressPort",
@@ -346,18 +420,18 @@ TYPED_TEST(MirrorManagerTest, ResolveMirrorWithoutEgressPort) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
-    ASSERT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    ASSERT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[0]);
     ASSERT_TRUE(mirror->getMirrorTunnel().has_value());
     auto tunnel = mirror->getMirrorTunnel().value();
     EXPECT_EQ(tunnel.dstIp, IPAddress(params.mirrorDestination));
     EXPECT_EQ(tunnel.dstMac, params.neighborMACs[0]);
     const auto& interface =
-        state->getInterfaces()->getInterfaceIf(params.interfaces[0]);
+        state->getInterfaces()->getNodeIf(params.interfaces[0]);
     const auto& addr = interface->getAddressToReach(params.neighborIPs[0]);
     ASSERT_TRUE(addr.has_value());
     EXPECT_EQ(tunnel.srcIp, addr->first);
@@ -366,7 +440,7 @@ TYPED_TEST(MirrorManagerTest, ResolveMirrorWithoutEgressPort) {
 }
 
 TYPED_TEST(MirrorManagerTest, ResolveMirrorWithEgressPort) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
 
   this->updateState(
       "ResolveMirrorWithEgressPort",
@@ -396,19 +470,19 @@ TYPED_TEST(MirrorManagerTest, ResolveMirrorWithEgressPort) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
-    ASSERT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort();
-    EXPECT_EQ(egressPort.value(), params.neighborPorts[1]);
+    ASSERT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
+    EXPECT_EQ(egressPort, params.neighborPorts[1]);
     ASSERT_TRUE(mirror->getMirrorTunnel().has_value());
     auto tunnel = mirror->getMirrorTunnel().value();
     EXPECT_EQ(tunnel.dstIp, IPAddress(params.mirrorDestination));
     EXPECT_EQ(tunnel.dstMac, params.neighborMACs[1]);
 
     const auto& interface =
-        state->getInterfaces()->getInterfaceIf(params.interfaces[1]);
+        state->getInterfaces()->getNodeIf(params.interfaces[1]);
     const auto& addr = interface->getAddressToReach(params.neighborIPs[1]);
 
     ASSERT_TRUE(addr.has_value());
@@ -419,7 +493,7 @@ TYPED_TEST(MirrorManagerTest, ResolveMirrorWithEgressPort) {
 }
 
 TYPED_TEST(MirrorManagerTest, ResolveNoMirrorWithEgressPort) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
 
   this->updateState(
       "ResolveNoMirrorWithEgressPort",
@@ -446,17 +520,17 @@ TYPED_TEST(MirrorManagerTest, ResolveNoMirrorWithEgressPort) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->isResolved());
-    EXPECT_TRUE(mirror->getEgressPort().has_value());
-    EXPECT_EQ(mirror->getEgressPort().value(), PortID(9));
+    EXPECT_TRUE(mirror->getEgressPortDesc().has_value());
+    EXPECT_EQ(mirror->getEgressPortDesc().value().phyPortID(), PortID(9));
     EXPECT_FALSE(mirror->getMirrorTunnel().has_value());
   });
 }
 
 TYPED_TEST(MirrorManagerTest, ResolveMirrorWithDirectlyConnectedRoute) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
 
   this->updateState(
       "ResolveMirrorWithDirectlyConnectedRoute",
@@ -472,11 +546,11 @@ TYPED_TEST(MirrorManagerTest, ResolveMirrorWithDirectlyConnectedRoute) {
       });
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
-    EXPECT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    EXPECT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[0]);
     ASSERT_TRUE(mirror->getMirrorTunnel().has_value());
     auto tunnel = mirror->getMirrorTunnel().value();
@@ -484,7 +558,7 @@ TYPED_TEST(MirrorManagerTest, ResolveMirrorWithDirectlyConnectedRoute) {
     EXPECT_EQ(tunnel.dstMac, params.neighborMACs[0]);
 
     const auto& interface =
-        state->getInterfaces()->getInterfaceIf(params.interfaces[0]);
+        state->getInterfaces()->getNodeIf(params.interfaces[0]);
     const auto& addr = interface->getAddressToReach(params.neighborIPs[0]);
 
     ASSERT_TRUE(addr.has_value());
@@ -495,7 +569,7 @@ TYPED_TEST(MirrorManagerTest, ResolveMirrorWithDirectlyConnectedRoute) {
 }
 
 TYPED_TEST(MirrorManagerTest, ResolveNoMirrorWithDirectlyConnectedRoute) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
   this->updateState(
       "ResolveNoMirrorWithDirectlyConnectedRoute",
       [=](const std::shared_ptr<SwitchState>& state) {
@@ -505,18 +579,18 @@ TYPED_TEST(MirrorManagerTest, ResolveNoMirrorWithDirectlyConnectedRoute) {
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
     EXPECT_NE(state, nullptr);
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->isResolved());
-    EXPECT_FALSE(mirror->getEgressPort().has_value());
+    EXPECT_FALSE(mirror->getEgressPortDesc().has_value());
     ASSERT_FALSE(mirror->getMirrorTunnel().has_value());
   });
 }
 
 TYPED_TEST(MirrorManagerTest, UpdateMirrorOnRouteDelete) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
   this->updateState(
-      "UpdateMirrorOnRouteDelete: addMirror",
+      "UpdateMirrorOnRouteDelete: addNode",
       [=](const std::shared_ptr<SwitchState>& state) {
         auto updatedState =
             this->addErspanMirror(state, kMirrorName, params.mirrorDestination);
@@ -542,11 +616,11 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnRouteDelete) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
-    EXPECT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    EXPECT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[0]);
     ASSERT_TRUE(mirror->getMirrorTunnel().has_value());
     auto tunnel = mirror->getMirrorTunnel().value();
@@ -554,7 +628,7 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnRouteDelete) {
     EXPECT_EQ(tunnel.dstMac, params.neighborMACs[0]);
 
     const auto& interface0 =
-        state->getInterfaces()->getInterfaceIf(params.interfaces[0]);
+        state->getInterfaces()->getNodeIf(params.interfaces[0]);
     const auto& addr = interface0->getAddressToReach(params.neighborIPs[0]);
 
     ASSERT_TRUE(addr.has_value());
@@ -567,11 +641,11 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnRouteDelete) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
-    EXPECT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    EXPECT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[1]);
     ASSERT_TRUE(mirror->getMirrorTunnel().has_value());
     auto tunnel = mirror->getMirrorTunnel().value();
@@ -579,7 +653,7 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnRouteDelete) {
     EXPECT_EQ(tunnel.dstMac, params.neighborMACs[1]);
 
     const auto& interface1 =
-        state->getInterfaces()->getInterfaceIf(params.interfaces[1]);
+        state->getInterfaces()->getNodeIf(params.interfaces[1]);
     const auto& addr = interface1->getAddressToReach(params.neighborIPs[1]);
 
     ASSERT_TRUE(addr.has_value());
@@ -590,9 +664,9 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnRouteDelete) {
 }
 
 TYPED_TEST(MirrorManagerTest, UpdateMirrorOnRouteAdd) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
   this->updateState(
-      "UpdateMirrorOnRouteAdd: addMirror",
+      "UpdateMirrorOnRouteAdd: addNode",
       [=](const std::shared_ptr<SwitchState>& state) {
         auto updatedState =
             this->addErspanMirror(state, kMirrorName, params.mirrorDestination);
@@ -609,11 +683,11 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnRouteAdd) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
-    EXPECT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    EXPECT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[1]);
     ASSERT_TRUE(mirror->getMirrorTunnel().has_value());
     auto tunnel = mirror->getMirrorTunnel().value();
@@ -621,7 +695,7 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnRouteAdd) {
     EXPECT_EQ(tunnel.dstMac, params.neighborMACs[1]);
 
     const auto& interface1 =
-        state->getInterfaces()->getInterfaceIf(params.interfaces[1]);
+        state->getInterfaces()->getNodeIf(params.interfaces[1]);
     const auto& addr = interface1->getAddressToReach(params.neighborIPs[1]);
 
     ASSERT_TRUE(addr.has_value());
@@ -646,11 +720,11 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnRouteAdd) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
-    EXPECT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    EXPECT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[0]);
     ASSERT_TRUE(mirror->getMirrorTunnel().has_value());
     auto tunnel = mirror->getMirrorTunnel().value();
@@ -658,7 +732,7 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnRouteAdd) {
     EXPECT_EQ(tunnel.dstMac, params.neighborMACs[0]);
 
     const auto& interface0 =
-        state->getInterfaces()->getInterfaceIf(params.interfaces[0]);
+        state->getInterfaces()->getNodeIf(params.interfaces[0]);
     const auto& addr = interface0->getAddressToReach(params.neighborIPs[0]);
 
     ASSERT_TRUE(addr.has_value());
@@ -669,7 +743,7 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnRouteAdd) {
 }
 
 TYPED_TEST(MirrorManagerTest, UpdateNoMirrorWithEgressPortOnRouteDel) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
 
   this->updateState(
       "UpdateNoMirrorWithEgressPortOnRouteDel",
@@ -699,11 +773,11 @@ TYPED_TEST(MirrorManagerTest, UpdateNoMirrorWithEgressPortOnRouteDel) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
-    EXPECT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    EXPECT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[0]);
     ASSERT_TRUE(mirror->getMirrorTunnel().has_value());
     auto tunnel = mirror->getMirrorTunnel().value();
@@ -711,7 +785,7 @@ TYPED_TEST(MirrorManagerTest, UpdateNoMirrorWithEgressPortOnRouteDel) {
     EXPECT_EQ(tunnel.dstMac, params.neighborMACs[0]);
 
     const auto& interface =
-        state->getInterfaces()->getInterfaceIf(params.interfaces[0]);
+        state->getInterfaces()->getNodeIf(params.interfaces[0]);
     const auto& addr = interface->getAddressToReach(params.neighborIPs[0]);
 
     ASSERT_TRUE(addr.has_value());
@@ -724,17 +798,19 @@ TYPED_TEST(MirrorManagerTest, UpdateNoMirrorWithEgressPortOnRouteDel) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->isResolved());
-    EXPECT_TRUE(mirror->getEgressPort().has_value());
-    EXPECT_EQ(mirror->getEgressPort().value(), params.neighborPorts[0]);
+    EXPECT_TRUE(mirror->getEgressPortDesc().has_value());
+    EXPECT_EQ(
+        mirror->getEgressPortDesc().value().phyPortID(),
+        params.neighborPorts[0]);
     EXPECT_FALSE(mirror->getMirrorTunnel().has_value());
   });
 }
 
 TYPED_TEST(MirrorManagerTest, UpdateNoMirrorWithEgressPortOnRouteAdd) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
 
   this->updateState(
       "UpdateNoMirrorWithEgressPortOnRouteAdd",
@@ -764,20 +840,20 @@ TYPED_TEST(MirrorManagerTest, UpdateNoMirrorWithEgressPortOnRouteAdd) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->isResolved());
-    EXPECT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    EXPECT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[0]);
     EXPECT_FALSE(mirror->getMirrorTunnel().has_value());
   });
 }
 
 TYPED_TEST(MirrorManagerTest, UpdateMirrorOnNeighborChange) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
   this->updateState(
-      "UpdateMirrorOnNeighborChange: addMirror",
+      "UpdateMirrorOnNeighborChange: addNode",
       [=](const std::shared_ptr<SwitchState>& state) {
         auto updatedState =
             this->addErspanMirror(state, kMirrorName, params.mirrorDestination);
@@ -802,11 +878,11 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnNeighborChange) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
-    EXPECT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    EXPECT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[0]);
     ASSERT_TRUE(mirror->getMirrorTunnel().has_value());
     auto tunnel = mirror->getMirrorTunnel().value();
@@ -814,7 +890,7 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnNeighborChange) {
     EXPECT_EQ(tunnel.dstMac, params.neighborMACs[0]);
 
     const auto& interface0 =
-        state->getInterfaces()->getInterfaceIf(params.interfaces[0]);
+        state->getInterfaces()->getNodeIf(params.interfaces[0]);
     const auto& addr = interface0->getAddressToReach(params.neighborIPs[0]);
 
     ASSERT_TRUE(addr.has_value());
@@ -847,11 +923,11 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnNeighborChange) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
-    EXPECT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    EXPECT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[1]);
     ASSERT_TRUE(mirror->getMirrorTunnel().has_value());
     auto tunnel = mirror->getMirrorTunnel().value();
@@ -859,7 +935,7 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnNeighborChange) {
     EXPECT_EQ(tunnel.dstMac, params.neighborMACs[0]);
 
     const auto& interface1 =
-        state->getInterfaces()->getInterfaceIf(params.interfaces[0]);
+        state->getInterfaces()->getNodeIf(params.interfaces[0]);
     const auto& addr = interface1->getAddressToReach(params.neighborIPs[0]);
 
     ASSERT_TRUE(addr.has_value());
@@ -870,7 +946,7 @@ TYPED_TEST(MirrorManagerTest, UpdateMirrorOnNeighborChange) {
 }
 
 TYPED_TEST(MirrorManagerTest, EmptyDelta) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
 
   const auto oldState = this->sw_->getState();
 
@@ -899,7 +975,7 @@ TYPED_TEST(MirrorManagerTest, EmptyDelta) {
 
 // test for gre src ip resolved
 TYPED_TEST(MirrorManagerTest, GreMirrorWithSrcIp) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
 
   this->updateState(
       "GreMirrorWithSrcIp", [=](const std::shared_ptr<SwitchState>& state) {
@@ -912,14 +988,13 @@ TYPED_TEST(MirrorManagerTest, GreMirrorWithSrcIp) {
         updatedState = this->addErspanMirror(
             updatedState, kMirrorName, params.mirrorDestination);
 
-        auto oldMirror = updatedState->getMirrors()->getMirrorIf(kMirrorName);
+        auto oldMirror = updatedState->getMirrors()->getNodeIf(kMirrorName);
         auto mirror = std::make_shared<Mirror>(
             kMirrorName,
-            oldMirror->getEgressPort(),
+            oldMirror->getEgressPortDesc(),
             oldMirror->getDestinationIp(),
             std::make_optional<folly::IPAddress>(params.mirrorSource));
-        updatedState->getMirrors()->updateNode(mirror);
-        return updatedState;
+        return this->updateMirror(updatedState, mirror);
       });
 
   RouteNextHopSet nextHops = {params.nextHop(0)};
@@ -927,7 +1002,7 @@ TYPED_TEST(MirrorManagerTest, GreMirrorWithSrcIp) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
     ASSERT_TRUE(mirror->getMirrorTunnel().has_value());
@@ -935,7 +1010,7 @@ TYPED_TEST(MirrorManagerTest, GreMirrorWithSrcIp) {
     EXPECT_EQ(tunnel.dstIp, IPAddress(params.mirrorDestination));
     EXPECT_EQ(tunnel.dstMac, params.neighborMACs[0]);
     const auto& interface =
-        state->getInterfaces()->getInterfaceIf(params.interfaces[0]);
+        state->getInterfaces()->getNodeIf(params.interfaces[0]);
     EXPECT_EQ(tunnel.srcIp, folly::IPAddress(params.mirrorSource));
     EXPECT_EQ(tunnel.srcMac, interface->getMac());
     EXPECT_FALSE(tunnel.udpPorts.has_value());
@@ -943,7 +1018,7 @@ TYPED_TEST(MirrorManagerTest, GreMirrorWithSrcIp) {
 }
 
 TYPED_TEST(MirrorManagerTest, SflowMirrorWithSrcIp) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
 
   this->updateState(
       "GreMirrorWithSrcIp", [=](const std::shared_ptr<SwitchState>& state) {
@@ -956,15 +1031,14 @@ TYPED_TEST(MirrorManagerTest, SflowMirrorWithSrcIp) {
         updatedState = this->addSflowMirror(
             updatedState, kMirrorName, params.mirrorDestination, 10101, 20202);
 
-        auto oldMirror = updatedState->getMirrors()->getMirrorIf(kMirrorName);
+        auto oldMirror = updatedState->getMirrors()->getNodeIf(kMirrorName);
         auto mirror = std::make_shared<Mirror>(
             kMirrorName,
-            oldMirror->getEgressPort(),
+            oldMirror->getEgressPortDesc(),
             oldMirror->getDestinationIp(),
             std::make_optional<folly::IPAddress>(params.mirrorSource),
             oldMirror->getTunnelUdpPorts());
-        updatedState->getMirrors()->updateNode(mirror);
-        return updatedState;
+        return this->updateMirror(updatedState, mirror);
       });
 
   RouteNextHopSet nextHops = {params.nextHop(0)};
@@ -972,7 +1046,7 @@ TYPED_TEST(MirrorManagerTest, SflowMirrorWithSrcIp) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
     ASSERT_TRUE(mirror->getMirrorTunnel().has_value());
@@ -980,7 +1054,7 @@ TYPED_TEST(MirrorManagerTest, SflowMirrorWithSrcIp) {
     EXPECT_EQ(tunnel.dstIp, IPAddress(params.mirrorDestination));
     EXPECT_EQ(tunnel.dstMac, params.neighborMACs[0]);
     const auto& interface =
-        state->getInterfaces()->getInterfaceIf(params.interfaces[0]);
+        state->getInterfaces()->getNodeIf(params.interfaces[0]);
     EXPECT_EQ(tunnel.srcIp, folly::IPAddress(params.mirrorSource));
     EXPECT_EQ(tunnel.srcMac, interface->getMac());
     EXPECT_TRUE(tunnel.udpPorts.has_value());
@@ -990,7 +1064,7 @@ TYPED_TEST(MirrorManagerTest, SflowMirrorWithSrcIp) {
 }
 
 TYPED_TEST(MirrorManagerTest, ResolveMirrorOnMirrorUpdate) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
 
   this->updateState(
       "add sflowMirror", [=](const std::shared_ptr<SwitchState>& state) {
@@ -1018,27 +1092,23 @@ TYPED_TEST(MirrorManagerTest, ResolveMirrorOnMirrorUpdate) {
       "update sflow mirror config",
       [=](const std::shared_ptr<SwitchState>& state) {
         auto updatedState = state->clone();
-        auto oldMirror = state->getMirrors()->getNode(kMirrorName);
+        auto oldMirror = state->getMirrors()->getNodeIf(kMirrorName);
 
         // unresolve and update with non-resolving affecting update,
         // mirror so mirror manager resolves it again.
         auto mirror = std::make_shared<Mirror>(
             oldMirror->getID(),
-            std::optional<PortID>(),
+            std::optional<PortDescriptor>(),
             oldMirror->getDestinationIp(),
             std::optional<IPAddress>(),
             oldMirror->getTunnelUdpPorts());
         mirror->setTruncate(true);
-
-        auto mirrors = updatedState->getMirrors()->clone();
-        mirrors->updateNode(mirror);
-        updatedState->resetMirrors(mirrors);
-        return updatedState;
+        return this->updateMirror(updatedState, mirror);
       });
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
     ASSERT_TRUE(mirror->getMirrorTunnel().has_value());
@@ -1046,7 +1116,7 @@ TYPED_TEST(MirrorManagerTest, ResolveMirrorOnMirrorUpdate) {
     EXPECT_EQ(tunnel.dstIp, IPAddress(params.mirrorDestination));
     EXPECT_EQ(tunnel.dstMac, params.neighborMACs[0]);
     const auto& interface =
-        state->getInterfaces()->getInterfaceIf(params.interfaces[0]);
+        state->getInterfaces()->getNodeIf(params.interfaces[0]);
     EXPECT_EQ(tunnel.srcMac, interface->getMac());
     EXPECT_TRUE(tunnel.udpPorts.has_value());
     EXPECT_EQ(tunnel.udpPorts->udpSrcPort, 10101);
@@ -1056,7 +1126,7 @@ TYPED_TEST(MirrorManagerTest, ResolveMirrorOnMirrorUpdate) {
 }
 
 TYPED_TEST(MirrorManagerTest, ConfigHasEgressPort) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
 
   this->updateState(
       "add sflowMirror", [=](const std::shared_ptr<SwitchState>& state) {
@@ -1067,7 +1137,7 @@ TYPED_TEST(MirrorManagerTest, ConfigHasEgressPort) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->configHasEgressPort());
   });
@@ -1088,7 +1158,7 @@ TYPED_TEST(MirrorManagerTest, ConfigHasEgressPort) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->configHasEgressPort());
     EXPECT_TRUE(mirror->isResolved());
@@ -1104,7 +1174,7 @@ TYPED_TEST(MirrorManagerTest, ConfigHasEgressPort) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->configHasEgressPort());
     EXPECT_FALSE(mirror->isResolved());
@@ -1112,7 +1182,7 @@ TYPED_TEST(MirrorManagerTest, ConfigHasEgressPort) {
 }
 
 TYPED_TEST(MirrorManagerTest, NeighborUpdates) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
 
   this->updateState(
       "GreMirrorWithOutPort-0", [=](const std::shared_ptr<SwitchState>& state) {
@@ -1123,7 +1193,7 @@ TYPED_TEST(MirrorManagerTest, NeighborUpdates) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->isResolved());
   });
@@ -1150,11 +1220,11 @@ TYPED_TEST(MirrorManagerTest, NeighborUpdates) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
-    ASSERT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    ASSERT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[0]);
   });
 
@@ -1167,11 +1237,11 @@ TYPED_TEST(MirrorManagerTest, NeighborUpdates) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
-    ASSERT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    ASSERT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value();
     EXPECT_EQ(egressPort, params.neighborPorts[1]);
   });
 
@@ -1190,17 +1260,17 @@ TYPED_TEST(MirrorManagerTest, NeighborUpdates) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
-    ASSERT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    ASSERT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[0]);
   });
 }
 
 TYPED_TEST(MirrorManagerTest, UpdateRoute) {
-  const auto params = getParams<TypeParam>();
+  const auto params = this->getParamsHelper();
 
   this->updateState(
       "add mirror", [=](const std::shared_ptr<SwitchState>& state) {
@@ -1211,7 +1281,7 @@ TYPED_TEST(MirrorManagerTest, UpdateRoute) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->isResolved());
   });
@@ -1238,12 +1308,12 @@ TYPED_TEST(MirrorManagerTest, UpdateRoute) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_TRUE(mirror->isResolved());
     EXPECT_FALSE(mirror->configHasEgressPort());
-    ASSERT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    ASSERT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[0]);
   });
 
@@ -1253,12 +1323,12 @@ TYPED_TEST(MirrorManagerTest, UpdateRoute) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->configHasEgressPort());
     EXPECT_TRUE(mirror->isResolved());
-    ASSERT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    ASSERT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[1]);
   });
 
@@ -1268,12 +1338,12 @@ TYPED_TEST(MirrorManagerTest, UpdateRoute) {
 
   this->verifyStateUpdate([=]() {
     auto state = this->sw_->getState();
-    auto mirror = state->getMirrors()->getMirrorIf(kMirrorName);
+    auto mirror = state->getMirrors()->getNodeIf(kMirrorName);
     EXPECT_NE(mirror, nullptr);
     EXPECT_FALSE(mirror->configHasEgressPort());
     EXPECT_TRUE(mirror->isResolved());
-    ASSERT_TRUE(mirror->getEgressPort().has_value());
-    auto egressPort = mirror->getEgressPort().value();
+    ASSERT_TRUE(mirror->getEgressPortDesc().has_value());
+    auto egressPort = mirror->getEgressPortDesc().value().phyPortID();
     EXPECT_EQ(egressPort, params.neighborPorts[0]);
   });
 }

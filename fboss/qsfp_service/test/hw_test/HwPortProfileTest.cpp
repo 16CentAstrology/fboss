@@ -10,11 +10,9 @@
 #include "fboss/qsfp_service/if/gen-cpp2/transceiver_types.h"
 #include "fboss/qsfp_service/test/hw_test/HwTest.h"
 
-#include "fboss/agent/AgentConfig.h"
 #include "fboss/agent/platforms/common/PlatformMapping.h"
 #include "fboss/agent/state/Port.h"
 #include "fboss/lib/config/PlatformConfigUtils.h"
-#include "fboss/lib/phy/PhyManager.h"
 #include "fboss/qsfp_service/test/hw_test/HwPortUtils.h"
 #include "fboss/qsfp_service/test/hw_test/HwQsfpEnsemble.h"
 #include "fboss/qsfp_service/test/hw_test/HwTransceiverUtils.h"
@@ -56,33 +54,32 @@ class HwPortProfileTest : public HwTest {
   }
 
   void verifyTransceiverSettings(
-      const std::map<int32_t, TransceiverInfo>& transceivers) {
+      const std::map<std::string, TransceiverInfo>& transceivers) {
     XLOG(INFO) << " Will verify transceiver settings for : "
                << transceivers.size() << " ports.";
     for (auto idAndTransceiver : transceivers) {
       utility::HwTransceiverUtils::verifyTransceiverSettings(
-          idAndTransceiver.second, Profile);
+          *idAndTransceiver.second.tcvrState(),
+          idAndTransceiver.first,
+          Profile);
     }
   }
 
  protected:
   void runTest() {
     const auto& ports =
-        utility::findAvailablePorts(getHwQsfpEnsemble(), Profile, true);
+        utility::findAvailableCabledPorts(getHwQsfpEnsemble(), Profile);
     EXPECT_TRUE(!(ports.xphyPorts.empty() && ports.iphyPorts.empty()));
-    WedgeManager::PortMap portMap;
     std::vector<PortID> matchingPorts;
     // Program xphy
     for (auto& [port, _] : ports.xphyPorts) {
-      portMap.emplace(port, utility::getPortStatus(port, getHwQsfpEnsemble()));
       matchingPorts.push_back(port);
     }
     for (auto& [port, _] : ports.iphyPorts) {
-      portMap.emplace(port, utility::getPortStatus(port, getHwQsfpEnsemble()));
       matchingPorts.push_back(port);
     }
 
-    auto setup = [this, &ports, &portMap]() {
+    auto setup = [this, &ports]() {
       // New port programming will use state machine to program xphy ports and
       // transceivers automatically, no need to call program xphy port again
       for (auto& [port, profile] : ports.xphyPorts) {
@@ -110,7 +107,24 @@ class HwPortProfileTest : public HwTest {
       // there.
       // Assert that refresh caused transceiver info to be pulled
       // from HW
-      verifyTransceiverSettings(transceivers);
+      std::map<std::string, TransceiverInfo> portToTransceiverInfoMap;
+      for (auto port : matchingPorts) {
+        auto transceiverId =
+            getHwQsfpEnsemble()->getWedgeManager()->getTransceiverID(port);
+        CHECK(transceiverId.has_value());
+        auto portName =
+            getHwQsfpEnsemble()->getWedgeManager()->getPortNameByPortId(port);
+        CHECK(portName.has_value());
+        portToTransceiverInfoMap[*portName] = transceivers[*transceiverId];
+      }
+      verifyTransceiverSettings(portToTransceiverInfoMap);
+      utility::HwTransceiverUtils::verifyPortNameToLaneMap(
+          matchingPorts,
+          Profile,
+          getHwQsfpEnsemble()->getPlatformMapping(),
+          transceivers);
+      utility::HwTransceiverUtils::verifyTempAndVccFlags(
+          portToTransceiverInfoMap);
     };
     verifyAcrossWarmBoots(setup, verify);
   }
@@ -124,6 +138,8 @@ class HwPortProfileTest : public HwTest {
   }
 
 TEST_PROFILE(PROFILE_10G_1_NRZ_NOFEC_OPTICAL)
+
+TEST_PROFILE(PROFILE_50G_2_NRZ_RS528_OPTICAL)
 
 TEST_PROFILE(PROFILE_100G_4_NRZ_RS528_OPTICAL)
 
@@ -148,4 +164,13 @@ TEST_PROFILE(PROFILE_53POINT125G_1_PAM4_RS545_COPPER)
 
 TEST_PROFILE(PROFILE_53POINT125G_1_PAM4_RS545_OPTICAL)
 
+TEST_PROFILE(PROFILE_400G_4_PAM4_RS544X2N_OPTICAL)
+
+TEST_PROFILE(PROFILE_100G_1_PAM4_RS544_OPTICAL)
+
+TEST_PROFILE(PROFILE_400G_8_PAM4_RS544X2N_COPPER)
+
+TEST_PROFILE(PROFILE_800G_8_PAM4_RS544X2N_OPTICAL)
+
+TEST_PROFILE(PROFILE_106POINT25G_1_PAM4_RS544_OPTICAL)
 } // namespace facebook::fboss

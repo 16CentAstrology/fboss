@@ -2,9 +2,8 @@
 
 #pragma once
 
-#include "fboss/agent/FsdbStateDeltaConverter.h"
-#include "fboss/agent/StateObserver.h"
 #include "fboss/agent/gen-cpp2/agent_stats_types.h"
+#include "fboss/agent/gen-cpp2/switch_reachability_types.h"
 #include "fboss/fsdb/client/FsdbPubSubManager.h"
 #include "fboss/fsdb/client/FsdbStreamClient.h"
 
@@ -12,17 +11,21 @@
 
 namespace facebook::fboss {
 class SwSwitch;
+class AgentFsdbSyncManager;
+class StateDelta;
+
 namespace fsdb {
 class FsdbPubSubManager;
-}
+enum class FsdbSubscriptionState;
+} // namespace fsdb
 namespace cfg {
 class SwitchConfig;
 }
-class FsdbSyncer : public StateObserver {
+class FsdbSyncer {
  public:
   explicit FsdbSyncer(SwSwitch* sw);
-  ~FsdbSyncer() override;
-  void stateUpdated(const StateDelta& stateDelta) override;
+  ~FsdbSyncer();
+  void stateUpdated(const StateDelta& stateDelta);
   void statsUpdated(const AgentStats& stats);
 
   // TODO - change to AgentConfig once SwSwitch can pass us that
@@ -30,34 +33,49 @@ class FsdbSyncer : public StateObserver {
       const cfg::SwitchConfig& oldConfig,
       const cfg::SwitchConfig& newConfig);
 
+  void updateDsfSubscriberState(
+      const std::string& nodeName,
+      fsdb::FsdbSubscriptionState oldState,
+      fsdb::FsdbSubscriptionState newState);
+
+  void switchReachabilityChanged(
+      int64_t switchId,
+      switch_reachability::SwitchReachability newReachability);
+
+  void start();
+  void stop(bool gracefulStop = false);
+
+  bool isReadyForStatePublishing() const {
+    return readyForStatePublishing_.load();
+  }
+
+  bool isReadyForStatPublishing() const {
+    return readyForStatPublishing_.load();
+  }
+
   fsdb::FsdbPubSubManager* pubSubMgr() {
     return fsdbPubSubMgr_.get();
   }
 
-  void stop();
+  uint64_t getPendingUpdatesQueueLength() const;
 
+ private:
   // Paths
   static std::vector<std::string> getAgentStatePath();
   static std::vector<std::string> getAgentStatsPath();
   static std::vector<std::string> getAgentSwitchStatePath();
   static std::vector<std::string> getAgentSwitchConfigPath();
 
- private:
-  void fsdbStatePublisherStateChanged(
-      fsdb::FsdbStreamClient::State oldState,
-      fsdb::FsdbStreamClient::State newState);
   void fsdbStatPublisherStateChanged(
       fsdb::FsdbStreamClient::State oldState,
       fsdb::FsdbStreamClient::State newState);
   std::optional<std::string> getBitsflowLockdownLevel();
 
-  void publishDeltas(std::vector<fsdb::OperDeltaUnit>&& deltas);
-
   SwSwitch* sw_;
   std::shared_ptr<fsdb::FsdbPubSubManager> fsdbPubSubMgr_;
   std::atomic<bool> readyForStatePublishing_{false};
   std::atomic<bool> readyForStatPublishing_{false};
-  FsdbStateDeltaConverter deltaConverter_;
+  std::unique_ptr<AgentFsdbSyncManager> agentFsdbSyncManager_;
 };
 
 } // namespace facebook::fboss

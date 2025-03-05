@@ -117,37 +117,61 @@ void u32RangeAttr(
     int i,
     std::vector<std::string>& attrLines);
 
+void prbsRxStateAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    std::vector<std::string>& attrLines);
+
 /* List Types */
+
+void aclEntryFieldU8ListAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    uint32_t listIndex,
+    std::vector<std::string>& attrLines,
+    bool logEntry = true);
 
 void oidListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    std::vector<std::string>& attrLines);
+    std::vector<std::string>& attrLines,
+    bool logEntry = true);
 
 void aclEntryActionSaiObjectIdListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    std::vector<std::string>& attrLines);
+    std::vector<std::string>& attrLines,
+    bool logEntry = true);
 
 void s32ListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    std::vector<std::string>& attrLines);
+    std::vector<std::string>& attrLines,
+    bool logEntry = true);
 
 void u32ListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    std::vector<std::string>& attrLines);
+    std::vector<std::string>& attrLines,
+    bool logEntry = true);
 
 void qosMapListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    std::vector<std::string>& attrLines);
+    std::vector<std::string>& attrLines,
+    bool logEntry = true);
+
+void mapListAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    uint32_t listIndex,
+    std::vector<std::string>& attrLines,
+    bool logEntry = true);
 
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
 void latchStatusAttr(
@@ -159,14 +183,32 @@ void portLaneLatchStatusListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    std::vector<std::string>& attrLines);
+    std::vector<std::string>& attrLines,
+    bool logEntry = true);
+#endif
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 13, 0)
+void portFrequencyOffsetPpmListAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    uint32_t listIndex,
+    std::vector<std::string>& attrLines,
+    bool logEntry = true);
+
+void portSnrListAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    uint32_t listIndex,
+    std::vector<std::string>& attrLines,
+    bool logEntry = true);
 #endif
 
 void systemPortConfigListAttr(
     const sai_attribute_t* attr_list,
     int i,
     uint32_t listIndex,
-    std::vector<std::string>& attrLines);
+    std::vector<std::string>& attrLines,
+    bool logEntry = true);
 
 void systemPortConfigAttr(
     const sai_attribute_t* attr_list,

@@ -2,6 +2,7 @@
 
 #include "fboss/agent/hw/test/HwHashPolarizationTestUtils.h"
 
+#include "fboss/agent/packet/EthFrame.h"
 #include "fboss/agent/packet/PktUtil.h"
 
 #include <folly/io/Cursor.h>
@@ -41,15 +42,19 @@ std::unique_ptr<std::vector<utility::EthFrame>> getFullHashedPackets(
 
       case cfg::AsicType::ASIC_TYPE_FAKE:
       case cfg::AsicType::ASIC_TYPE_MOCK:
+      case cfg::AsicType::ASIC_TYPE_CHENAB:
       case cfg::AsicType::ASIC_TYPE_TOMAHAWK3:
       case cfg::AsicType::ASIC_TYPE_TOMAHAWK4:
       case cfg::AsicType::ASIC_TYPE_TOMAHAWK5:
       case cfg::AsicType::ASIC_TYPE_EBRO:
       case cfg::AsicType::ASIC_TYPE_GARONNE:
+      case cfg::AsicType::ASIC_TYPE_YUBA:
       case cfg::AsicType::ASIC_TYPE_ELBERT_8DD:
       case cfg::AsicType::ASIC_TYPE_SANDIA_PHY:
-      case cfg::AsicType::ASIC_TYPE_INDUS:
-      case cfg::AsicType::ASIC_TYPE_BEAS:
+      case cfg::AsicType::ASIC_TYPE_JERICHO2:
+      case cfg::AsicType::ASIC_TYPE_JERICHO3:
+      case cfg::AsicType::ASIC_TYPE_RAMON:
+      case cfg::AsicType::ASIC_TYPE_RAMON3:
         return nullptr;
     }
   } else {
@@ -66,12 +71,16 @@ std::unique_ptr<std::vector<utility::EthFrame>> getFullHashedPackets(
       case cfg::AsicType::ASIC_TYPE_TOMAHAWK5:
       case cfg::AsicType::ASIC_TYPE_FAKE:
       case cfg::AsicType::ASIC_TYPE_MOCK:
+      case cfg::AsicType::ASIC_TYPE_CHENAB:
       case cfg::AsicType::ASIC_TYPE_EBRO:
       case cfg::AsicType::ASIC_TYPE_GARONNE:
+      case cfg::AsicType::ASIC_TYPE_YUBA:
       case cfg::AsicType::ASIC_TYPE_ELBERT_8DD:
       case cfg::AsicType::ASIC_TYPE_SANDIA_PHY:
-      case cfg::AsicType::ASIC_TYPE_INDUS:
-      case cfg::AsicType::ASIC_TYPE_BEAS:
+      case cfg::AsicType::ASIC_TYPE_JERICHO2:
+      case cfg::AsicType::ASIC_TYPE_JERICHO3:
+      case cfg::AsicType::ASIC_TYPE_RAMON:
+      case cfg::AsicType::ASIC_TYPE_RAMON3:
         return nullptr;
     }
   }

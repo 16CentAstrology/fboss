@@ -11,7 +11,6 @@
 #include "fboss/lib/fpga/MinipackSystemContainer.h"
 
 #include <folly/container/Enumerate.h>
-#include <folly/logging/xlog.h>
 
 namespace facebook::fboss {
 Minipack16QI2CBus::Minipack16QI2CBus() {
@@ -19,7 +18,7 @@ Minipack16QI2CBus::Minipack16QI2CBus() {
   systemContainer_->initHW();
 }
 
-Minipack16QI2CBus::~Minipack16QI2CBus() {}
+Minipack16QI2CBus::~Minipack16QI2CBus() = default;
 
 /* Consolidate the i2c transaction stats from all the pims using their
  * corresponding i2c controller. In case of Minipack16q there are 8 pims

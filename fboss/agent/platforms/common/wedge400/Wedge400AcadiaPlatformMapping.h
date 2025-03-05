@@ -11,11 +11,11 @@
 
 #include "fboss/agent/platforms/common/PlatformMapping.h"
 
-namespace facebook {
-namespace fboss {
+namespace facebook::fboss {
 class Wedge400AcadiaPlatformMapping : public PlatformMapping {
  public:
   Wedge400AcadiaPlatformMapping();
+  explicit Wedge400AcadiaPlatformMapping(const std::string& platformMappingStr);
 
  private:
   // Forbidden copy constructor and assignment operator
@@ -23,5 +23,4 @@ class Wedge400AcadiaPlatformMapping : public PlatformMapping {
   Wedge400AcadiaPlatformMapping& operator=(
       Wedge400AcadiaPlatformMapping const&) = delete;
 };
-} // namespace fboss
-} // namespace facebook
+} // namespace facebook::fboss

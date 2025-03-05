@@ -100,7 +100,7 @@ constexpr int kDefaultTH4PortQueueSharedBytes = 0;
 constexpr int32_t kDefaultTH4AqmThreshold = 13631418;
 const auto kDefaultTH4PortQueueAqm = makeDefauleAqmMap(kDefaultTH4AqmThreshold);
 
-state::PortQueueFields getPortQueueFields(
+PortQueueFields getPortQueueFields(
     uint8_t id,
     cfg::QueueScheduling scheduling,
     cfg::StreamType streamType,
@@ -115,7 +115,7 @@ state::PortQueueFields getPortQueueFields(
     std::optional<int> bandwidthBurstMaxKbits,
     std::optional<TrafficClass> trafficClass,
     std::optional<std::set<PfcPriority>> pfcPriorities) {
-  state::PortQueueFields queue;
+  PortQueueFields queue;
   *queue.id() = id;
   *queue.weight() = weight;
   if (reservedBytes) {
@@ -179,6 +179,14 @@ state::PortQueueFields getPortQueueFields(
 
   return queue;
 }
+template <typename AsicT>
+AsicT makeAsic() {
+  cfg::SwitchInfo switchInfo;
+  switchInfo.switchIndex() = 0;
+  switchInfo.switchType() = cfg::SwitchType::NPU;
+  switchInfo.switchMac() = folly::MacAddress().toString();
+  return AsicT{0, switchInfo};
+}
 } // namespace
 
 namespace facebook::fboss::utility {
@@ -220,14 +228,14 @@ bcm_cosq_stat_t getBcmCosqStatType(
 const PortQueue& getTD2DefaultUCPortQueueSettings() {
   // Since the default queue is constant, we can use static to cache this
   // object here.
-  static Trident2Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const auto asic = makeAsic<Trident2Asic>();
   static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::UNICAST,
       kDefaultPortQueueWeight,
       asic.getDefaultReservedBytes(
-          cfg::StreamType::UNICAST, false /*is front panel port*/),
+          cfg::StreamType::UNICAST, cfg::PortType::INTERFACE_PORT),
       bcmAlphaToCfgAlpha(kDefaultPortQueueAlpha),
       std::nullopt,
       kDefaultTD2PortQueueSharedBytes,
@@ -242,14 +250,14 @@ const PortQueue& getTD2DefaultUCPortQueueSettings() {
 }
 
 const PortQueue& getTHDefaultUCPortQueueSettings() {
-  static TomahawkAsic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const auto asic = makeAsic<TomahawkAsic>();
   static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::UNICAST,
       kDefaultPortQueueWeight,
       asic.getDefaultReservedBytes(
-          cfg::StreamType::UNICAST, false /*is front panel port*/),
+          cfg::StreamType::UNICAST, cfg::PortType::INTERFACE_PORT),
       bcmAlphaToCfgAlpha(kDefaultPortQueueAlpha),
       std::nullopt,
       kDefaultTHPortQueueSharedBytes,
@@ -264,14 +272,14 @@ const PortQueue& getTHDefaultUCPortQueueSettings() {
 }
 
 const PortQueue& getTH3DefaultUCPortQueueSettings() {
-  static Tomahawk3Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const auto asic = makeAsic<Tomahawk3Asic>();
   static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::UNICAST,
       kDefaultPortQueueWeight,
       asic.getDefaultReservedBytes(
-          cfg::StreamType::UNICAST, false /*is front panel port*/),
+          cfg::StreamType::UNICAST, cfg::PortType::INTERFACE_PORT),
       bcmAlphaToCfgAlpha(kDefaultPortQueueAlpha),
       std::nullopt,
       kDefaultTH3PortQueueSharedBytes,
@@ -286,14 +294,14 @@ const PortQueue& getTH3DefaultUCPortQueueSettings() {
 }
 
 const PortQueue& getTH4DefaultUCPortQueueSettings() {
-  static Tomahawk4Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const auto asic = makeAsic<Tomahawk4Asic>();
   static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::UNICAST,
       kDefaultPortQueueWeight,
       asic.getDefaultReservedBytes(
-          cfg::StreamType::UNICAST, false /*is front panel port*/),
+          cfg::StreamType::UNICAST, cfg::PortType::INTERFACE_PORT),
       bcmAlphaToCfgAlpha(kDefaultPortQueueAlpha),
       std::nullopt,
       kDefaultTH4PortQueueSharedBytes,
@@ -308,14 +316,14 @@ const PortQueue& getTH4DefaultUCPortQueueSettings() {
 }
 
 const PortQueue& getTD2DefaultMCPortQueueSettings() {
-  static Trident2Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const auto asic = makeAsic<Trident2Asic>();
   static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
       kDefaultPortQueueWeight,
       asic.getDefaultReservedBytes(
-          cfg::StreamType::MULTICAST, false /*is front panel port*/),
+          cfg::StreamType::MULTICAST, cfg::PortType::INTERFACE_PORT),
       bcmAlphaToCfgAlpha(kDefaultPortQueueAlpha),
       std::nullopt,
       kDefaultTD2PortQueueSharedBytes,
@@ -330,14 +338,14 @@ const PortQueue& getTD2DefaultMCPortQueueSettings() {
 }
 
 const PortQueue& getTHDefaultMCPortQueueSettings() {
-  static TomahawkAsic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const auto asic = makeAsic<TomahawkAsic>();
   static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
       kDefaultPortQueueWeight,
       asic.getDefaultReservedBytes(
-          cfg::StreamType::MULTICAST, false /*is front panel port*/),
+          cfg::StreamType::MULTICAST, cfg::PortType::INTERFACE_PORT),
       bcmAlphaToCfgAlpha(kDefaultPortQueueAlpha),
       std::nullopt,
       kDefaultTHPortQueueSharedBytes,
@@ -352,14 +360,14 @@ const PortQueue& getTHDefaultMCPortQueueSettings() {
 }
 
 const PortQueue& getTH3DefaultMCPortQueueSettings() {
-  static Tomahawk3Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const auto asic = makeAsic<Tomahawk3Asic>();
   static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
       kDefaultPortQueueWeight,
       asic.getDefaultReservedBytes(
-          cfg::StreamType::MULTICAST, false /*is front panel port*/),
+          cfg::StreamType::MULTICAST, cfg::PortType::INTERFACE_PORT),
       bcmAlphaToCfgAlpha(kDefaultPortQueueAlpha),
       std::nullopt,
       kDefaultTH3PortQueueSharedBytes,
@@ -374,14 +382,14 @@ const PortQueue& getTH3DefaultMCPortQueueSettings() {
 }
 
 const PortQueue& getTH4DefaultMCPortQueueSettings() {
-  static Tomahawk4Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const auto asic = makeAsic<Tomahawk4Asic>();
   static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
       kDefaultPortQueueWeight,
       asic.getDefaultReservedBytes(
-          cfg::StreamType::MULTICAST, false /*is front panel port*/),
+          cfg::StreamType::MULTICAST, cfg::PortType::INTERFACE_PORT),
       bcmAlphaToCfgAlpha(kDefaultPortQueueAlpha),
       std::nullopt,
       kDefaultTH4PortQueueSharedBytes,
@@ -431,14 +439,14 @@ const PortQueue& getDefaultPortQueueSettings(
 }
 
 const PortQueue& getTD2DefaultMCCPUQueueSettings() {
-  static Trident2Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const auto asic = makeAsic<Trident2Asic>();
   static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
       kDefaultPortQueueWeight,
       asic.getDefaultReservedBytes(
-          cfg::StreamType::MULTICAST, true /*cpu port*/),
+          cfg::StreamType::MULTICAST, cfg::PortType::CPU_PORT),
       std::nullopt,
       std::nullopt,
       kDefaultTD2PortQueueSharedBytes,
@@ -453,15 +461,15 @@ const PortQueue& getTD2DefaultMCCPUQueueSettings() {
 }
 
 const PortQueue& getTHDefaultMCCPUQueueSettings() {
-  static TomahawkAsic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const auto asic = makeAsic<TomahawkAsic>();
   static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
       kDefaultPortQueueWeight,
       asic.getDefaultReservedBytes(
-          cfg::StreamType::MULTICAST, true /*cpu port*/),
-      std::nullopt,
+          cfg::StreamType::MULTICAST, cfg::PortType::CPU_PORT),
+      bcmAlphaToCfgAlpha(kDefaultPortQueueAlpha),
       std::nullopt,
       kDefaultTHPortQueueSharedBytes,
       kPortQueueNoAqm,
@@ -475,15 +483,15 @@ const PortQueue& getTHDefaultMCCPUQueueSettings() {
 }
 
 const PortQueue& getTH3DefaultMCCPUQueueSettings() {
-  static Tomahawk3Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const auto asic = makeAsic<Tomahawk3Asic>();
   static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
       kDefaultPortQueueWeight,
       asic.getDefaultReservedBytes(
-          cfg::StreamType::MULTICAST, true /*cpu port*/),
-      std::nullopt,
+          cfg::StreamType::MULTICAST, cfg::PortType::CPU_PORT),
+      bcmAlphaToCfgAlpha(kDefaultPortQueueAlpha),
       std::nullopt,
       kDefaultTH3PortQueueSharedBytes,
       kPortQueueNoAqm,
@@ -497,15 +505,15 @@ const PortQueue& getTH3DefaultMCCPUQueueSettings() {
 }
 
 const PortQueue& getTH4DefaultMCCPUQueueSettings() {
-  static Tomahawk4Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const auto asic = makeAsic<Tomahawk4Asic>();
   static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
       kDefaultPortQueueWeight,
       asic.getDefaultReservedBytes(
-          cfg::StreamType::MULTICAST, true /*cpu port*/),
-      std::nullopt,
+          cfg::StreamType::MULTICAST, cfg::PortType::CPU_PORT),
+      bcmAlphaToCfgAlpha(kDefaultPortQueueAlpha),
       std::nullopt,
       kDefaultTH4PortQueueSharedBytes,
       kPortQueueNoAqm,

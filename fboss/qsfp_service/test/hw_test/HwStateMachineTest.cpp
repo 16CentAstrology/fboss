@@ -10,7 +10,6 @@
 #include "fboss/qsfp_service/test/hw_test/HwTest.h"
 
 #include "fboss/lib/CommonUtils.h"
-#include "fboss/lib/config/PlatformConfigUtils.h"
 #include "fboss/qsfp_service/module/QsfpModule.h"
 #include "fboss/qsfp_service/platforms/wedge/WedgeManager.h"
 #include "fboss/qsfp_service/test/hw_test/HwPortUtils.h"
@@ -26,30 +25,38 @@ class HwStateMachineTest : public HwTest {
 
   void SetUp() override {
     HwTest::SetUp();
+    if (!IsSkipped()) {
+      std::map<int32_t, TransceiverInfo> presentTcvrs;
+      getHwQsfpEnsemble()->getWedgeManager()->getTransceiversInfo(
+          presentTcvrs, std::make_unique<std::vector<int32_t>>());
 
-    std::map<int32_t, TransceiverInfo> presentTcvrs;
-    getHwQsfpEnsemble()->getWedgeManager()->getTransceiversInfo(
-        presentTcvrs, std::make_unique<std::vector<int32_t>>());
+      auto cabledTransceivers = utility::legacyTransceiverIds(
+          utility::getCabledPortTranceivers(getHwQsfpEnsemble()));
 
-    // Get all transceivers from platform mapping
-    const auto& chips = getHwQsfpEnsemble()->getPlatformMapping()->getChips();
-    for (const auto& chip : chips) {
-      if (*chip.second.type() != phy::DataPlanePhyChipType::TRANSCEIVER) {
-        continue;
+      // Get all transceivers from platform mapping
+      const auto& chips = getHwQsfpEnsemble()->getPlatformMapping()->getChips();
+      for (const auto& chip : chips) {
+        if (*chip.second.type() != phy::DataPlanePhyChipType::TRANSCEIVER) {
+          continue;
+        }
+        auto id = *chip.second.physicalID();
+        if (auto tcvrIt = presentTcvrs.find(id); tcvrIt != presentTcvrs.end() &&
+            *tcvrIt->second.tcvrState()->present()) {
+          if (std::find(
+                  cabledTransceivers.begin(), cabledTransceivers.end(), id) !=
+              cabledTransceivers.end()) {
+            presentTransceivers_.push_back(TransceiverID(id));
+          }
+        } else {
+          absentTransceivers_.push_back(TransceiverID(id));
+        }
       }
-      auto id = *chip.second.physicalID();
-      if (auto tcvrIt = presentTcvrs.find(id);
-          tcvrIt != presentTcvrs.end() && *tcvrIt->second.present()) {
-        presentTransceivers_.push_back(TransceiverID(id));
-      } else {
-        absentTransceivers_.push_back(TransceiverID(id));
-      }
+      XLOG(DBG2) << "Transceivers num: [present:" << presentTransceivers_.size()
+                 << ", absent:" << absentTransceivers_.size() << "]";
+
+      // Set pause remdiation so it won't trigger remediation
+      setPauseRemediation(true);
     }
-    XLOG(DBG2) << "Transceivers num: [present:" << presentTransceivers_.size()
-               << ", absent:" << absentTransceivers_.size() << "]";
-
-    // Set pause remdiation so it won't trigger remediation
-    setPauseRemediation(true);
   }
 
   const std::vector<TransceiverID>& getPresentTransceivers() const {
@@ -93,7 +100,7 @@ class HwStateMachineTest : public HwTest {
           // happen
           const auto& transceiver = wedgeMgr->getTransceiverInfo(id);
           auto mgmtInterface = apache::thrift::can_throw(
-              *transceiver.transceiverManagementInterface());
+              *transceiver.tcvrState()->transceiverManagementInterface());
           if (mgmtInterface == TransceiverManagementInterface::CMIS) {
             // CMIS will hard reset the module in
             // remediateFlakyTransceiver() Without clear hard reset, we
@@ -116,12 +123,16 @@ class HwStateMachineTest : public HwTest {
           curState == TransceiverStateMachineState::TRANSCEIVER_PROGRAMMED) {
         // Just finished transceiver programming
         // Only care enabled ports
-        if (programmedPortToPortInfo.size() == 1) {
-          const auto tcvrInfo = wedgeMgr->getTransceiverInfo(id);
-          utility::HwTransceiverUtils::verifyTransceiverSettings(
-              tcvrInfo, programmedPortToPortInfo.begin()->second.profile);
-          utility::HwTransceiverUtils::verifyDiagsCapability(
-              tcvrInfo, wedgeMgr->getDiagsCapability(id));
+        if (!programmedPortToPortInfo.empty()) {
+          for (const auto& [portID, portInfo] : programmedPortToPortInfo) {
+            const auto tcvrInfo = wedgeMgr->getTransceiverInfo(id);
+            auto portName = wedgeMgr->getPortNameByPortId(portID);
+            CHECK(portName.has_value());
+            utility::HwTransceiverUtils::verifyTransceiverSettings(
+                *tcvrInfo.tcvrState(), *portName, portInfo.profile);
+            utility::HwTransceiverUtils::verifyDiagsCapability(
+                *tcvrInfo.tcvrState(), wedgeMgr->getDiagsCapability(id));
+          }
         }
         // After transceiver is programmed, needResetDataPath should be false
         EXPECT_FALSE(wedgeMgr->getNeedResetDataPath(id));
@@ -245,18 +256,15 @@ TEST_F(HwStateMachineTest, CheckPortsProgrammed) {
                   portID, portInfo.profile, transceiver, getHwQsfpEnsemble());
             }
           }
-          // TODO(joseph5wu) Usually we only need to program optical
-          // Transceiver which doesn't need to support split-out copper
-          // cable for flex ports. Which means for the optical transceiver,
-          // it usually has one programmed iphy port and profile. If in the
-          // future, we need to support flex port copper transceiver
-          // programming, we might need to combine the speeds of all flex
-          // port to program such transceiver.
-          if (programmedPortToPortInfo.size() == 1) {
-            utility::HwTransceiverUtils::verifyTransceiverSettings(
-                transceiver, programmedPortToPortInfo.begin()->second.profile);
-            utility::HwTransceiverUtils::verifyDiagsCapability(
-                transceiver, wedgeMgr->getDiagsCapability(id));
+          if (!programmedPortToPortInfo.empty()) {
+            for (const auto& [portID, portInfo] : programmedPortToPortInfo) {
+              auto portName = wedgeMgr->getPortNameByPortId(portID);
+              CHECK(portName.has_value());
+              utility::HwTransceiverUtils::verifyTransceiverSettings(
+                  *transceiver.tcvrState(), *portName, portInfo.profile);
+              utility::HwTransceiverUtils::verifyDiagsCapability(
+                  *transceiver.tcvrState(), wedgeMgr->getDiagsCapability(id));
+            }
           }
         }
       }
@@ -365,7 +373,7 @@ TEST_F(HwStateMachineTest, CheckTransceiverRemediated) {
     wedgeMgr->setOverrideAgentPortStatusForTesting(
         false /* up */, true /* enabled */);
     // Make sure all enabled transceiver should go through:
-    // XPHY_PORTS_PROGRAMMED -> TRANSCEIVER_PROGRAMMED
+    // XPHY_PORTS_PROGRAMMED -> TRANSCEIVER_READY -> TRANSCEIVER_PROGRAMMED
     std::unordered_map<TransceiverID, std::queue<TransceiverStateMachineState>>
         expectedStates;
     for (auto id : getPresentTransceivers()) {
@@ -377,6 +385,8 @@ TEST_F(HwStateMachineTest, CheckTransceiverRemediated) {
         }
         tcvrExpectedStates.push(
             TransceiverStateMachineState::XPHY_PORTS_PROGRAMMED);
+        tcvrExpectedStates.push(
+            TransceiverStateMachineState::TRANSCEIVER_READY);
         tcvrExpectedStates.push(
             TransceiverStateMachineState::TRANSCEIVER_PROGRAMMED);
       }
@@ -400,6 +410,7 @@ TEST_F(HwStateMachineTest, CheckTransceiverRemediated) {
 TEST_F(HwStateMachineTest, CheckAgentConfigChanged) {
   auto verify = [this]() {
     auto verifyConfigChanged = [this](bool isAgentColdboot) {
+      std::time_t testStartTime = std::time(nullptr);
       auto wedgeMgr = getHwQsfpEnsemble()->getWedgeManager();
       // Prepare expected states
       std::
@@ -408,7 +419,7 @@ TEST_F(HwStateMachineTest, CheckAgentConfigChanged) {
       bool hasXphy = (wedgeMgr->getPhyManager() != nullptr);
       // All tcvrs should go through no matter present or absent
       // IPHY_PORTS_PROGRAMMED -> XPHY_PORTS_PROGRAMMED ->
-      // TRANSCEIVER_PROGRAMMED
+      // -> TRANSCEIVER_READY -> TRANSCEIVER_PROGRAMMED
       auto prepareExpectedStates = [hasXphy]() {
         std::queue<TransceiverStateMachineState> tcvrExpectedStates;
         tcvrExpectedStates.push(
@@ -417,6 +428,8 @@ TEST_F(HwStateMachineTest, CheckAgentConfigChanged) {
           tcvrExpectedStates.push(
               TransceiverStateMachineState::XPHY_PORTS_PROGRAMMED);
         }
+        tcvrExpectedStates.push(
+            TransceiverStateMachineState::TRANSCEIVER_READY);
         tcvrExpectedStates.push(
             TransceiverStateMachineState::TRANSCEIVER_PROGRAMMED);
         return tcvrExpectedStates;
@@ -447,6 +460,19 @@ TEST_F(HwStateMachineTest, CheckAgentConfigChanged) {
           std::chrono::milliseconds(10000) /* msBetweenRetry */,
           EXPECT_EVENTUALLY_TRUE(refreshStateMachinesTillMeetAllStates(
               expectedStates, false /* isRemediated */, isAgentColdboot)));
+
+      // Verify datapath reset happened on a config change that involved agent
+      // cold boot and didn't happen for warmboot
+      for (auto id : getPresentTransceivers()) {
+        auto tcvrInfo = wedgeMgr->getTransceiverInfo(id);
+        auto& tcvrState = tcvrInfo.tcvrState().value();
+        auto& tcvrStats = tcvrInfo.tcvrStats().value();
+        for (auto& [portName, _] : tcvrStats.get_portNameToHostLanes()) {
+          XLOG(INFO) << "Verify datapath reset timestamp for port " << portName;
+          utility::HwTransceiverUtils::verifyDatapathResetTimestamp(
+              portName, tcvrState, tcvrStats, testStartTime, isAgentColdboot);
+        }
+      }
     };
 
     // First verify warmboot config change

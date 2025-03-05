@@ -1,5 +1,6 @@
 namespace cpp2 rackmonsvc
 namespace go rackmonsvc
+namespace py rackmonsvc.rackmonsvc
 
 include "fboss/agent/if/fboss.thrift"
 
@@ -37,6 +38,11 @@ enum ModbusDeviceType {
   ORV3_PSU = 1,
   ORV3_RPU = 2,
   ORV3_BBU = 3,
+  ORV3_POWER_TETHER = 4,
+  ORV3_HPR_PSU = 5,
+  ORV3_HPR_BBU = 6,
+  ORV3_HPR_PMM_PSU = 7,
+  ORV3_HPR_PMM_BBU = 8,
 }
 
 /*
@@ -156,6 +162,7 @@ enum RegisterValueType {
   FLOAT = 2,
   FLAGS = 3,
   RAW = 4,
+  LONG = 5,
 }
 
 struct FlagType {
@@ -170,6 +177,7 @@ union RegisterValue {
   3: float floatValue;
   4: list<FlagType> flagsValue;
   5: list<byte> rawValue;
+  6: i64 longValue;
 }
 
 struct ModbusRegisterValue {
@@ -203,6 +211,9 @@ enum RackmonControlRequest {
 
   /* Resume rackmond core loop. */
   RESUME_RACKMOND = 1,
+
+  /* Rescan immediately */
+  RESCAN = 2,
 }
 
 struct PowerPortStatus {
@@ -267,6 +278,13 @@ service RackmonCtrl {
   list<RackmonMonitorData> getMonitorDataEx(
     1: MonitorDataFilter filter,
   ) throws (1: fboss.FbossBaseError error);
+
+  /*
+   * Reload register matching the provided filter
+   */
+  void reload(1: MonitorDataFilter filter, 2: bool synchronous = true) throws (
+    1: fboss.FbossBaseError error,
+  );
 
   /*
    * Send commands to control rackmond's behavior, such as pause/resume

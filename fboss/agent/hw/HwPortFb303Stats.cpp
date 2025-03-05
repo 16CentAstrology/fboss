@@ -10,13 +10,17 @@
 
 #include "fboss/agent/hw/HwPortFb303Stats.h"
 
+#include "fboss/agent/gen-cpp2/switch_config_constants.h"
 #include "fboss/agent/hw/StatsConstants.h"
 
+#include <fb303/ServiceData.h>
 #include <folly/logging/xlog.h>
+#include <thrift/lib/cpp2/protocol/Serializer.h>
 
 namespace facebook::fboss {
 
-const std::vector<folly::StringPiece>& HwPortFb303Stats::kPortStatKeys() const {
+const std::vector<folly::StringPiece>&
+HwPortFb303Stats::kPortMonotonicCounterStatKeys() const {
   static std::vector<folly::StringPiece> kPortKeys{
       kInBytes(),
       kInUnicastPkts(),
@@ -41,25 +45,49 @@ const std::vector<folly::StringPiece>& HwPortFb303Stats::kPortStatKeys() const {
       kOutEcnCounter(),
       kFecCorrectable(),
       kFecUncorrectable(),
+      kLeakyBucketFlapCnt(),
       kInLabelMissDiscards(),
+      kInCongestionDiscards(),
+      kInAclDiscards(),
+      kInTrapDiscards(),
+      kOutForwardingDiscards(),
+      kPqpErrorEgressDroppedPackets(),
+      kFabricLinkDownDroppedCells(),
+      kLinkLayerFlowControlWatermark(),
   };
   return kPortKeys;
 }
 
-const std::vector<folly::StringPiece>& HwPortFb303Stats::kQueueStatKeys()
-    const {
+const std::vector<folly::StringPiece>&
+HwPortFb303Stats::kPortFb303CounterStatKeys() const {
+  static std::vector<folly::StringPiece> kPortKeys{
+      kCableLengthMeters(),
+      kDataCellsFilterOn(),
+  };
+  return kPortKeys;
+}
+
+const std::vector<folly::StringPiece>&
+HwPortFb303Stats::kQueueMonotonicCounterStatKeys() const {
   static std::vector<folly::StringPiece> kQueueKeys{
       kOutCongestionDiscardsBytes(),
       kOutCongestionDiscards(),
       kOutBytes(),
       kOutPkts(),
       kWredDroppedPackets(),
-      kOutEcnCounter()};
+      kOutEcnCounter(),
+  };
   return kQueueKeys;
 }
 
-const std::vector<folly::StringPiece>& HwPortFb303Stats::kInMacsecPortStatKeys()
-    const {
+const std::vector<folly::StringPiece>&
+HwPortFb303Stats::kQueueFb303CounterStatKeys() const {
+  static std::vector<folly::StringPiece> kQueueKeys{};
+  return kQueueKeys;
+}
+
+const std::vector<folly::StringPiece>&
+HwPortFb303Stats::kInMacsecPortMonotonicCounterStatKeys() const {
   static std::vector<folly::StringPiece> kMacsecInKeys{
       kInPreMacsecDropPkts(),
       kInMacsecControlPkts(),
@@ -82,7 +110,7 @@ const std::vector<folly::StringPiece>& HwPortFb303Stats::kInMacsecPortStatKeys()
 }
 
 const std::vector<folly::StringPiece>&
-HwPortFb303Stats::kOutMacsecPortStatKeys() const {
+HwPortFb303Stats::kOutMacsecPortMonotonicCounterStatKeys() const {
   static std::vector<folly::StringPiece> kMacsecOutKeys{
       kOutPreMacsecDropPkts(),
       kOutMacsecControlPkts(),
@@ -93,6 +121,24 @@ HwPortFb303Stats::kOutMacsecPortStatKeys() const {
       kOutMacsecCurrentXpn(),
   };
   return kMacsecOutKeys;
+}
+
+const std::vector<folly::StringPiece>&
+HwPortFb303Stats::kPfcMonotonicCounterStatKeys() const {
+  static std::vector<folly::StringPiece> kPfcKeys{
+      kInPfc(),
+      kInPfcXon(),
+      kOutPfc(),
+  };
+  return kPfcKeys;
+}
+
+const std::vector<folly::StringPiece>&
+HwPortFb303Stats::kPriorityGroupCounterStatKeys() const {
+  static std::vector<folly::StringPiece> kPgKeys{
+      kInCongestionDiscards(),
+  };
+  return kPgKeys;
 }
 
 void HwPortFb303Stats::updateStats(
@@ -141,10 +187,65 @@ void HwPortFb303Stats::updateStats(
       timeRetrieved_,
       kFecUncorrectable(),
       *curPortStats.fecUncorrectableErrors());
+  if (curPortStats.leakyBucketFlapCount_().has_value()) {
+    updateStat(
+        timeRetrieved_,
+        kLeakyBucketFlapCnt(),
+        *curPortStats.leakyBucketFlapCount_());
+  }
   updateStat(
       timeRetrieved_,
       kInLabelMissDiscards(),
       *curPortStats.inLabelMissDiscards_());
+  updateStat(
+      timeRetrieved_,
+      kInCongestionDiscards(),
+      *curPortStats.inCongestionDiscards_());
+  if (curPortStats.inAclDiscards_().has_value()) {
+    updateStat(
+        timeRetrieved_, kInAclDiscards(), *curPortStats.inAclDiscards_());
+  }
+  if (curPortStats.inTrapDiscards_().has_value()) {
+    updateStat(
+        timeRetrieved_, kInTrapDiscards(), *curPortStats.inTrapDiscards_());
+  }
+  if (curPortStats.outForwardingDiscards_().has_value()) {
+    updateStat(
+        timeRetrieved_,
+        kOutForwardingDiscards(),
+        *curPortStats.outForwardingDiscards_());
+  }
+  if (curPortStats.pqpErrorEgressDroppedPackets_().has_value()) {
+    updateStat(
+        timeRetrieved_,
+        kPqpErrorEgressDroppedPackets(),
+        *curPortStats.pqpErrorEgressDroppedPackets_());
+  }
+  if (curPortStats.fabricLinkDownDroppedCells_().has_value()) {
+    updateStat(
+        timeRetrieved_,
+        kFabricLinkDownDroppedCells(),
+        *curPortStats.fabricLinkDownDroppedCells_());
+  }
+  // Set fb303 counter stats
+  if (curPortStats.cableLengthMeters().has_value() &&
+      curPortStats.cableLengthMeters() !=
+          std::numeric_limits<uint32_t>::max()) {
+    fb303::fbData->setCounter(
+        statName(kCableLengthMeters(), portName()),
+        *curPortStats.cableLengthMeters());
+  }
+  if (curPortStats.dataCellsFilterOn().has_value()) {
+    fb303::fbData->setCounter(
+        statName(kDataCellsFilterOn(), portName()),
+        *curPortStats.dataCellsFilterOn() ? 1 : 0);
+  }
+  if (curPortStats.linkLayerFlowControlWatermark_().has_value()) {
+    updateStat(
+        timeRetrieved_,
+        kLinkLayerFlowControlWatermark(),
+        *curPortStats.linkLayerFlowControlWatermark_());
+  }
 
   // Update queue stats
   auto updateQueueStat = [this](
@@ -153,9 +254,8 @@ void HwPortFb303Stats::updateStats(
                              const std::map<int16_t, int64_t>& queueStats) {
     auto qitr = queueStats.find(queueId);
     /*
-     * TODO(skhare) Some ASICs don't yet support querying queue stats, so skip
-     * updateStat. Once that support is added, ASSERT for queue stat to be
-     * present.
+     * Not all queue stats are available on all ASICs. Hence the queue stats
+     * maps are sparsely populated. So skip over keys that are not found.
      */
     if (qitr != queueStats.end()) {
       updateStat(timeRetrieved_, statKey, queueId, qitr->second);
@@ -187,8 +287,17 @@ void HwPortFb303Stats::updateStats(
           *curPortStats.queueEcnMarkedPackets_());
     }
   }
+  CHECK(
+      curPortStats.queueWatermarkBytes_()->empty() ||
+      curPortStats.queueWatermarkLevel_()->empty())
+      << "Expect only one of queue watermark bytes, level to be populated";
   if (curPortStats.queueWatermarkBytes_()->size()) {
     updateQueueWatermarkStats(*curPortStats.queueWatermarkBytes_());
+  } else if (curPortStats.queueWatermarkLevel_()->size()) {
+    updateQueueWatermarkStats(*curPortStats.queueWatermarkLevel_());
+  }
+  if (curPortStats.egressGvoqWatermarkBytes_()->size()) {
+    updateEgressGvoqWatermarkStats(*curPortStats.egressGvoqWatermarkBytes_());
   }
   // Macsec stats
   if (curPortStats.macsecStats()) {
@@ -281,6 +390,41 @@ void HwPortFb303Stats::updateStats(
     updateMacsecPortStats(
         *curPortStats.macsecStats()->egressPortStats(), false);
   }
+
+  // PFC stats
+  auto updatePfcStat = [this](
+                           folly::StringPiece statKey,
+                           PfcPriority priority,
+                           const std::map<int16_t, int64_t>& pfcStats,
+                           int64_t* counter) {
+    auto pitr = pfcStats.find(priority);
+    if (pitr != pfcStats.end()) {
+      updateStat(timeRetrieved_, statKey, priority, pitr->second);
+      if (counter) {
+        *counter += pitr->second;
+      }
+    }
+  };
+  int64_t inPfc = 0, outPfc = 0;
+  for (auto priority : getEnabledPfcPriorities()) {
+    updatePfcStat(kInPfc(), priority, *curPortStats.inPfc_(), &inPfc);
+    updatePfcStat(
+        kInPfcXon(), priority, *curPortStats.inPfcXon_(), std::nullptr_t());
+    updatePfcStat(kOutPfc(), priority, *curPortStats.outPfc_(), &outPfc);
+  }
+  if (getEnabledPfcPriorities().size()) {
+    updateStat(timeRetrieved_, kInPfc(), inPfc);
+    updateStat(timeRetrieved_, kOutPfc(), outPfc);
+  }
+
+  // PG stats
+  for (int i = 0; i <= cfg::switch_config_constants::PORT_PG_VALUE_MAX(); ++i) {
+    auto it = curPortStats.pgInCongestionDiscards_()->find(i);
+    if (it != curPortStats.pgInCongestionDiscards_()->end()) {
+      updatePgStat(timeRetrieved_, kInCongestionDiscards(), i, it->second);
+    }
+  }
+
   portStats_ = curPortStats;
 }
 

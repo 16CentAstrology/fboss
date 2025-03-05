@@ -2,13 +2,18 @@
 //
 //
 #include "fboss/platform/helpers/Init.h"
+#include "fboss/platform/helpers/InitCli.h"
 
 #include <folly/init/Init.h>
 
 namespace facebook::fboss::platform::helpers {
 
-void init(int argc, char** argv) {
-  folly::init(&argc, &argv, true);
+void init(int* argc, char*** argv) {
+  folly::init(argc, argv, true);
+}
+
+void initCli(int* argc, char*** argv, const std::string&) {
+  folly::init(argc, argv, true);
 }
 
 void runThriftService(

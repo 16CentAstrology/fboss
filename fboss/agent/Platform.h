@@ -12,28 +12,33 @@
 #include <folly/Conv.h>
 #include <folly/MacAddress.h>
 #include <folly/io/async/EventBase.h>
+#include <thrift/lib/cpp2/server/ThriftServer.h>
 #include <memory>
 #include <unordered_map>
+#include "fboss/agent/AgentDirectoryUtil.h"
+#include "fboss/agent/AgentFeatures.h"
 #include "fboss/agent/PlatformPort.h"
+#include "fboss/agent/SwitchIdScopeResolver.h"
+#include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
 #include "fboss/agent/platforms/common/PlatformMapping.h"
 #include "fboss/agent/types.h"
+
 #include "fboss/lib/phy/gen-cpp2/phy_types.h"
 
-DECLARE_bool(hide_fabric_ports);
+DECLARE_int32(switchIndex);
 
 namespace facebook::fboss {
 
-class AgentConfig;
+struct AgentConfig;
 class HwSwitch;
 class SwSwitch;
 class ThriftHandler;
-struct ProductInfo;
-class HwAsic;
+class ProductInfo;
 class HwSwitchWarmBootHelper;
 class PlatformProductInfo;
-class QsfpCache;
-enum class PlatformMode : char;
+class HwSwitchCallback;
+class StateDelta;
 
 /*
  * Platform represents a specific switch/router platform.
@@ -69,13 +74,10 @@ class Platform {
    * control platform initialization using the same config mechanism
    * as other parts of the agent.
    */
-  void init(std::unique_ptr<AgentConfig> config, uint32_t hwFeaturesDesired);
-
-  /*
-   * Allows the platorm to run any necessary cleanup steps like
-   * stopping threads.
-   */
-  virtual void stop() = 0;
+  void init(
+      std::unique_ptr<AgentConfig> config,
+      uint32_t hwFeaturesDesired,
+      int16_t switchIndex);
 
   /*
    * Two ways to get the configuration of the switch. config() will
@@ -124,7 +126,7 @@ class Platform {
   /*
    * Get the product information
    */
-  void getProductInfo(ProductInfo& info);
+  void getProductInfo(ProductInfo& info) const;
 
   bool isProductInfoExist() {
     if (!productInfo_) {
@@ -134,9 +136,9 @@ class Platform {
   }
 
   /*
-   * Get the product mode
+   * Get the product type
    */
-  PlatformMode getMode() const;
+  PlatformType getType() const;
 
   /*
    * preHwInitialized() will be called before HwSwitch object has been
@@ -150,21 +152,13 @@ class Platform {
    * initialized.  Platform-specific initialization that requires access to the
    * HwSwitch can be performed here.
    */
-  virtual void onHwInitialized(SwSwitch* sw) = 0;
+  virtual void onHwInitialized(HwSwitchCallback* sw) = 0;
 
   /*
-   * onInitialConfigApplied() will be called after the initial
-   * configuration has been applied.  Platform-specific initialization
-   * that needs to happen after this can be performed here.
+   * Create the handler for HwSwitch service
    */
-  virtual void onInitialConfigApplied(SwSwitch* sw) = 0;
-
-  /*
-   * Create the ThriftHandler.
-   *
-   * This will be invoked by fbossMain() during the initialization process.
-   */
-  virtual std::unique_ptr<ThriftHandler> createHandler(SwSwitch* sw) = 0;
+  virtual std::shared_ptr<apache::thrift::AsyncProcessorFactory>
+  createHandler() = 0;
 
   /*
    * Get the local MAC address for the switch.
@@ -178,79 +172,12 @@ class Platform {
   }
 
   /*
-   * Get the path to a directory where persistent state can be stored.
-   *
-   * Files written to this directory should be preserved across system reboots.
-   */
-  virtual std::string getPersistentStateDir() const = 0;
-
-  /*
-   * Get the path to a directory where volatile state can be stored.
-   *
-   * Files written to this directory should be preserved across controller
-   * restarts, but must be removed across system restarts.
-   *
-   * For instance, these files could be stored in a ramdisk.  Alternatively,
-   * these could be stored in persistent storage with an init script that
-   * empties the directory on reboot.
-   */
-  virtual std::string getVolatileStateDir() const = 0;
-
-  /*
-   * Get the directory where we will dump info when there is a crash.
-   *
-   * The directory is in persistent storage.
-   */
-  std::string getCrashInfoDir() const {
-    return getPersistentStateDir() + "/crash";
-  }
-
-  /*
-   * Directory where we store info about state updates that led to a crash
-   */
-  std::string getCrashBadStateUpdateDir() const {
-    return getCrashInfoDir() + "/bad_update";
-  }
-
-  std::string getCrashBadStateUpdateOldStateFile() const {
-    return getCrashBadStateUpdateDir() + "/old_state";
-  }
-
-  std::string getCrashBadStateUpdateNewStateFile() const {
-    return getCrashBadStateUpdateDir() + "/new_state";
-  }
-
-  /*
-   * Get location we dump the running config of the switch
-   */
-  std::string getRunningConfigDumpFile() const {
-    return getPersistentStateDir() + "/running-agent.conf";
-  }
-
-  /*
-   * Get the directory where warm boot state is stored.
-   */
-  std::string getWarmBootDir() const {
-    return getVolatileStateDir() + "/warm_boot";
-  }
-  /*
-   * Get filename for where we dump hw state on crash
-   */
-  std::string getCrashHwStateFile() const;
-  /*
-   * Get filename for where we dump switch state on crash
-   */
-  std::string getCrashSwitchStateFile() const;
-  /*
-   * Get filename for where we dump thrift switch state on crash
-   */
-  std::string getCrashThriftSwitchStateFile() const;
-  /*
    * For a specific logical port, return the transceiver and channel
    * it represents if available
    */
-  virtual TransceiverIdxThrift getPortMapping(PortID port, cfg::PortSpeed speed)
-      const = 0;
+  virtual TransceiverIdxThrift getPortMapping(
+      PortID port,
+      cfg::PortProfileID profileID) const = 0;
 
   virtual PlatformPort* getPlatformPort(PortID port) const = 0;
 
@@ -261,14 +188,16 @@ class Platform {
    */
   virtual void initPorts() = 0;
 
-  virtual QsfpCache* getQsfpCache() const = 0;
-
   virtual bool supportsAddRemovePort() const {
     return false;
   }
 
   const PlatformMapping* getPlatformMapping() const {
     return platformMapping_.get();
+  }
+
+  const AgentConfig* getConfig() const {
+    return config_.get();
   }
 
   /*
@@ -301,6 +230,34 @@ class Platform {
     return 0;
   }
   virtual HwSwitchWarmBootHelper* getWarmBootHelper() = 0;
+  virtual bool isSai() const {
+    return false;
+  }
+
+  const SwitchIdScopeResolver* scopeResolver() const {
+    return &scopeResolver_;
+  }
+
+  SwitchIdScopeResolver* scopeResolver() {
+    return &scopeResolver_;
+  }
+
+  virtual const AgentDirectoryUtil* getDirectoryUtil() const {
+    return agentDirUtil_.get();
+  }
+
+  bool hasMultipleSwitches() const {
+    return scopeResolver_.hasMultipleSwitches();
+  }
+
+  std::optional<std::string> getMultiSwitchStatsPrefix() const {
+    return hasMultipleSwitches()
+        ? std::optional<std::string>(
+              folly::to<std::string>("switch.", FLAGS_switchIndex, "."))
+        : std::optional<std::string>();
+  }
+
+  virtual void stateChanged(const StateDelta& delta) = 0;
 
  private:
   /*
@@ -312,9 +269,9 @@ class Platform {
    */
   virtual void initImpl(uint32_t hwFeaturesDesired) = 0;
   virtual void setupAsic(
-      cfg::SwitchType switchType,
       std::optional<int64_t> switchId,
-      std::optional<cfg::Range64> systemPortRange) = 0;
+      const cfg::SwitchInfo& switchInfo,
+      std::optional<HwAsic::FabricNodeRole> role) = 0;
 
   std::unique_ptr<AgentConfig> config_;
 
@@ -325,6 +282,7 @@ class Platform {
   const std::unique_ptr<PlatformProductInfo> productInfo_;
   const std::unique_ptr<PlatformMapping> platformMapping_;
   folly::MacAddress localMac_;
+  SwitchIdScopeResolver scopeResolver_;
 
   // The map of override version of TransceiverInfo.
   // This is to be used only for HwTests under test environment,
@@ -332,6 +290,7 @@ class Platform {
   // transceiver info data qsfp may returns
   std::optional<std::unordered_map<TransceiverID, TransceiverInfo>>
       overrideTransceiverInfos_;
+  std::unique_ptr<AgentDirectoryUtil> agentDirUtil_;
 };
 
 } // namespace facebook::fboss

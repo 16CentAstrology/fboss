@@ -248,7 +248,7 @@ void QsfpCache::dump() {
   auto lockedTcvrs = tcvrs_.rlock();
   for (const auto& item : *lockedTcvrs) {
     XLOG(INFO) << folly::to<std::string>(
-        item.first, " -> present=", *item.second.present());
+        item.first, " -> present=", *item.second.tcvrState()->present());
   }
 }
 
@@ -272,7 +272,7 @@ void QsfpCache::syncAllPresentTransceivers() {
         auto writableTcvrs = this->tcvrs_.wlock();
         for (auto& [id, info] : tcvrs) {
           // Only store present transceivers
-          if (*info.present()) {
+          if (*info.tcvrState()->present()) {
             writableTcvrs->emplace(TransceiverID(id), info);
           }
         }
@@ -287,7 +287,7 @@ void QsfpCache::syncAllPresentTransceivers() {
 
 AutoInitQsfpCache::AutoInitQsfpCache() {
   init(&evb_);
-  thread_.reset(new std::thread([=] { evb_.loopForever(); }));
+  thread_.reset(new std::thread([=, this] { evb_.loopForever(); }));
 }
 
 AutoInitQsfpCache::~AutoInitQsfpCache() {

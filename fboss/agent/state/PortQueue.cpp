@@ -151,7 +151,7 @@ std::string PortQueue::toString() const {
         break;
       case cfg::PortQueueRate::Type::__EMPTY__:
         // needed to handle error from -Werror=switch, fall through
-        FOLLY_FALLTHROUGH;
+        [[fallthrough]];
       default:
         type = "unknown";
         rateMin = 0;
@@ -241,6 +241,6 @@ bool PortQueue::isAqmsSame(const PortQueue* other) const {
   return isEqual(thisAqms->toThrift(), thatAqms->toThrift());
 }
 
-template class thrift_cow::ThriftStructNode<state::PortQueueFields>;
+template class thrift_cow::ThriftStructNode<PortQueueFields>;
 
 } // namespace facebook::fboss

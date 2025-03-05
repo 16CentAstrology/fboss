@@ -60,7 +60,7 @@ void checkSwHwAclMatch(
     const std::optional<std::string>& /*aclTableName*/) {
   auto bcmSwitch = static_cast<const BcmSwitch*>(hwSwitch);
 
-  auto swAcl = state->getAcl(aclName);
+  auto swAcl = state->getAcls()->getNodeIf(aclName);
   ASSERT_NE(nullptr, swAcl);
   auto hwAcl = bcmSwitch->getAclTable()->getAclIf(swAcl->getPriority());
   ASSERT_NE(nullptr, hwAcl);
@@ -102,7 +102,7 @@ bool isQualifierPresent(
     const std::string& aclName) {
   auto bcmSwitch = static_cast<const BcmSwitch*>(hwSwitch);
 
-  auto swAcl = state->getAcl(aclName);
+  auto swAcl = state->getAcls()->getNodeIf(aclName);
   auto hwAcl = bcmSwitch->getAclTable()->getAclIf(swAcl->getPriority());
 
   bcm_field_IpFrag_t hwValueIpFrag{};
@@ -264,6 +264,29 @@ uint64_t getAclInOutPackets(
     cfg::AclStage /* aclStage */,
     const std::optional<std::string>& /*aclTableName*/) {
   return getAclCounterStats(hw, statName, cfg::CounterType::PACKETS);
+}
+
+void checkSwAclSendToQueue(
+    std::shared_ptr<SwitchState> state,
+    const std::string& aclName,
+    bool sendToCPU,
+    int queueId) {
+  auto acl = state->getAcls()->getNodeIf(aclName);
+  ASSERT_TRUE(acl->getAclAction());
+  ASSERT_TRUE(acl->getAclAction()->cref<switch_state_tags::sendToQueue>());
+  ASSERT_EQ(
+      acl->getAclAction()
+          ->cref<switch_state_tags::sendToQueue>()
+          ->cref<switch_state_tags::sendToCPU>()
+          ->cref(),
+      sendToCPU);
+  ASSERT_EQ(
+      acl->getAclAction()
+          ->cref<switch_state_tags::sendToQueue>()
+          ->cref<switch_state_tags::action>()
+          ->cref<switch_config_tags::queueId>()
+          ->cref(),
+      queueId);
 }
 
 } // namespace facebook::fboss::utility

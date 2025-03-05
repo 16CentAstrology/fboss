@@ -27,12 +27,10 @@ zstd
 fatal
 fbthrift
 iproute2
-libmnl
 libusb
 libcurl
 libnl
 libsai
-OpenNSA
 re2
 python
 yaml-cpp
@@ -40,6 +38,9 @@ libyaml
 CLI11
 exprtk
 nlohmann-json
+libgpiod
+systemd
+range-v3
 
 [shipit.pathmap]
 fbcode/fboss/github = .

@@ -55,6 +55,8 @@ class QueueApiTest : public ::testing::Test {
     auto gotWredId = queueApi->getAttribute(queueId, wredId);
     SaiQueueTraits::Attributes::BufferProfileId bufferId;
     auto gotBufferId = queueApi->getAttribute(queueId, bufferId);
+    SaiQueueTraits::Attributes::EnablePfcDldr enablePfcDldr;
+    auto gotEnablePfcDldr = queueApi->getAttribute(queueId, enablePfcDldr);
     EXPECT_EQ(fs->queueManager.get(queueId).type, gotType);
     EXPECT_EQ(fs->queueManager.get(queueId).port, gotPort);
     EXPECT_EQ(fs->queueManager.get(queueId).index, gotIndex);
@@ -62,6 +64,7 @@ class QueueApiTest : public ::testing::Test {
     EXPECT_EQ(fs->queueManager.get(queueId).schedulerProfileId, gotSchedulerId);
     EXPECT_EQ(fs->queueManager.get(queueId).wredProfileId, gotWredId);
     EXPECT_EQ(fs->queueManager.get(queueId).bufferProfileId, gotBufferId);
+    EXPECT_EQ(fs->queueManager.get(queueId).enablePfcDldr, gotEnablePfcDldr);
   }
 };
 
@@ -76,12 +79,13 @@ TEST_F(QueueApiTest, createQueue) {
 TEST_F(QueueApiTest, removeQueue) {
   PortSaiId saiPortId{1};
   uint8_t queueIndex = 10;
-  uint8_t numCpuQueues = 8;
+  uint8_t numCpuQueues = 10;
+  uint8_t numCpuVoqs = 10;
   auto saiQueueId = createQueue(saiPortId, true, queueIndex);
   checkQueue(saiQueueId);
-  EXPECT_EQ(fs->queueManager.map().size(), 1 + numCpuQueues);
+  EXPECT_EQ(fs->queueManager.map().size(), 1 + numCpuQueues + numCpuVoqs);
   queueApi->remove(saiQueueId);
-  EXPECT_EQ(fs->queueManager.map().size(), numCpuQueues);
+  EXPECT_EQ(fs->queueManager.map().size(), numCpuQueues + numCpuVoqs);
 }
 
 TEST_F(QueueApiTest, setQueueAttribute) {
@@ -95,11 +99,13 @@ TEST_F(QueueApiTest, setQueueAttribute) {
   SaiQueueTraits::Attributes::BufferProfileId bufferProfileId{1};
   SaiQueueTraits::Attributes::SchedulerProfileId schedulerProfileId{1};
   SaiQueueTraits::Attributes::WredProfileId wredrProfileId{2};
+  SaiQueueTraits::Attributes::EnablePfcDldr enablePfcDldr{true};
 
   queueApi->setAttribute(saiQueueId, parentSchedulerNode);
   queueApi->setAttribute(saiQueueId, wredProfileId);
   queueApi->setAttribute(saiQueueId, bufferProfileId);
   queueApi->setAttribute(saiQueueId, schedulerProfileId);
+  queueApi->setAttribute(saiQueueId, enablePfcDldr);
 
   SaiQueueTraits::Attributes::ParentSchedulerNode parentSchedulerNodeGot =
       queueApi->getAttribute(
@@ -113,12 +119,16 @@ TEST_F(QueueApiTest, setQueueAttribute) {
   SaiQueueTraits::Attributes::SchedulerProfileId schedulerProfileIdGot =
       queueApi->getAttribute(
           saiQueueId, SaiQueueTraits::Attributes::SchedulerProfileId());
+  SaiQueueTraits::Attributes::EnablePfcDldr enablePfcDldrGot =
+      queueApi->getAttribute(
+          saiQueueId, SaiQueueTraits::Attributes::EnablePfcDldr());
 
   EXPECT_EQ(parentSchedulerNodeGot, parentSchedulerNode);
   EXPECT_EQ(wredProfileIdGot, wredProfileId);
   EXPECT_EQ(bufferProfileIdGot, bufferProfileId);
   EXPECT_EQ(schedulerProfileIdGot, schedulerProfileId);
   EXPECT_EQ(wredProfileIdGot, wredProfileId);
+  EXPECT_EQ(enablePfcDldrGot, enablePfcDldr);
 
   // Queue does not support setting type, port and index attributes post
   // creation

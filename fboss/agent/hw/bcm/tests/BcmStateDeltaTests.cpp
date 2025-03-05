@@ -99,8 +99,8 @@ namespace facebook::fboss {
 TEST_F(BcmTest, addPortFails) {
   const auto& portMap = getProgrammedState()->getPorts();
   auto highestPortIdPort = *std::max_element(
-      portMap->cbegin(),
-      portMap->cend(),
+      portMap->cbegin()->second->cbegin(),
+      portMap->cbegin()->second->cend(),
       [=](const auto& lport, const auto& rport) {
         return lport.second->getID() < rport.second->getID();
       });
@@ -109,13 +109,15 @@ TEST_F(BcmTest, addPortFails) {
   state::PortFields portFields;
   portFields.portId() = PortID(highestPortIdPort.second->getID() + 1);
   portFields.portName() = "foo";
-  newPortMap->addPort(std::make_shared<Port>(std::move(portFields)));
+  newPortMap->addNode(
+      std::make_shared<Port>(std::move(portFields)),
+      HwSwitchMatcher(std::unordered_set<SwitchID>({SwitchID(0)})));
   EXPECT_THROW(applyNewState(newState), FbossError);
 }
 
 TEST_F(BcmTest, removePortFails) {
   const auto& portMap = getProgrammedState()->getPorts();
-  auto firstPort = *portMap->cbegin();
+  auto firstPort = *portMap->cbegin()->second->cbegin();
   auto newState = getProgrammedState()->clone();
   auto newPortMap = newState->getPorts()->modify(&newState);
   newPortMap->removeNode(firstPort.second->getID());
@@ -181,17 +183,24 @@ TEST_F(BcmTest, expQosMapForPort) {
 TEST_F(BcmTest, validInterfaceConfig) {
   if (!getHwSwitch()->getPlatform()->getAsic()->isSupported(
           HwAsic::Feature::INGRESS_L3_INTERFACE)) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto cfg = utility::oneL3IntfTwoPortConfig(
-      getHwSwitch(), masterLogicalPortIds()[0], masterLogicalPortIds()[1]);
+      getHwSwitch()->getPlatform()->getPlatformMapping(),
+      getHwSwitch()->getPlatform()->getAsic(),
+      masterLogicalPortIds()[0],
+      masterLogicalPortIds()[1],
+      getHwSwitch()->getPlatform()->supportsAddRemovePort());
   auto oldState = applyNewConfig(cfg);
   // move a port to default vlan
   auto portCfg = utility::findCfgPort(cfg, masterLogicalPortIds()[1]);
-  portCfg->ingressVlan() = utility::kDefaultVlanId;
+  portCfg->ingressVlan() = utility::kDefaultVlanId4094;
   cfg.interfaces()->resize(2);
-  cfg.interfaces()[1].intfID() = utility::kDefaultVlanId;
-  cfg.interfaces()[1].vlanID() = utility::kDefaultVlanId;
+  cfg.interfaces()[1].intfID() = utility::kDefaultVlanId4094;
+  cfg.interfaces()[1].vlanID() = utility::kDefaultVlanId4094;
   cfg.interfaces()[1].routerID() = 0;
   cfg.interfaces()[1].ipAddresses()->resize(2);
   cfg.interfaces()[1].ipAddresses()[0] = "2.2.2.2/24";

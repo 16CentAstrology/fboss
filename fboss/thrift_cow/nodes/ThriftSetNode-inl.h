@@ -12,9 +12,9 @@
 
 #include <fatal/container/tuple.h>
 #include <folly/Conv.h>
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
+#include <thrift/lib/cpp2/folly_dynamic/folly_dynamic.h>
 #include <thrift/lib/cpp2/protocol/detail/protocol_methods.h>
-#include <thrift/lib/cpp2/reflection/folly_dynamic.h>
 #include <thrift/lib/cpp2/reflection/reflection.h>
 #include "fboss/agent/state/NodeBase-defs.h"
 #include "fboss/thrift_cow/nodes/Serializer.h"
@@ -37,29 +37,31 @@ struct ExtractTypeClass<apache::thrift::type_class::set<ValueTypeClass>> {
 } // namespace set_helpers
 
 template <typename TypeClass, typename TType>
-struct ThriftSetFields {
+struct ThriftSetFields : public FieldBaseType {
   using Self = ThriftSetFields<TypeClass, TType>;
   using CowType = FieldsType;
   using ThriftType = TType;
   using ValueTypeClass =
       typename set_helpers::ExtractTypeClass<TypeClass>::type;
   using ValueTType = typename TType::value_type;
-
+  using key_type = typename TType::key_type;
   using ValueTraits = ConvertToImmutableNodeTraits<ValueTypeClass, ValueTType>;
   using value_type = typename ValueTraits::type;
   using StorageType = std::unordered_set<value_type>;
   using iterator = typename StorageType::iterator;
   using const_iterator = typename StorageType::const_iterator;
+  using Tag = apache::thrift::type::set<
+      apache::thrift::type::infer_tag<ValueTType, true /* GuessStringTag */>>;
 
   // constructors:
   // One takes a thrift type directly, one starts with empty vector
 
   ThriftSetFields() {}
 
-  template <
-      typename T,
-      typename = std::enable_if_t<std::is_same<std::decay_t<T>, TType>::value>>
-  explicit ThriftSetFields(T&& thrift) {
+  template <typename T>
+  explicit ThriftSetFields(T&& thrift)
+    requires(std::is_same_v<std::decay_t<T>, TType>)
+  {
     fromThrift(std::forward<T>(thrift));
   }
 
@@ -72,10 +74,10 @@ struct ThriftSetFields {
     return thrift;
   }
 
-  template <
-      typename T,
-      typename = std::enable_if_t<std::is_same<std::decay_t<T>, TType>::value>>
-  void fromThrift(T&& thrift) {
+  template <typename T>
+  void fromThrift(T&& thrift)
+    requires(std::is_same_v<std::decay_t<T>, TType>)
+  {
     storage_.clear();
     for (const auto& elem : thrift) {
       emplace(elem);
@@ -86,15 +88,15 @@ struct ThriftSetFields {
 
   folly::dynamic toDynamic() const {
     folly::dynamic out;
-    apache::thrift::to_dynamic<TypeClass>(
-        out, toThrift(), apache::thrift::dynamic_format::JSON_1);
+    facebook::thrift::to_dynamic<Tag>(
+        out, toThrift(), facebook::thrift::dynamic_format::JSON_1);
     return out;
   }
 
   void fromDynamic(const folly::dynamic& value) {
     TType thrift;
-    apache::thrift::from_dynamic<TypeClass>(
-        thrift, value, apache::thrift::dynamic_format::JSON_1);
+    facebook::thrift::from_dynamic<Tag>(
+        thrift, value, facebook::thrift::dynamic_format::JSON_1);
     fromThrift(thrift);
   }
 
@@ -104,8 +106,16 @@ struct ThriftSetFields {
     return serialize<TypeClass>(proto, toThrift());
   }
 
+  folly::IOBuf encodeBuf(fsdb::OperProtocol proto) const {
+    return serializeBuf<TypeClass>(proto, toThrift());
+  }
+
   void fromEncoded(fsdb::OperProtocol proto, const folly::fbstring& encoded) {
     fromThrift(deserialize<TypeClass, TType>(proto, encoded));
+  }
+
+  void fromEncodedBuf(fsdb::OperProtocol proto, folly::IOBuf&& encoded) {
+    fromThrift(deserializeBuf<TypeClass, TType>(proto, std::move(encoded)));
   }
 
   template <typename... Args>
@@ -130,34 +140,24 @@ struct ThriftSetFields {
   }
 
   bool remove(const std::string& token) {
+    // avoid infinite recursion in case key is string
     if constexpr (std::is_same_v<
                       ValueTypeClass,
-                      apache::thrift::type_class::enumeration>) {
-      // special handling for enum keyed maps
-      ValueTType enumVal;
-      if (fatal::enum_traits<ValueTType>::try_parse(enumVal, token)) {
-        return remove(enumVal);
-      }
-    } else if constexpr (std::is_same_v<
-                             ValueTypeClass,
-                             apache::thrift::type_class::string>) {
+                      apache::thrift::type_class::string>) {
       return erase(token);
-    }
-
-    auto value = folly::tryTo<ValueTType>(token);
-    if (value.hasValue()) {
-      return remove(value.value());
+    } else if (auto key = tryParseKey<ValueTType, ValueTypeClass>(token)) {
+      return remove(key.value());
     }
 
     return false;
   }
 
   template <typename T = Self>
-  auto remove(const ValueTType& value) -> std::enable_if_t<
-      !std::is_same_v<
-          typename T::ValueTypeClass,
-          apache::thrift::type_class::string>,
-      bool> {
+  bool remove(const ValueTType& value)
+    requires(!std::is_same_v<
+             typename T::ValueTypeClass,
+             apache::thrift::type_class::string>)
+  {
     return erase(value);
   }
 
@@ -195,6 +195,10 @@ struct ThriftSetFields {
     return storage_.find(value_type{value});
   }
 
+  size_t count(const value_type& value) const {
+    return storage_.count(value);
+  }
+
   const_iterator cbegin() const {
     return storage_.cbegin();
   }
@@ -225,13 +229,16 @@ struct ThriftSetFields {
 template <typename TypeClass, typename TType>
 class ThriftSetNode : public NodeBaseT<
                           ThriftSetNode<TypeClass, TType>,
-                          ThriftSetFields<TypeClass, TType>> {
+                          ThriftSetFields<TypeClass, TType>>,
+                      public thrift_cow::Serializable {
  public:
+  using TC = TypeClass;
   using Self = ThriftSetNode<TypeClass, TType>;
   using Fields = ThriftSetFields<TypeClass, TType>;
   using ThriftType = typename Fields::ThriftType;
   using BaseT = NodeBaseT<ThriftSetNode<TypeClass, TType>, Fields>;
   using CowType = NodeType;
+  using key_type = typename Fields::key_type;
   using value_type = typename Fields::value_type;
   using ValueTType = typename Fields::ValueTType;
   using PathIter = typename std::vector<std::string>::const_iterator;
@@ -262,12 +269,13 @@ class ThriftSetNode : public NodeBaseT<
   }
 #endif
 
-  folly::fbstring encode(fsdb::OperProtocol proto) const {
-    return this->getFields()->encode(proto);
+  folly::IOBuf encodeBuf(fsdb::OperProtocol proto) const override {
+    return this->getFields()->encodeBuf(proto);
   }
 
-  void fromEncoded(fsdb::OperProtocol proto, const folly::fbstring& encoded) {
-    return this->writableFields()->fromEncoded(proto, encoded);
+  void fromEncodedBuf(fsdb::OperProtocol proto, folly::IOBuf&& encoded)
+      override {
+    return this->writableFields()->fromEncodedBuf(proto, std::move(encoded));
   }
 
   template <typename... Args>
@@ -317,7 +325,7 @@ class ThriftSetNode : public NodeBaseT<
   }
 
   typename Fields::iterator find(const value_type& value) {
-    return this->writableFields->find(value);
+    return this->writableFields()->find(value);
   }
 
   typename Fields::const_iterator find(const value_type& value) const {
@@ -332,6 +340,14 @@ class ThriftSetNode : public NodeBaseT<
     return this->getFields()->find(value_type{value});
   }
 
+  size_t count(const value_type& value) const {
+    return this->getFields()->count(value);
+  }
+
+  size_t count(const ValueTType& value) const {
+    return this->getFields()->count(value_type(value));
+  }
+
   std::size_t size() const {
     return this->getFields()->size();
   }
@@ -341,40 +357,29 @@ class ThriftSetNode : public NodeBaseT<
   }
 
   template <typename T = Fields>
-  auto remove(const ValueTType& value) -> std::enable_if_t<
-      !std::is_same_v<
-          typename T::ValueTypeClass,
-          apache::thrift::type_class::string>,
-      bool> {
+  bool remove(const ValueTType& value)
+    requires(!std::is_same_v<
+             typename T::ValueTypeClass,
+             apache::thrift::type_class::string>)
+  {
     // TODO: better handling of set<string> tc so we don't need
     // special impl remove fn
     return this->writableFields()->remove(value);
   }
 
-  void modify(const std::string& token) {
-    if constexpr (std::is_same_v<
-                      typename Fields::ValueTypeClass,
-                      apache::thrift::type_class::enumeration>) {
-      // special handling for enum keyed maps
-      ValueTType enumVal;
-      if (fatal::enum_traits<ValueTType>::try_parse(enumVal, token)) {
-        modifyImpl(enumVal);
-        return;
-      }
-    }
-
-    auto value = folly::tryTo<ValueTType>(token);
-    if (value.hasValue()) {
-      modifyImpl(value.value());
+  void modify(const std::string& token, bool construct = true) {
+    if (auto value =
+            tryParseKey<ValueTType, typename Fields::ValueTypeClass>(token)) {
+      modifyTyped(value.value(), construct);
       return;
     }
 
     throw std::runtime_error(folly::to<std::string>("Invalid key: ", token));
   }
 
-  void modifyImpl(const ValueTType& value) {
+  virtual void modifyTyped(const ValueTType& value, bool construct = true) {
     DCHECK(!this->isPublished());
-    if (auto it = this->find(value); it == this->end()) {
+    if (construct && this->find(value) == this->end()) {
       this->emplace(value);
     }
   }
@@ -383,31 +388,6 @@ class ThriftSetNode : public NodeBaseT<
     auto newNode = ((*node)->isPublished()) ? (*node)->clone() : *node;
     newNode->modify(token);
     node->swap(newNode);
-  }
-
-  /*
-   * Visitors by string path
-   */
-
-  template <typename Func>
-  inline ThriftTraverseResult
-  visitPath(PathIter begin, PathIter end, Func&& f) {
-    return PathVisitor<TypeClass>::visit(
-        *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
-  }
-
-  template <typename Func>
-  inline ThriftTraverseResult visitPath(PathIter begin, PathIter end, Func&& f)
-      const {
-    return PathVisitor<TypeClass>::visit(
-        *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
-  }
-
-  template <typename Func>
-  inline ThriftTraverseResult cvisitPath(PathIter begin, PathIter end, Func&& f)
-      const {
-    return PathVisitor<TypeClass>::visit(
-        *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
   }
 
  private:

@@ -10,6 +10,7 @@ namespace php fboss_platform_config
 
 include "fboss/agent/hw/bcm/bcm_config.thrift"
 include "fboss/agent/hw/sai/config/asic_config.thrift"
+include "fboss/agent/hw/config/asic_config_v2.thrift"
 include "fboss/lib/phy/phy.thrift"
 include "fboss/agent/switch_config.thrift"
 include "fboss/qsfp_service/if/transceiver.thrift"
@@ -19,14 +20,23 @@ enum PlatformAttributes {
   MAC = 2,
 }
 
+enum PlatformMappingProfile {
+  DEFAULT = 0,
+  INFERENCE = 1,
+}
+
 union ChipConfig {
   1: bcm_config.BcmConfig bcm;
   2: asic_config.AsicConfig asic;
+  3: asic_config_v2.AsicConfig asicConfig;
 }
 
 struct PlatformConfig {
   1: ChipConfig chip;
   3: optional map<PlatformAttributes, string> platformSettings;
+  4: map<i16, i64> switchIndexToSwitchId;
+  5: map<i16, ChipConfig> switchIndexToChipConfigs;
+  6: map<i16, map<PlatformAttributes, string>> switchIndexToPlatformSettings;
 }
 
 struct PlatformPortEntry {
@@ -42,6 +52,8 @@ struct PlatformPortMapping {
   5: switch_config.PortType portType = switch_config.PortType.INTERFACE_PORT;
   6: optional i32 attachedCoreId;
   7: optional i32 attachedCorePortIndex;
+  8: optional i32 virtualDeviceId;
+  9: switch_config.Scope scope = switch_config.Scope.LOCAL;
 }
 
 struct PlatformPortConfig {

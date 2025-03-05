@@ -8,8 +8,21 @@
 #include <folly/logging/xlog.h>
 #include <chrono>
 #include <memory>
+#include <type_traits>
+#include <utility>
 
 namespace facebook::fboss::fsdb {
+
+template <typename PubUnit>
+std::string FsdbPublisher<PubUnit>::typeStr() {
+  if constexpr (std::is_same_v<PubUnit, OperDelta>) {
+    return "Delta";
+  } else if constexpr (std::is_same_v<PubUnit, OperState>) {
+    return "Path";
+  } else {
+    return "Patch";
+  }
+}
 
 template <typename PubUnit>
 OperPubRequest FsdbPublisher<PubUnit>::createRequest() const {
@@ -40,14 +53,17 @@ void FsdbPublisher<PubUnit>::handleStateChange(
 }
 template <typename PubUnit>
 bool FsdbPublisher<PubUnit>::write(PubUnit&& pubUnit) {
-  if (!pubUnit.metadata()) {
-    pubUnit.metadata() = OperMetadata{};
-  }
-  if (!pubUnit.metadata()->lastConfirmedAt()) {
-    auto now = std::chrono::system_clock::now();
-    pubUnit.metadata()->lastConfirmedAt() =
-        std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch())
-            .count();
+  pubUnit.metadata().ensure();
+  {
+    auto ts = std::chrono::system_clock::now().time_since_epoch();
+    if (!pubUnit.metadata()->lastConfirmedAt()) {
+      pubUnit.metadata()->lastConfirmedAt() =
+          std::chrono::duration_cast<std::chrono::seconds>(ts).count();
+    }
+    if (!pubUnit.metadata()->lastPublishedAt()) {
+      pubUnit.metadata()->lastPublishedAt() =
+          std::chrono::duration_cast<std::chrono::milliseconds>(ts).count();
+    }
   }
 #if FOLLY_HAS_COROUTINES
   auto pipeUPtr = asyncPipe_.ulock();
@@ -76,7 +92,7 @@ FsdbPublisher<PubUnit>::createGenerator() {
     {
       auto pipeRPtr = asyncPipe_.rlock();
       if (*pipeRPtr) {
-        auto pubUnit = co_await(*pipeRPtr)->first.next();
+        auto pubUnit = co_await (*pipeRPtr)->first.next();
         if (!pubUnit) {
           continue;
         }
@@ -94,7 +110,35 @@ FsdbPublisher<PubUnit>::createGenerator() {
 }
 #endif
 
+template <typename PubUnit>
+bool FsdbPublisher<PubUnit>::disconnectForGR() {
+#if FOLLY_HAS_COROUTINES
+  // Mark the client as cancelling gracefully, and let the service loop know
+  // that it should send GR disconnect.
+  auto baton = folly::Baton<>();
+  setGracefulServiceLoopCompletion([&baton]() { baton.post(); });
+  // To inform the service loop, we will send an empty PubUnit to the pipe
+  // as we can't write anything other than PubUnit to the pipe.
+  {
+    auto pipeUPtr = asyncPipe_.ulock();
+    if (!(*pipeUPtr)) {
+      XLOG(ERR) << "asyncPipe_.ulock() failed, nullptr";
+      return false;
+    }
+    PubUnit emptyPubUnit;
+    if (!(*pipeUPtr)->second.try_write(std::move(emptyPubUnit))) {
+      XLOG(DBG2) << "pipe.try_write() failed, can ignore failure";
+    }
+  }
+  // wait for the service loop to complete, and then cancel the client
+  baton.wait();
+  cancel();
+#endif
+  return true;
+}
+
 template class FsdbPublisher<OperDelta>;
 template class FsdbPublisher<OperState>;
+template class FsdbPublisher<Patch>;
 
 } // namespace facebook::fboss::fsdb

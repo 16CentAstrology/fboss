@@ -13,6 +13,7 @@
 #include <type_traits> // To use 'std::integral_constant'.
 
 #include <boost/container/flat_map.hpp>
+#include <boost/filesystem/path.hpp>
 #include <boost/iterator/filter_iterator.hpp>
 
 #include <folly/FileUtil.h>
@@ -23,25 +24,74 @@
 #include <folly/Range.h>
 #include <folly/lang/Bits.h>
 #include <folly/logging/xlog.h>
+#include "fboss/agent/HwSwitchMatcher.h"
 
 #include <thrift/lib/cpp2/protocol/BinaryProtocol.h>
 
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
+#include "fboss/agent/state/DsfNodeMap.h"
 #include "fboss/agent/types.h"
+#include "fboss/fsdb/if/gen-cpp2/fsdb_oper_types.h"
 
 #include <chrono>
 
 DECLARE_string(mac);
+DECLARE_uint64(egress_buffer_pool_size);
 DECLARE_uint64(ingress_egress_buffer_pool_size);
+DECLARE_bool(allow_zero_headroom_for_lossless_pg);
 namespace folly {
 struct dynamic;
 }
 
 namespace facebook::fboss {
 
+namespace cfg {
+class SwitchConfig;
+}
+
+namespace utility {
+
+inline const std::string kUdfHashDstQueuePairGroupName("dstQueuePair");
+inline const std::string kUdfAclRoceOpcodeGroupName("roceOpcode");
+inline const std::string kUdfL4UdpRocePktMatcherName("l4UdpRoce");
+inline const std::string kUdfAclRoceOpcodeName("udf-roce-ack");
+inline const std::string kUdfAclRoceOpcodeStats("udf-roce-ack-stats");
+inline const int kUdfHashDstQueuePairStartOffsetInBytes(13);
+inline const int kUdfAclRoceOpcodeStartOffsetInBytes(8);
+inline const int kUdfHashDstQueuePairFieldSizeInBytes(3);
+inline const int kUdfAclRoceOpcodeFieldSizeInBytes(1);
+inline const int kUdfL4DstPort(4791);
+inline const int kRandomUdfL4SrcPort(62946);
+inline const int kUdfRoceOpcodeAck(17);
+inline const signed char kUdfRoceOpcodeMask(0xFF);
+inline const int kUdfRoceOpcodeWriteImmediate(11);
+inline const std::string kRoceUdfFlowletGroupName("roceUdfFlowlet");
+inline const int kRoceUdfFlowletStartOffsetInBytes(16);
+inline const int kRoceUdfFlowletFieldSizeInBytes(1);
+inline const int kRoceReserved(0x40); // offset 16
+inline const std::string kFlowletAclName("test-udf-flowlet_acl");
+inline const std::string kFlowletAclCounterName("test-udf-flowlet-acl-stats");
+inline const std::string kUdfAclAethNakGroupName("aethNak");
+inline const int kUdfAclAethNakStartOffsetInBytes(20);
+inline const int kUdfAclAethNakFieldSizeInBytes(1);
+inline const int kAethSyndromeWithNak(0x60);
+inline const std::string kUdfAclRethWrImmZeroGroupName("wrImmZero");
+// DMA length is 4 bytes. Typical length is less than 4K, so last 2 bytes match
+// is enough to save on ACL table TCAM
+inline const int kUdfAclRethDmaLenOffsetInBytes(34);
+inline const int kUdfAclRethDmaLenFieldSizeInBytes(2);
+} // namespace utility
+
 class SwitchState;
 class Interface;
+class SwitchSettings;
+class PlatformMapping;
+struct AgentConfig;
+class HwAsic;
+class HwSwitchFb303Stats;
+
+constexpr auto kRecyclePortIdOffset = 1;
 
 template <typename T>
 inline T readBuffer(const uint8_t* buffer, uint32_t pos, size_t buffSize) {
@@ -134,6 +184,7 @@ std::vector<ClientID> AllClientIDs();
  * Report our hostname
  */
 std::string getLocalHostname();
+std::string getLocalHostnameUqdn();
 
 void initThread(folly::StringPiece name);
 
@@ -191,17 +242,68 @@ bool isAnyInterfacePortInLoopbackMode(
     std::shared_ptr<SwitchState> swState,
     const std::shared_ptr<Interface> interface);
 
+bool isAnyInterfacePortRecyclePort(
+    std::shared_ptr<SwitchState> swState,
+    const std::shared_ptr<Interface> interface);
+
 PortID getPortID(
     SystemPortID sysPortId,
     const std::shared_ptr<SwitchState>& state);
 
 SystemPortID getSystemPortID(
     const PortID& portId,
-    const std::shared_ptr<SwitchState>& state);
+    cfg::Scope portScope,
+    const std::map<int64_t, cfg::SwitchInfo>& switchToSwitchInfo,
+    SwitchID switchId);
+
+SystemPortID getSystemPortID(
+    const PortID& portId,
+    const std::shared_ptr<SwitchState>& state,
+    SwitchID switchId);
+
+SystemPortID getInbandSystemPortID(
+    const std::shared_ptr<SwitchState>& state,
+    SwitchID switchId);
+
+SystemPortID getInbandSystemPortID(
+    const std::map<int64_t, cfg::SwitchInfo>& switchToSwitchInfo,
+    SwitchID switchId);
+
+cfg::Range64 getFirstSwitchSystemPortIdRange(
+    const std::map<int64_t, cfg::SwitchInfo>& switchToSwitchInfo);
+
+cfg::Range64 getCoveringSysPortRange(
+    InterfaceID intf,
+    const std::map<int64_t, cfg::SwitchInfo>& switchIdToSwitchInfo);
+
+cfg::Range64 getCoveringSysPortRange(
+    SystemPortID intf,
+    const std::map<int64_t, cfg::SwitchInfo>& switchIdToSwitchInfo);
 
 std::vector<PortID> getPortsForInterface(
     InterfaceID intf,
     const std::shared_ptr<SwitchState>& state);
+
+/*
+ * An NPU switch injects a broadcast message such as neighbor solicitation or
+ * advertisement via pipeline lookup. ASIC forwards these messages to all the
+ * ports in the broadcast domain viz. same VLAN.
+ *
+ * A VOQ switch does not use VLANs. If a broadcast message such as neighbor
+ * solicitation or advertisement is injected via pipeline lookup, ASIC would
+ * not know which port(s) to send it out on, and thus would drop the packet.
+ * Thus, for VOQ switch:
+ *  - determine the interface for the given IP address
+ *  - compute corresponding system port ID
+ *  - get corresponding portID
+ *
+ * This helper function takes the ipAddress as argument and returns
+ * PortDescriptor for the systemPort to send otu the packet with pipeline
+ * bypass on.
+ */
+std::optional<PortID> getInterfacePortToReach(
+    const std::shared_ptr<SwitchState>& state,
+    const folly::IPAddress& ipAddr);
 
 class StopWatch {
  public:
@@ -232,6 +334,8 @@ template <typename ThriftT>
 bool dumpBinaryThriftToFile(
     const std::string& filename,
     const ThriftT& thrift) {
+  // create parent path if doesn't exist
+  utilCreateDir(boost::filesystem::path(filename).parent_path().string());
   apache::thrift::BinaryProtocolWriter writer;
   folly::IOBufQueue queue;
   writer.setOutput(&queue);
@@ -262,5 +366,101 @@ bool readThriftFromBinaryFile(
   }
   return false;
 }
+/*
+ * Helper function to get neighbor entry for specified IP.
+ *
+ * for VLAN based interface, look up the neighbor table for VLAN.
+ * for Port based interface, look up the neighbor table for interface.
+ */
+template <typename NeighborEntryT>
+std::shared_ptr<NeighborEntryT> getNeighborEntryForIP(
+    const std::shared_ptr<SwitchState>& state,
+    const std::shared_ptr<Interface>& intf,
+    const folly::IPAddress& ipAddr,
+    bool use_intf_nbr_tables);
 
+template <typename NeighborEntryT>
+std::shared_ptr<NeighborEntryT> getNeighborEntryForIPAndIntf(
+    const std::shared_ptr<Interface>& intf,
+    const folly::IPAddress& ipAddr);
+
+template <typename VlanOrIntfT>
+std::optional<VlanID> getVlanIDFromVlanOrIntf(
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf);
+
+template <typename NTableT>
+std::shared_ptr<NTableT> getNeighborTableForVlan(
+    const std::shared_ptr<SwitchState>& state,
+    VlanID vlanID,
+    bool use_intf_nbr_tables);
+
+class OperDeltaFilter {
+ public:
+  explicit OperDeltaFilter(SwitchID switchId);
+  std::optional<fsdb::OperDelta> filterWithSwitchStateRootPath(
+      const fsdb::OperDelta& delta) const {
+    return filter(delta, 1);
+  }
+
+  std::optional<fsdb::OperDelta> filter(const fsdb::OperDelta& delta, int index)
+      const;
+
+ private:
+  SwitchID switchId_;
+  mutable std::map<std::string, HwSwitchMatcher> matchersCache_;
+};
+
+AdminDistance getAdminDistanceForClientId(
+    const cfg::SwitchConfig& config,
+    int clientId);
+
+size_t getNumActiveFabricPorts(
+    const std::shared_ptr<SwitchState>& state,
+    const HwSwitchMatcher& matcher);
+
+bool isSwitchErrorFirmwareIsolate(
+    const std::optional<uint32_t>& numActiveFabricPortsAtFwIsolate,
+    const std::shared_ptr<SwitchSettings>& switchSettings);
+
+cfg::SwitchDrainState computeActualSwitchDrainState(
+    const std::shared_ptr<SwitchSettings>& switchSettings,
+    int numActiveFabricPorts);
+
+uint64_t getMacOui(const folly::MacAddress macAddress);
+
+std::unordered_map<SwitchID, SwitchIndex> computeSwitchIdToSwitchIndex(
+    const std::shared_ptr<MultiSwitchDsfNodeMap>& dsfNodeMap);
+
+std::set<SwitchID> getAllSwitchIDsForSwitch(
+    const std::shared_ptr<MultiSwitchDsfNodeMap>& dsfNodeMap,
+    const SwitchID& switchID);
+
+uint32_t getRemotePortOffset(const PlatformType platformType);
+
+std::string runShellCmd(const std::string& cmd);
+
+InterfaceID getInbandPortIntfID(
+    const std::shared_ptr<SwitchState>& state,
+    const SwitchID& switchId);
+
+std::pair<std::string, std::string> getExpectedNeighborAndPortName(
+    const cfg::Port& port);
+
+const facebook::fboss::PlatformMapping* FOLLY_NULLABLE
+getPlatformMappingForPlatformType(
+    const facebook::fboss::PlatformType platformType);
+
+int getRemoteSwitchID(
+    const cfg::SwitchConfig* cfg,
+    const cfg::Port& port,
+    const std::unordered_map<std::string, std::vector<uint32_t>>&
+        switchNameToSwitchIds);
+
+CpuCosQueueId hwQueueIdToCpuCosQueueId(
+    uint8_t hwQueueId,
+    const HwAsic* asic,
+    HwSwitchFb303Stats* hwswitchStats);
+int numFabricLevels(const std::map<int64_t, cfg::DsfNode>& dsfNodes);
+
+const std::vector<cfg::AclLookupClass>& getToCpuClassIds();
 } // namespace facebook::fboss

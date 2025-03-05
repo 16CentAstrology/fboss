@@ -1,26 +1,23 @@
 // Copyright 2021-present Facebook. All Rights Reserved.
 
-// Handler class is the interface between FanService and Thrift call handlers
+// Handler class handles Fan Service thrift calls.
 #pragma once
-#include <folly/futures/Future.h>
-#include "common/fb303/cpp/FacebookBase2.h"
-#include "fboss/platform/fan_service/FanService.h"
 
-namespace facebook::fboss::platform {
-class FanServiceHandler
-    : public ::facebook::fb303::FacebookBase2DeprecationMigration {
+#include "fboss/platform/fan_service/ControlLogic.h"
+#include "fboss/platform/fan_service/if/gen-cpp2/FanService.h"
+
+namespace facebook::fboss::platform::fan_service {
+class FanServiceHandler : public apache::thrift::ServiceHandler<FanService> {
  public:
-  FanServiceHandler(std::unique_ptr<FanService> fanService);
-  // Make compiler happy
+  explicit FanServiceHandler(std::shared_ptr<ControlLogic> controlLogic);
+
   ~FanServiceHandler() override = default;
-  facebook::fb303::cpp2::fb_status getStatus() override;
-  // Simple functions are just implemented here.
-  FanService* getFanService() const {
-    return service_.get();
-  }
+
+  void getFanStatuses(FanStatusesResponse&) override;
+  void setPwmHold(std::unique_ptr<PwmHoldRequest> req) override;
+  void getPwmHold(PwmHoldStatus& status) override;
 
  private:
-  // Internal pointer for FanService.
-  std::unique_ptr<FanService> service_{nullptr};
+  std::shared_ptr<ControlLogic> controlLogic_{nullptr};
 };
-} // namespace facebook::fboss::platform
+} // namespace facebook::fboss::platform::fan_service

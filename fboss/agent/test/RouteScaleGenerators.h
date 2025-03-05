@@ -92,6 +92,15 @@ class AnticipatedRouteScaleGenerator : public RouteDistributionGenerator {
       RouterID routerId = RouterID(0));
 };
 
+class ScaleTestRouteScaleGenerator : public RouteDistributionGenerator {
+ public:
+  explicit ScaleTestRouteScaleGenerator(
+      const std::shared_ptr<SwitchState>& startingState,
+      unsigned int chunkSize = kDefaultChunkSize,
+      unsigned int ecmpWidth = kDefaulEcmpWidth,
+      RouterID routerId = RouterID(0));
+};
+
 class TurboFSWRouteScaleGenerator : public RouteDistributionGenerator {
  public:
   std::shared_ptr<SwitchState> resolveNextHops(
@@ -106,7 +115,7 @@ class TurboFSWRouteScaleGenerator : public RouteDistributionGenerator {
       unsigned int ecmpWidth = 64,
       RouterID routerId = RouterID(0));
 
-  bool isSupported(PlatformMode mode) const;
+  bool isSupported(PlatformType type) const;
 
  private:
   const MaskLen2PrefixLabelDistribution v6PrefixLabelDistributionSpec_;

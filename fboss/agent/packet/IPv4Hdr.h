@@ -35,7 +35,7 @@ class IPv4Hdr {
   /*
    * default constructor
    */
-  IPv4Hdr() {}
+  IPv4Hdr() = default;
   /*
    * copy constructor
    */
@@ -101,7 +101,7 @@ class IPv4Hdr {
   /*
    * destructor
    */
-  ~IPv4Hdr() {}
+  ~IPv4Hdr() = default;
   /*
    * operator=
    */
@@ -119,12 +119,15 @@ class IPv4Hdr {
     protocol = rhs.protocol;
     csum = rhs.csum;
     srcAddr = rhs.srcAddr;
-    ;
     dstAddr = rhs.dstAddr;
     return *this;
   }
 
   void computeChecksum();
+  void decrementTTL() {
+    ttl = ttl > 0 ? ttl - 1 : ttl;
+    computeChecksum();
+  }
   template <typename CursorType>
   void write(CursorType* cursor) const;
   template <typename CursorType>
@@ -144,6 +147,9 @@ class IPv4Hdr {
   uint32_t pseudoHdrPartialCsum() const;
   uint32_t pseudoHdrPartialCsum(uint32_t payloadLength) const;
 
+  void setProtocol(uint8_t proto) {
+    protocol = proto;
+  }
   /*
    * Output as a string
    */

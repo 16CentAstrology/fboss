@@ -12,11 +12,12 @@
 
 #include <fboss/agent/if/gen-cpp2/ctrl_types.h>
 #include <fboss/cli/fboss2/commands/show/transceiver/gen-cpp2/model_types.h>
-#include "fboss/agent/if/gen-cpp2/FbossCtrlAsyncClient.h"
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
 #include "fboss/cli/fboss2/CmdGlobalOptions.h"
 #include "fboss/cli/fboss2/CmdHandler.h"
 #include "fboss/cli/fboss2/commands/show/transceiver/gen-cpp2/model_types.h"
+#include "fboss/cli/fboss2/utils/CmdClientUtils.h"
+#include "fboss/cli/fboss2/utils/CmdUtils.h"
 #include "fboss/cli/fboss2/utils/Table.h"
 #include "thrift/lib/cpp2/protocol/Serializer.h"
 
@@ -43,16 +44,23 @@ class CmdShowTransceiver
   RetType queryClient(
       const HostInfo& hostInfo,
       const ObjectArgType& queriedPorts) {
-    auto qsfpService = utils::createClient<QsfpServiceAsyncClient>(hostInfo);
-    auto agent = utils::createClient<FbossCtrlAsyncClient>(hostInfo);
+    auto qsfpService =
+        utils::createClient<facebook::fboss::QsfpServiceAsyncClient>(hostInfo);
+    auto agent =
+        utils::createClient<facebook::fboss::FbossCtrlAsyncClient>(hostInfo);
 
     // TODO: explore performance improvement if we make all this parallel.
     auto portEntries = queryPortInfo(agent.get(), queriedPorts);
     auto portStatusEntries = queryPortStatus(agent.get(), portEntries);
     auto transceiverEntries =
         queryTransceiverInfo(qsfpService.get(), portStatusEntries);
-
-    return createModel(portStatusEntries, transceiverEntries, portEntries);
+    auto transceiverValidationEntries =
+        queryTransceiverValidationInfo(qsfpService.get(), portStatusEntries);
+    return createModel(
+        portStatusEntries,
+        transceiverEntries,
+        portEntries,
+        transceiverValidationEntries);
   }
 
   void printOutput(const RetType& model, std::ostream& out = std::cout) {
@@ -62,9 +70,13 @@ class CmdShowTransceiver
         {"Interface",
          "Status",
          "Present",
+         "CfgValidated",
+         "Reason",
          "Vendor",
          "Serial",
          "Part Number",
+         "FW App Version",
+         "FW DSP Version",
          "Temperature (C)",
          "Voltage (V)",
          "Current (mA)",
@@ -75,13 +87,21 @@ class CmdShowTransceiver
     for (const auto& [portId, details] : model.get_transceivers()) {
       outTable.addRow({
           details.get_name(),
-          (details.get_isUp()) ? "Up" : "Down",
+          statusToString(details.get_isUp()),
           (details.get_isPresent()) ? "Present" : "Absent",
+          details.get_validationStatus(),
+          details.get_notValidatedReason(),
           details.get_vendor(),
           details.get_serial(),
           details.get_partNumber(),
-          fmt::format("{:.2f}", details.get_temperature()),
-          fmt::format("{:.2f}", details.get_voltage()),
+          details.get_appFwVer(),
+          details.get_dspFwVer(),
+          coloredSensorValue(
+              fmt::format("{:.2f}", details.get_temperature()),
+              details.get_tempFlags()),
+          coloredSensorValue(
+              fmt::format("{:.2f}", details.get_voltage()),
+              details.get_vccFlags()),
           listToString(
               details.get_currentMA(), LOW_CURRENT_WARN, LOW_CURRENT_ERR),
           listToString(details.get_txPower(), LOW_POWER_WARN, LOW_POWER_ERR),
@@ -123,6 +143,14 @@ class CmdShowTransceiver
     return filteredPortEntries;
   }
 
+  Table::StyledCell statusToString(bool isUp) const {
+    Table::Style cellStyle = Table::Style::GOOD;
+    if (!isUp) {
+      cellStyle = Table::Style::ERROR;
+    }
+    return Table::StyledCell(isUp ? "Up" : "Down", cellStyle);
+  }
+
   Table::StyledCell listToString(
       std::vector<double> listToPrint,
       double lowWarningThreshold,
@@ -141,6 +169,16 @@ class CmdShowTransceiver
       }
     }
     return Table::StyledCell(result, cellStyle);
+  }
+
+  Table::StyledCell coloredSensorValue(std::string value, FlagLevels flags) {
+    if (flags.get_alarm().get_high() || flags.get_alarm().get_low()) {
+      return Table::StyledCell(value, Table::Style::ERROR);
+    } else if (flags.get_warn().get_high() || flags.get_warn().get_low()) {
+      return Table::StyledCell(value, Table::Style::WARN);
+    } else {
+      return Table::StyledCell(value, Table::Style::GOOD);
+    }
   }
 
   std::map<int, PortStatus> queryPortStatus(
@@ -172,34 +210,105 @@ class CmdShowTransceiver
     return transceiverEntries;
   }
 
+  std::map<int, std::string> queryTransceiverValidationInfo(
+      QsfpServiceAsyncClient* qsfpService,
+      std::map<int, PortStatus> portStatusEntries) const {
+    std::vector<int32_t> requiredTransceiverEntries;
+    for (const auto& portStatusItr : portStatusEntries) {
+      if (auto tidx = portStatusItr.second.transceiverIdx()) {
+        requiredTransceiverEntries.push_back(tidx->get_transceiverId());
+      }
+    }
+
+    std::map<int, std::string> transceiverValidationEntries;
+    try {
+      qsfpService->sync_getTransceiverConfigValidationInfo(
+          transceiverValidationEntries, requiredTransceiverEntries, false);
+    } catch (apache::thrift::TException&) {
+      std::cerr
+          << "Exception while calling getTransceiverConfigValidationInfo()."
+          << std::endl;
+    }
+    return transceiverValidationEntries;
+  }
+
+  const std::pair<std::string, std::string> getTransceiverValidationStrings(
+      std::map<int32_t, std::string>& transceiverEntries,
+      int32_t transceiverId) const {
+    if (transceiverEntries.find(transceiverId) == transceiverEntries.end()) {
+      return std::make_pair("--", "--");
+    }
+    return transceiverEntries[transceiverId] == ""
+        ? std::make_pair("Validated", "--")
+        : std::make_pair("Not Validated", transceiverEntries[transceiverId]);
+  }
+
   RetType createModel(
       std::map<int, PortStatus> portStatusEntries,
       std::map<int, TransceiverInfo> transceiverEntries,
-      std::map<int32_t, facebook::fboss::PortInfoThrift> portEntries) const {
+      std::map<int32_t, facebook::fboss::PortInfoThrift> portEntries,
+      std::map<int32_t, std::string> transceiverValidationEntries) const {
     RetType model;
 
-    // TODO: sort here?
     for (const auto& [portId, portEntry] : portStatusEntries) {
       cli::TransceiverDetail details;
       details.name() = portEntries[portId].get_name();
+      if (!portEntry.transceiverIdx().has_value()) {
+        // No transceiver information for this port. Skip printing
+        continue;
+      }
       const auto transceiverId =
           portEntry.transceiverIdx()->get_transceiverId();
       const auto& transceiver = transceiverEntries[transceiverId];
+      const auto& tcvrState = *transceiver.tcvrState();
+      const auto& tcvrStats = *transceiver.tcvrStats();
       details.isUp() = portEntry.get_up();
-      details.isPresent() = transceiver.get_present();
-      if (const auto& vendor = transceiver.vendor()) {
+      details.isPresent() = tcvrState.get_present();
+      const auto& validationStringPair = getTransceiverValidationStrings(
+          transceiverValidationEntries, transceiverId);
+      details.validationStatus() = validationStringPair.first;
+      details.notValidatedReason() = validationStringPair.second;
+      if (const auto& vendor = tcvrState.vendor()) {
         details.vendor() = vendor->get_name();
         details.serial() = vendor->get_serialNumber();
         details.partNumber() = vendor->get_partNumber();
-        details.temperature() =
-            transceiver.get_sensor()->get_temp().get_value();
-        details.voltage() = transceiver.get_sensor()->get_vcc().get_value();
+        details.temperature() = tcvrStats.get_sensor()->get_temp().get_value();
+        details.voltage() = tcvrStats.get_sensor()->get_vcc().get_value();
+        details.tempFlags() =
+            tcvrStats.get_sensor()->get_temp().flags().value_or({});
+        details.vccFlags() =
+            tcvrStats.get_sensor()->get_vcc().flags().value_or({});
 
+        if (const auto& moduleStatus = tcvrState.status()) {
+          if (const auto& fwStatus = moduleStatus->fwStatus()) {
+            details.appFwVer() = fwStatus->version().value_or("N/A");
+            details.dspFwVer() = fwStatus->dspFwVer().value_or("N/A");
+          }
+        }
         std::vector<double> current;
         std::vector<double> txPower;
         std::vector<double> rxPower;
         std::vector<double> rxSnr;
-        for (const auto& channel : transceiver.get_channels()) {
+        for (const auto& channel : tcvrStats.get_channels()) {
+          // Check if the transceiverInfo is updated to have the
+          // portNameToMediaLanes field
+          if (tcvrStats.portNameToMediaLanes().is_set()) {
+            // Need to filter out the lanes for this specific port
+            auto portToLaneMapIt = tcvrStats.portNameToMediaLanes()->find(
+                portEntries[portId].get_name());
+            // If the port in question exists in the map and if the
+            // channel number is not in the list, skip printing information
+            // about this channel
+            if (portToLaneMapIt != tcvrStats.portNameToMediaLanes()->end() &&
+                std::find(
+                    portToLaneMapIt->second.begin(),
+                    portToLaneMapIt->second.end(),
+                    channel.get_channel()) == portToLaneMapIt->second.end()) {
+              continue;
+            }
+            // If the port doesn't exist in the map, it's likely not configured
+            // yet. Display all channels in this case
+          }
           current.push_back(channel.get_sensors().get_txBias().get_value());
           txPower.push_back(channel.get_sensors().get_txPwrdBm()->get_value());
           rxPower.push_back(channel.get_sensors().get_rxPwrdBm()->get_value());
@@ -212,7 +321,8 @@ class CmdShowTransceiver
         details.rxPower() = rxPower;
         details.rxSnr() = rxSnr;
       }
-      model.transceivers()->emplace(portId, std::move(details));
+      model.transceivers()->emplace(
+          portEntries[portId].get_name(), std::move(details));
     }
 
     return model;

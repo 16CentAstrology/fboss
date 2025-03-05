@@ -53,7 +53,7 @@ class BcmError : public FbossError {
         // enum values, so we don't bother distinguishing them.
         err_(static_cast<bcm_error_t>(err)) {}
 
-  ~BcmError() throw() override {}
+  ~BcmError() noexcept override {}
 
   bcm_error_t getBcmError() const {
     return err_;
@@ -77,7 +77,7 @@ void bcmLogError(int err, Args&&... msgArgs) {
 template <typename... Args>
 void bcmCheckError(int err, Args&&... msgArgs) {
   if (BCM_FAILURE(err)) {
-    // log the error before throwing in case the throw() also has an error
+    // log the error before throwing in case the noexcept also has an error
     bcmLogError(err, std::forward<Args>(msgArgs)...);
     throw BcmError(err, std::forward<Args>(msgArgs)...);
   }

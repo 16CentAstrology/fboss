@@ -27,14 +27,11 @@ using DsfNodeMapTraits = ThriftMapNodeTraits<
 
 class DsfNodeMap : public ThriftMapNode<DsfNodeMap, DsfNodeMapTraits> {
  public:
+  using Traits = DsfNodeMapTraits;
   using BaseT = ThriftMapNode<DsfNodeMap, DsfNodeMapTraits>;
-  DsfNodeMap() {}
-  virtual ~DsfNodeMap() {}
 
-  DsfNodeMap* modify(std::shared_ptr<SwitchState>* state);
-  std::shared_ptr<DsfNode> getDsfNodeIf(SwitchID switchId) const;
-
-  void addDsfNode(const std::shared_ptr<DsfNode>& dsfNode);
+  DsfNodeMap() = default;
+  virtual ~DsfNodeMap() = default;
 
  private:
   // Inherit the constructors required for clone()
@@ -42,4 +39,36 @@ class DsfNodeMap : public ThriftMapNode<DsfNodeMap, DsfNodeMapTraits> {
   friend class CloneAllocator;
 };
 
+using MultiSwitchDsfNodeMapTypeClass = apache::thrift::type_class::
+    map<apache::thrift::type_class::string, DsfNodeMapTypeClass>;
+using MultiSwitchDsfNodeMapThriftType =
+    std::map<std::string, DsfNodeMapThriftType>;
+
+class MultiSwitchDsfNodeMap;
+
+using MultiSwitchDsfNodeMapTraits = ThriftMultiSwitchMapNodeTraits<
+    MultiSwitchDsfNodeMap,
+    MultiSwitchDsfNodeMapTypeClass,
+    MultiSwitchDsfNodeMapThriftType,
+    DsfNodeMap>;
+
+class HwSwitchMatcher;
+
+class MultiSwitchDsfNodeMap : public ThriftMultiSwitchMapNode<
+                                  MultiSwitchDsfNodeMap,
+                                  MultiSwitchDsfNodeMapTraits> {
+ public:
+  using Traits = MultiSwitchDsfNodeMapTraits;
+  using BaseT = ThriftMultiSwitchMapNode<
+      MultiSwitchDsfNodeMap,
+      MultiSwitchDsfNodeMapTraits>;
+  using BaseT::modify;
+
+  MultiSwitchDsfNodeMap* modify(std::shared_ptr<SwitchState>* state);
+
+ private:
+  // Inherit the constructors required for clone()
+  using BaseT::BaseT;
+  friend class CloneAllocator;
+};
 } // namespace facebook::fboss

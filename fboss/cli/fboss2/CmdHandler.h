@@ -9,23 +9,16 @@
  */
 #pragma once
 
-#include <CLI/CLI.hpp>
-
-#include "fboss/agent/if/gen-cpp2/FbossCtrl.h"
-
 #include "fboss/cli/fboss2/CmdArgsLists.h"
 #include "fboss/cli/fboss2/CmdSubcommands.h"
-#include "fboss/cli/fboss2/gen-cpp2/cli_types.h"
 #include "fboss/cli/fboss2/utils/AggregateUtils.h"
-#include "fboss/cli/fboss2/utils/CmdClientUtils.h"
-#include "fboss/cli/fboss2/utils/CmdUtils.h"
+#include "fboss/cli/fboss2/utils/CmdUtilsCommon.h"
 #include "fboss/cli/fboss2/utils/FilterUtils.h"
 #include "fboss/cli/fboss2/utils/HostInfo.h"
 
 #include <fmt/color.h>
 #include <fmt/format.h>
 #include <folly/logging/xlog.h>
-#include <variant>
 
 namespace facebook::fboss {
 
@@ -82,6 +75,7 @@ struct BaseCommandTraits {
   using ObjectArgType = std::monostate;
   static constexpr bool ALLOW_FILTERING = false;
   static constexpr bool ALLOW_AGGREGATION = false;
+  std::vector<utils::LocalOption> LocalOptions = {};
 };
 
 template <typename CmdTypeT, typename CmdTypeTraits>

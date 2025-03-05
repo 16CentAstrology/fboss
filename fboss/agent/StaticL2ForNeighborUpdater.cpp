@@ -10,9 +10,8 @@
 
 #include "fboss/agent/StaticL2ForNeighborUpdater.h"
 
-#include "fboss/agent/HwSwitch.h"
 #include "fboss/agent/MacTableUtils.h"
-#include "fboss/agent/VlanTableDeltaCallbackGenerator.h"
+#include "fboss/agent/NeighborTableDeltaCallbackGenerator.h"
 #include "fboss/agent/state/ArpEntry.h"
 #include "fboss/agent/state/NdpEntry.h"
 #include "fboss/agent/state/StateDelta.h"
@@ -29,10 +28,10 @@ bool isReachable(const std::shared_ptr<NeighborEntryT>& entry) {
 }
 } // namespace
 void StaticL2ForNeighborUpdater::stateUpdated(const StateDelta& stateDelta) {
-  if (!hw_->needL2EntryForNeighbor()) {
+  if (!this->needL2EntryForNeighbor()) {
     return;
   }
-  VlanTableDeltaCallbackGenerator::genCallbacks(stateDelta, *this);
+  NeighborTableDeltaCallbackGenerator::genCallbacks(stateDelta, *this);
 }
 
 template <typename NeighborEntryT>
@@ -75,7 +74,8 @@ void StaticL2ForNeighborUpdater::processChanged(
   assertNeighborEntry(*oldEntry);
   assertNeighborEntry(*newEntry);
   if ((isReachable(oldEntry) != isReachable(newEntry)) ||
-      (oldEntry->getMac() != newEntry->getMac())) {
+      (oldEntry->getMac() != newEntry->getMac()) ||
+      (oldEntry->getPort() != newEntry->getPort())) {
     XLOG(DBG2) << " Neighbor entry changed, old: " << oldEntry->str()
                << " new: " << newEntry->str();
     processRemoved<NeighborEntryT>(stateDelta.oldState(), vlan, oldEntry);

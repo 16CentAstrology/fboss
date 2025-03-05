@@ -9,39 +9,71 @@
  */
 
 #include "fboss/agent/platforms/sai/SaiBcmPlatform.h"
+#include "fboss/agent/AgentFeatures.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/platforms/common/utils/BcmYamlConfig.h"
 #include "fboss/lib/config/PlatformConfigUtils.h"
 
 #include <cstdio>
 #include <cstring>
+
+DECLARE_bool(disable_looped_fabric_ports);
+
 namespace facebook::fboss {
 
 std::string SaiBcmPlatform::getHwConfig() {
   if (getAsic()->isSupported(HwAsic::Feature::HSDK)) {
-    if (auto yamlConfig =
-            config()->thrift.platform()->chip()->get_bcm().yamlConfig()) {
+    std::string yamlConfig;
+    try {
+      yamlConfig = config()
+                       ->thrift.platform()
+                       ->chip()
+                       ->get_asicConfig()
+                       .common()
+                       ->get_yamlConfig();
+    } catch (const std::exception&) {
+      /*
+       * (TODO): Once asic config v2 is rolled out to the fleet, we
+       * should remove this fallback and always use the config v2
+       */
+      yamlConfig =
+          *(config()->thrift.platform()->chip()->get_bcm().yamlConfig());
+    }
+    if (!yamlConfig.empty()) {
       if (supportsDynamicBcmConfig()) {
         BcmYamlConfig bcmYamlConfig;
-        bcmYamlConfig.setBaseConfig(*yamlConfig);
+        bcmYamlConfig.setBaseConfig(yamlConfig);
         auto ports = config()->thrift.sw()->get_ports();
         bcmYamlConfig.modifyCoreMaps(
             getPlatformMapping()->getCorePinMapping(ports));
         return bcmYamlConfig.getConfig();
       }
-      return *yamlConfig;
+      return yamlConfig;
     }
     throw FbossError("Failed to get bcm yaml config from agent config");
   }
-  auto& cfg = *config()->thrift.platform()->chip()->get_bcm().config();
-  std::vector<std::string> nameValStrs;
-  for (const auto& entry : cfg) {
-    nameValStrs.emplace_back(
-        folly::to<std::string>(entry.first, '=', entry.second));
-    hwConfig_.emplace(std::make_pair(entry.first, entry.second));
+  try {
+    std::unordered_map<std::string, std::string> overrides;
+    if (!FLAGS_detect_wrong_fabric_connections) {
+      overrides.insert({"fabric_wrong_connectivity_protection_en", "0"});
+    }
+    auto hwConfig = getHwAsicConfig(overrides);
+    return hwConfig;
+  } catch (const FbossError&) {
+    /*
+     * (TODO): Once asic config v2 is rolled out to the fleet, we
+     * should remove this fallback and always use the config v2
+     */
+    auto& cfg = *config()->thrift.platform()->chip()->get_bcm().config();
+    std::vector<std::string> nameValStrs;
+    for (const auto& entry : cfg) {
+      nameValStrs.emplace_back(
+          folly::to<std::string>(entry.first, '=', entry.second));
+      hwConfig_.emplace(entry.first, entry.second);
+    }
+    auto hwConfig = folly::join('\n', nameValStrs);
+    return hwConfig;
   }
-  auto hwConfig = folly::join('\n', nameValStrs);
-  return hwConfig;
 }
 
 std::vector<PortID> SaiBcmPlatform::getAllPortsInGroup(PortID portID) const {
@@ -50,7 +82,7 @@ std::vector<PortID> SaiBcmPlatform::getAllPortsInGroup(PortID portID) const {
     const auto& portList =
         utility::getPlatformPortsByControllingPort(platformPorts, portID);
     for (const auto& port : portList) {
-      allPortsinGroup.push_back(PortID(*port.mapping()->id()));
+      allPortsinGroup.emplace_back(*port.mapping()->id());
     }
   }
   return allPortsinGroup;
@@ -140,55 +172,57 @@ phy::VCOFrequency SaiBcmPlatform::getPortVcoFrequency(
     phy::FecMode fec) const {
   switch (speed) {
     case cfg::PortSpeed::FOURHUNDREDG:
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case cfg::PortSpeed::TWOHUNDREDG:
       return phy::VCOFrequency::VCO_26_5625GHZ;
     case cfg::PortSpeed::HUNDREDG:
       switch (fec) {
         case phy::FecMode::RS544:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::RS544_2N:
           return phy::VCOFrequency::VCO_26_5625GHZ;
         case phy::FecMode::NONE:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::CL74:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::CL91:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::RS545:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::RS528:
           return phy::VCOFrequency::VCO_25_78125GHZ;
       }
     case cfg::PortSpeed::FIFTYG:
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case cfg::PortSpeed::FIFTYTHREEPOINTONETWOFIVEG:
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
+    case cfg::PortSpeed::HUNDREDANDSIXPOINTTWOFIVEG:
+      [[fallthrough]];
     case cfg::PortSpeed::TWENTYFIVEG:
       switch (fec) {
         case phy::FecMode::RS544:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::RS544_2N:
           return phy::VCOFrequency::VCO_26_5625GHZ;
         case phy::FecMode::NONE:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::CL74:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::CL91:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::RS545:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::RS528:
           return phy::VCOFrequency::VCO_25_78125GHZ;
       }
     case cfg::PortSpeed::FORTYG:
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case cfg::PortSpeed::TWENTYG:
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case cfg::PortSpeed::XG:
       return phy::VCOFrequency::VCO_20_625GHZ;
     case cfg::PortSpeed::GIGE:
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case cfg::PortSpeed::EIGHTHUNDREDG:
     case cfg::PortSpeed::DEFAULT:
       return phy::VCOFrequency::UNKNOWN;

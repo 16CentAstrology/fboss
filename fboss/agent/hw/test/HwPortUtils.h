@@ -44,6 +44,11 @@ void assertPortsSampleDestination(
     const HwSwitch* hw,
     const std::map<PortID, int>& port2SampleDestination);
 
+bool portsExistsInPortGroup(
+    const Platform* platform,
+    const std::vector<PortID>& allPortsInGroup,
+    cfg::PortSpeed speed);
+
 void enablePortsInPortGroup(
     cfg::SwitchConfig* config,
     cfg::PortSpeed enabledLaneSpeed,
@@ -109,9 +114,8 @@ void verifyFec(
     Platform* platform,
     const phy::ProfileSideConfig& expectedProfileConfig);
 
-cfg::PortSpeed getSpeed(cfg::PortProfileID profile);
-TransmitterTechnology getMediaType(cfg::PortProfileID profile);
+void enableSixtapProgramming();
 
-void verifyLedStatus(HwSwitchEnsemble* ensemble, PortID port, bool up);
+bool verifyLedStatus(HwSwitchEnsemble* ensemble, PortID port, bool up);
 } // namespace utility
 } // namespace facebook::fboss

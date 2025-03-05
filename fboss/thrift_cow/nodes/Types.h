@@ -10,6 +10,8 @@
 
 #pragma once
 
+#include "fboss/thrift_cow/nodes/Serializer.h"
+
 #include <functional>
 #include <memory>
 #include <optional>
@@ -41,38 +43,38 @@ struct ReferenceWrapper : std::reference_wrapper<Type> {
   using Base = std::reference_wrapper<Type>;
   using Base::Base;
 
-  template <
-      typename T = Type,
-      std::enable_if_t<!std::is_const_v<T>, bool> = true>
-  auto& operator*() {
+  template <typename T = Type>
+  auto& operator*()
+    requires(!std::is_const_v<T>)
+  {
     return *(this->get());
   }
 
-  template <
-      typename T = Type,
-      std::enable_if_t<std::is_const_v<T>, bool> = true>
-  const auto& operator*() const {
+  template <typename T = Type>
+  const auto& operator*() const
+    requires(std::is_const_v<T>)
+  {
     return std::as_const(*(this->get()));
   }
 
-  template <
-      typename T = Type,
-      std::enable_if_t<!std::is_const_v<T>, bool> = true>
-  auto* operator->() {
+  template <typename T = Type>
+  auto* operator->()
+    requires(!std::is_const_v<T>)
+  {
     return std::addressof(**this);
   }
 
-  template <
-      typename T = Type,
-      std::enable_if_t<std::is_const_v<T>, bool> = true>
-  const auto* operator->() const {
+  template <typename T = Type>
+  const auto* operator->() const
+    requires(std::is_const_v<T>)
+  {
     return std::addressof(**this);
   }
 
-  template <
-      typename T = Type,
-      std::enable_if_t<!std::is_const_v<T>, bool> = true>
-  void reset() {
+  template <typename T = Type>
+  void reset()
+    requires(!std::is_const_v<T>)
+  {
     this->get().reset();
   }
 
@@ -92,10 +94,16 @@ struct NodeType {};
 
 struct FieldsType {};
 
-template <typename TType, typename Derived>
+// used to differentiate from COW NodeType
+struct HybridNodeType {};
+
+template <typename TType, typename Derived, bool EnableHybridStorage>
 struct ThriftStructFields;
 
-template <typename TType, typename>
+template <typename TypeClass, typename TType>
+struct ThriftHybridNode;
+
+template <typename TType, typename, bool>
 class ThriftStructNode;
 
 template <typename TType>
@@ -130,6 +138,7 @@ class ThriftPrimitiveNode;
 // clang-format off
 #include "fboss/thrift_cow/nodes/ThriftPrimitiveNode-inl.h"
 #include "fboss/thrift_cow/nodes/Traits.h"
+#include "fboss/thrift_cow/nodes/ThriftHybridNode-inl.h"
 #include "fboss/thrift_cow/nodes/ThriftStructNode-inl.h"
 #include "fboss/thrift_cow/nodes/ThriftListNode-inl.h"
 #include "fboss/thrift_cow/nodes/ThriftMapNode-inl.h"

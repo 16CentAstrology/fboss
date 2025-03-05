@@ -11,6 +11,7 @@
 #pragma once
 
 #include "fboss/agent/FbossError.h"
+#include "fboss/agent/SwitchIdScopeResolver.h"
 #include "fboss/agent/hw/sai/api/SaiApiTable.h"
 #include "fboss/agent/hw/sai/fake/FakeSai.h"
 #include "fboss/agent/hw/sai/switch/ConcurrentIndices.h"
@@ -85,14 +86,14 @@ class ManagerTestBase : public ::testing::Test {
     int mtu{1500};
     TestInterface() {}
     TestInterface(int id, size_t numHosts) : id(id) {
-      if (id > 9) {
-        XLOG(FATAL) << "TestInterface doesn't support id >9";
+      if (id > 245) {
+        XLOG(FATAL) << "TestInterface doesn't support id >245";
       }
       if (numHosts > 9) {
         XLOG(FATAL) << "TestInterface doesn't support >9 attached hosts";
       }
-      routerMac = folly::MacAddress{folly::sformat("42:42:42:42:42:0{}", id)};
-      auto subnetBase = folly::sformat("10.10.1{}", id);
+      routerMac = folly::MacAddress{folly::sformat("42:42:42:42:42:{:x}", id)};
+      auto subnetBase = folly::sformat("10.10.{}", id + 10);
       routerIp = folly::IPAddress{folly::sformat("{}.0", subnetBase)};
       subnet = folly::CIDRNetwork{routerIp, 24};
       remoteHosts.resize(numHosts);
@@ -101,7 +102,7 @@ class ManagerTestBase : public ::testing::Test {
         remoteHost.ip =
             folly::IPAddress{folly::sformat("{}.{}", subnetBase, count)};
         remoteHost.mac =
-            folly::MacAddress{folly::sformat("10:10:10:10:10:0{}", count)};
+            folly::MacAddress{folly::sformat("10:10:10:10:10:{:x}", count)};
         remoteHost.port.id = id * 10 + count;
         ++count;
       }
@@ -146,7 +147,8 @@ class ManagerTestBase : public ::testing::Test {
       std::optional<sai_uint32_t> metadata = std::nullopt,
       std::optional<sai_uint32_t> encapIndex = std::nullopt,
       bool isLocal = true,
-      cfg::InterfaceType type = cfg::InterfaceType::VLAN) const;
+      cfg::InterfaceType type = cfg::InterfaceType::VLAN,
+      bool noHostRoute = false) const;
 
   std::shared_ptr<ArpEntry> resolveArp(
       int id,
@@ -154,7 +156,8 @@ class ManagerTestBase : public ::testing::Test {
       cfg::InterfaceType type = cfg::InterfaceType::VLAN,
       std::optional<sai_uint32_t> metadata = std::nullopt,
       std::optional<sai_uint32_t> encapIndex = std::nullopt,
-      bool isLocal = true);
+      bool isLocal = true,
+      bool noHostRoute = false);
 
   std::shared_ptr<ArpEntry> makeArpEntry(
       const SystemPort& sysPort,
@@ -226,7 +229,7 @@ class ManagerTestBase : public ::testing::Test {
           cfg::QueueScheduling::WEIGHTED_ROUND_ROBIN,
       uint8_t weight = 24,
       uint64_t minPps = 12000,
-      uint64_t maxPps = 60000);
+      uint64_t maxPps = 60000) const;
 
   QueueConfig makeQueueConfig(
       std::vector<uint8_t> queueIds,
@@ -235,7 +238,7 @@ class ManagerTestBase : public ::testing::Test {
           cfg::QueueScheduling::WEIGHTED_ROUND_ROBIN,
       uint8_t weight = 24,
       uint64_t minPps = 12000,
-      uint64_t maxPps = 60000);
+      uint64_t maxPps = 60000) const;
 
   std::shared_ptr<QosPolicy> makeQosPolicy(
       const std::string& name,
@@ -249,6 +252,7 @@ class ManagerTestBase : public ::testing::Test {
   SaiManagerTable* saiManagerTable{nullptr};
 
   std::array<TestInterface, 10> testInterfaces;
+  std::array<TestInterface, 10> testRemoteInterfaces;
   uint32_t setupStage{SetupStage::BLANK};
 
   void applyNewState(const std::shared_ptr<SwitchState>& newState);
@@ -256,6 +260,12 @@ class ManagerTestBase : public ::testing::Test {
   std::shared_ptr<SwitchState> programmedState;
 
   static constexpr int kSysPortOffset = 100;
+  static constexpr double kSpeedConversionFactor = 1000.;
+  static constexpr double kRateConversionFactor = 1024. * 1024. * 1024.;
+
+  const SwitchIdScopeResolver& scopeResolver() const;
+
+  std::unique_ptr<SwitchIdScopeResolver> resolver{};
 
  private:
   static constexpr uint8_t kPortQueueMax = 8;

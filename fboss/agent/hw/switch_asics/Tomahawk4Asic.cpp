@@ -35,7 +35,7 @@ bool Tomahawk4Asic::isSupported(Feature feature) const {
     case HwAsic::Feature::L3_QOS:
     case HwAsic::Feature::SCHEDULER_PPS:
     case HwAsic::Feature::NEXTHOP_TTL_DECREMENT_DISABLE:
-    case HwAsic::Feature::DEBUG_COUNTER:
+    case HwAsic::Feature::BLACKHOLE_ROUTE_DROP_COUNTER:
     case HwAsic::Feature::RESOURCE_USAGE_STATS:
     case HwAsic::Feature::HSDK:
     case HwAsic::Feature::OBJECT_KEY_CACHE:
@@ -56,7 +56,6 @@ bool Tomahawk4Asic::isSupported(Feature feature) const {
     case HwAsic::Feature::EGRESS_MIRRORING:
     case HwAsic::Feature::EGRESS_SFLOW:
     case HwAsic::Feature::DEFAULT_VLAN:
-    case HwAsic::Feature::L2_LEARNING:
     case HwAsic::Feature::SAI_ACL_ENTRY_SRC_PORT_QUALIFIER:
     case HwAsic::Feature::TRAFFIC_HASHING:
     case HwAsic::Feature::ACL_TABLE_GROUP:
@@ -91,24 +90,41 @@ bool Tomahawk4Asic::isSupported(Feature feature) const {
     case HwAsic::Feature::SAI_PORT_GET_PMD_LANES:
     case HwAsic::Feature::SAI_PORT_VCO_CHANGE:
     case HwAsic::Feature::ROUTE_METADATA:
-    case HwAsic::Feature::DLB:
+    case HwAsic::Feature::FLOWLET:
     case HwAsic::Feature::IN_PAUSE_INCREMENTS_DISCARDS:
     case HwAsic::Feature::WARMBOOT:
     case HwAsic::Feature::SAI_CONFIGURE_SIX_TAP:
     case HwAsic::Feature::UDF_HASH_FIELD_QUERY:
     case HwAsic::Feature::SAI_SAMPLEPACKET_TRAP:
-      return true;
-    // features only supported by B0 version, or any physical device
-    // where used chip is always B0.
     case HwAsic::Feature::NON_UNICAST_HASH:
     case HwAsic::Feature::WEIGHTED_NEXTHOPGROUP_MEMBER:
-      return getAsicMode() != AsicMode::ASIC_MODE_SIM || isSimB0();
+    case HwAsic::Feature::SAI_UDF_HASH:
+    case HwAsic::Feature::RX_FREQUENCY_PPM:
+    case HwAsic::Feature::SEPARATE_BYTE_AND_PACKET_ACL_COUNTER:
+    case HwAsic::Feature::FLOWLET_PORT_ATTRIBUTES:
+    case HwAsic::Feature::SAI_EAPOL_TRAP:
+    case HwAsic::Feature::L3_MTU_ERROR_TRAP:
+    case HwAsic::Feature::SAI_USER_DEFINED_TRAP:
+    case HwAsic::Feature::ACL_COUNTER_LABEL:
+    case HwAsic::Feature::ECMP_DLB_OFFSET:
+    case HwAsic::Feature::SAI_FEC_CORRECTED_BITS:
+    case HwAsic::Feature::SAI_FEC_CODEWORDS_STATS:
+    case HwAsic::Feature::SAI_PORT_SERDES_PROGRAMMING:
+    case HwAsic::Feature::PORT_WRED_COUNTER:
+    case HwAsic::Feature::ACL_METADATA_QUALIFER:
+    case HwAsic::Feature::SAI_PRBS:
+    case HwAsic::Feature::SAI_ECMP_HASH_ALGORITHM:
+    case HwAsic::Feature::ACL_BYTE_COUNTER:
+    case HwAsic::Feature::L3_INTF_MTU:
+    case HwAsic::Feature::CPU_QUEUE_WATERMARK_STATS:
+    case HwAsic::Feature::INGRESS_PRIORITY_GROUP_SHARED_WATERMARK:
+      return true;
     // features not working well with bcmsim
     case HwAsic::Feature::MIRROR_PACKET_TRUNCATION:
     case HwAsic::Feature::SFLOW_SAMPLING:
     case HwAsic::Feature::PFC:
+    case HwAsic::Feature::PFC_XON_TO_XOFF_COUNTER:
       return getAsicMode() != AsicMode::ASIC_MODE_SIM;
-    case HwAsic::Feature::HOSTTABLE_FOR_HOSTROUTES:
     case HwAsic::Feature::QCM:
     case HwAsic::Feature::SMAC_EQUALS_DMAC_CHECK_ENABLED:
     case HwAsic::Feature::PORT_TTL_DECREMENT_DISABLE:
@@ -127,7 +143,6 @@ bool Tomahawk4Asic::isSupported(Feature feature) const {
     case HwAsic::Feature::SAI_MPLS_TTL_1_TRAP:
     case HwAsic::Feature::SAI_MPLS_LABEL_LOOKUP_FAIL_COUNTER:
     case HwAsic::Feature::SAI_PORT_ERR_STATUS:
-    case HwAsic::Feature::RX_FREQUENCY_PPM:
     case HwAsic::Feature::FABRIC_PORTS:
     case HwAsic::Feature::FABRIC_PORT_MTU:
     case HwAsic::Feature::SAI_FIRMWARE_PATH:
@@ -137,7 +152,6 @@ bool Tomahawk4Asic::isSupported(Feature feature) const {
     case HwAsic::Feature::SAI_MPLS_INSEGMENT:
     case HwAsic::Feature::RESERVED_ENCAP_INDEX_RANGE:
     case HwAsic::Feature::VOQ:
-    case HwAsic::Feature::RECYCLE_PORTS:
     case HwAsic::Feature::XPHY_PORT_STATE_TOGGLE:
     case HwAsic::Feature::FABRIC_TX_QUEUES:
     case HwAsic::Feature::SAI_TTL0_PACKET_FORWARD_ENABLE:
@@ -146,6 +160,57 @@ bool Tomahawk4Asic::isSupported(Feature feature) const {
     case HwAsic::Feature::FEC_AM_LOCK_STATUS:
     case HwAsic::Feature::PCS_RX_LINK_STATUS:
     case HwAsic::Feature::TC_TO_QUEUE_QOS_MAP_ON_SYSTEM_PORT:
+    case HwAsic::Feature::PORT_FABRIC_ISOLATE:
+    case HwAsic::Feature::QUEUE_ECN_COUNTER:
+    case HwAsic::Feature::CPU_TX_VIA_RECYCLE_PORT:
+    case HwAsic::Feature::SAI_CONFIGURE_SEVEN_TAP:
+    case HwAsic::Feature::SWITCH_DROP_STATS:
+    case HwAsic::Feature::PACKET_INTEGRITY_DROP_STATS:
+    case HwAsic::Feature::RX_LANE_SQUELCH_ENABLE:
+    case HwAsic::Feature::SAI_PORT_ETHER_STATS:
+    case HwAsic::Feature::SLOW_STAT_UPDATE:
+    case HwAsic::Feature::VOQ_DELETE_COUNTER:
+    case HwAsic::Feature::DRAM_ENQUEUE_DEQUEUE_STATS:
+    case HwAsic::Feature::CREDIT_WATCHDOG:
+    case HwAsic::Feature::LINK_INACTIVE_BASED_ISOLATE:
+    case HwAsic::Feature::RX_SNR:
+    case HwAsic::Feature::MANAGEMENT_PORT:
+    case HwAsic::Feature::ANY_ACL_DROP_COUNTER:
+    case HwAsic::Feature::EGRESS_FORWARDING_DROP_COUNTER:
+    case HwAsic::Feature::ANY_TRAP_DROP_COUNTER:
+    case HwAsic::Feature::PORT_SERDES_ZERO_PREEMPHASIS:
+    case HwAsic::Feature::RCI_WATERMARK_COUNTER:
+    case HwAsic::Feature::DTL_WATERMARK_COUNTER:
+    case HwAsic::Feature::LINK_ACTIVE_INACTIVE_NOTIFY:
+    case HwAsic::Feature::PQP_ERROR_EGRESS_DROP_COUNTER:
+    case HwAsic::Feature::FABRIC_LINK_DOWN_CELL_DROP_COUNTER:
+    case HwAsic::Feature::CRC_ERROR_DETECT:
+    case HwAsic::Feature::EVENTOR_PORT_FOR_SFLOW:
+    case HwAsic::Feature::SWITCH_REACHABILITY_CHANGE_NOTIFY:
+    case HwAsic::Feature::CABLE_PROPOGATION_DELAY:
+    case HwAsic::Feature::DATA_CELL_FILTER:
+    case HwAsic::Feature::DRAM_BLOCK_TIME:
+    case HwAsic::Feature::VOQ_LATENCY_WATERMARK_BIN:
+    case HwAsic::Feature::ACL_ENTRY_ETHER_TYPE:
+    case HwAsic::Feature::EGRESS_CORE_BUFFER_WATERMARK:
+    case HwAsic::Feature::DELETED_CREDITS_STAT:
+    case HwAsic::Feature::INGRESS_PRIORITY_GROUP_DROPPED_PACKETS:
+    case HwAsic::Feature::NO_RX_REASON_TRAP:
+    case HwAsic::Feature::EGRESS_GVOQ_WATERMARK_BYTES:
+    case HwAsic::Feature::INGRESS_PRIORITY_GROUP_HEADROOM_WATERMARK:
+    case HwAsic::Feature::MULTIPLE_EGRESS_BUFFER_POOL:
+    case HwAsic::Feature::ENABLE_DELAY_DROP_CONGESTION_THRESHOLD:
+    case HwAsic::Feature::PORT_MTU_ERROR_TRAP:
+    case HwAsic::Feature::DEDICATED_CPU_BUFFER_POOL:
+    case HwAsic::Feature::EGRESS_ACL_TABLE:
+    case HwAsic::Feature::FAST_LLFC_COUNTER:
+    case HwAsic::Feature::INGRESS_SRAM_MIN_BUFFER_WATERMARK:
+    case HwAsic::Feature::FDR_FIFO_WATERMARK:
+    case HwAsic::Feature::EGRESS_CELL_ERROR_STATS:
+    case HwAsic::Feature::SAMPLE_RATE_CONFIG_PER_MIRROR:
+    case HwAsic::Feature::SFLOW_SAMPLES_PACKING:
+    case HwAsic::Feature::VENDOR_SWITCH_NOTIFICATION:
+    case HwAsic::Feature::SDK_REGISTER_DUMP:
       return false;
   }
   return false;
@@ -195,22 +260,27 @@ int Tomahawk4Asic::getNumLanesPerPhysicalPort() const {
   return 2;
 }
 
-int Tomahawk4Asic::getDefaultNumPortQueues(cfg::StreamType streamType, bool cpu)
-    const {
+int Tomahawk4Asic::getDefaultNumPortQueues(
+    cfg::StreamType streamType,
+    cfg::PortType portType) const {
   // 12 logical queues in total, same as tomahawk3
   switch (streamType) {
     case cfg::StreamType::UNICAST:
-      if (cpu) {
+      if (portType == cfg::PortType::CPU_PORT) {
         break;
       }
       return 8;
     case cfg::StreamType::MULTICAST:
-      return cpu ? 10 : 4;
+      return (portType == cfg::PortType::CPU_PORT) ? 10 : 4;
     case cfg::StreamType::ALL:
     case cfg::StreamType::FABRIC_TX:
       break;
   }
   throw FbossError(
-      "Unexpected, stream: ", streamType, " cpu: ", cpu, "combination");
+      "Unexpected, stream: ",
+      apache::thrift::util::enumNameSafe(streamType),
+      " portType: ",
+      apache::thrift::util::enumNameSafe(portType),
+      " combination");
 }
 } // namespace facebook::fboss

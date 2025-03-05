@@ -13,6 +13,20 @@ namespace fboss {
 BspPimContainer::BspPimContainer(BspPimMapping& bspPimMapping)
     : bspPimMapping_(bspPimMapping) {
   for (auto tcvrMapping : *bspPimMapping.tcvrMapping()) {
+    auto ioControllerId = *tcvrMapping.second.io()->controllerId();
+    // Create an event base and thread if not already created for this IO
+    // controller
+    if (ioToEvbThread_.find(ioControllerId) == ioToEvbThread_.end()) {
+      ioToEvbThread_[ioControllerId] = {};
+      ioToEvbThread_[ioControllerId].first =
+          std::make_unique<folly::EventBase>();
+      auto evb = ioToEvbThread_[ioControllerId].first.get();
+      ioToEvbThread_[ioControllerId].second =
+          std::make_unique<std::thread>([evb] { evb->loopForever(); });
+      XLOG(DBG3) << "Created EVB for " << ioControllerId;
+    }
+    tcvrToIOEvb_[tcvrMapping.first] =
+        ioToEvbThread_[ioControllerId].first.get();
     tcvrContainers_.emplace(
         tcvrMapping.first,
         std::make_unique<BspTransceiverContainer>(tcvrMapping.second));
@@ -34,7 +48,10 @@ BspPimContainer::BspPimContainer(BspPimMapping& bspPimMapping)
             phyMapping.second,
             phyIOControllers_[*phyMapping.second.phyIOControllerId()].get()));
   }
-  for (auto ledMapping : *bspPimMapping.ledMapping()) {
+}
+
+void BspPimContainer::createBspLedContainers() {
+  for (auto ledMapping : *bspPimMapping_.ledMapping()) {
     ledContainers_.emplace(
         ledMapping.first, std::make_unique<BspLedContainer>(ledMapping.second));
   }
@@ -63,8 +80,27 @@ const BspPhyContainer* BspPimContainer::getPhyContainerFromMdioID(
       *bspPimMapping_.pimID()));
 }
 
-const BspLedContainer* BspPimContainer::getLedContainer(int tcvrID) const {
-  return ledContainers_.at(tcvrID).get();
+const std::map<uint32_t, const BspLedContainer*>
+BspPimContainer::getLedContainer(int tcvrID) const {
+  std::map<uint32_t, const BspLedContainer*> ledContainers;
+
+  if (bspPimMapping_.tcvrMapping().value().find(tcvrID) ==
+      bspPimMapping_.tcvrMapping().value().end()) {
+    XLOG(ERR) << "Transceiver mapping could not be found for " << tcvrID;
+    return {};
+  }
+
+  for (auto tcvrLaneToLed : bspPimMapping_.tcvrMapping()
+                                .value()
+                                .at(tcvrID)
+                                .tcvrLaneToLedId()
+                                .value()) {
+    uint32_t ledId = tcvrLaneToLed.second;
+    if (ledContainers.find(ledId) == ledContainers.end()) {
+      ledContainers[ledId] = ledContainers_.at(ledId).get();
+    }
+  }
+  return ledContainers;
 }
 
 void BspPimContainer::initAllTransceivers() const {
@@ -79,12 +115,20 @@ void BspPimContainer::clearAllTransceiverReset() const {
   for (auto tcvrContainerIt = tcvrContainers_.begin();
        tcvrContainerIt != tcvrContainers_.end();
        tcvrContainerIt++) {
-    tcvrContainerIt->second->clearTransceiverReset();
+    tcvrContainerIt->second->releaseTransceiverReset();
   }
 }
 
-void BspPimContainer::triggerTcvrHardReset(int tcvrID) const {
-  getTransceiverContainer(tcvrID)->triggerTcvrHardReset();
+void BspPimContainer::initTransceiver(int tcvrID) const {
+  getTransceiverContainer(tcvrID)->initTcvr();
+}
+
+void BspPimContainer::holdTransceiverReset(int tcvrID) const {
+  getTransceiverContainer(tcvrID)->holdTransceiverReset();
+}
+
+void BspPimContainer::releaseTransceiverReset(int tcvrID) const {
+  getTransceiverContainer(tcvrID)->releaseTransceiverReset();
 }
 
 bool BspPimContainer::isTcvrPresent(int tcvrID) const {
@@ -108,6 +152,26 @@ void BspPimContainer::tcvrWrite(
 const I2cControllerStats BspPimContainer::getI2cControllerStats(
     int tcvrID) const {
   return getTransceiverContainer(tcvrID)->getI2cControllerStats();
+}
+
+void BspPimContainer::i2cTimeProfilingStart(unsigned int tcvrID) const {
+  getTransceiverContainer(tcvrID)->i2cTimeProfilingStart();
+}
+
+void BspPimContainer::i2cTimeProfilingEnd(unsigned int tcvrID) const {
+  getTransceiverContainer(tcvrID)->i2cTimeProfilingEnd();
+}
+
+std::pair<uint64_t, uint64_t> BspPimContainer::getI2cTimeProfileMsec(
+    unsigned int tcvrID) const {
+  return getTransceiverContainer(tcvrID)->getI2cTimeProfileMsec();
+}
+
+BspPimContainer::~BspPimContainer() {
+  for (auto& evb : ioToEvbThread_) {
+    evb.second.first->terminateLoopSoon();
+    evb.second.second->join();
+  }
 }
 
 } // namespace fboss

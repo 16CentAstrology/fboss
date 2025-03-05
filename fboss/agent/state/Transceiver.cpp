@@ -16,13 +16,6 @@
 
 namespace facebook::fboss {
 
-namespace {
-constexpr auto kTransceiverID = "id";
-constexpr auto kCableLength = "cableLength";
-constexpr auto kMediaInterface = "mediaInterface";
-constexpr auto kManagementInterface = "managementInterface";
-} // namespace
-
 TransceiverSpec::TransceiverSpec(TransceiverID id) {
   set<switch_state_tags::id>(id);
 }
@@ -30,13 +23,14 @@ TransceiverSpec::TransceiverSpec(TransceiverID id) {
 std::shared_ptr<TransceiverSpec> TransceiverSpec::createPresentTransceiver(
     const TransceiverInfo& tcvrInfo) {
   std::shared_ptr<TransceiverSpec> newTransceiver;
-  if (*tcvrInfo.present()) {
-    newTransceiver =
-        std::make_shared<TransceiverSpec>(TransceiverID(*tcvrInfo.port()));
-    if (tcvrInfo.cable() && tcvrInfo.cable()->length()) {
-      newTransceiver->setCableLength(*tcvrInfo.cable()->length());
+  if (*tcvrInfo.tcvrState()->present()) {
+    newTransceiver = std::make_shared<TransceiverSpec>(
+        TransceiverID(*tcvrInfo.tcvrState()->port()));
+    if (tcvrInfo.tcvrState()->cable() &&
+        tcvrInfo.tcvrState()->cable()->length()) {
+      newTransceiver->setCableLength(*tcvrInfo.tcvrState()->cable()->length());
     }
-    if (auto settings = tcvrInfo.settings();
+    if (auto settings = tcvrInfo.tcvrState()->settings();
         settings && settings->mediaInterface()) {
       if (settings->mediaInterface()->size() == 0) {
         XLOG(WARNING) << "Missing media interface, skip setting it.";
@@ -45,7 +39,8 @@ std::shared_ptr<TransceiverSpec> TransceiverSpec::createPresentTransceiver(
         newTransceiver->setMediaInterface(*interface.code());
       }
     }
-    if (auto interface = tcvrInfo.transceiverManagementInterface()) {
+    if (auto interface =
+            tcvrInfo.tcvrState()->transceiverManagementInterface()) {
       newTransceiver->setManagementInterface(*interface);
     }
   }
@@ -67,5 +62,5 @@ TransceiverSpec::toPlatformPortConfigOverrideFactor() const {
   return factor;
 }
 
-template class ThriftStructNode<TransceiverSpec, state::TransceiverSpecFields>;
+template struct ThriftStructNode<TransceiverSpec, state::TransceiverSpecFields>;
 } // namespace facebook::fboss

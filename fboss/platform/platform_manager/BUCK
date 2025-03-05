@@ -1,0 +1,262 @@
+load("@fbcode_macros//build_defs:cpp_binary.bzl", "cpp_binary")
+load("@fbcode_macros//build_defs:cpp_library.bzl", "cpp_library")
+load("@fbcode_macros//build_defs:thrift_library.bzl", "thrift_library")
+
+oncall("fboss_platform")
+
+thrift_library(
+    name = "platform_manager_config",
+    languages = [
+        "cpp2",
+        "python",
+        "py3",
+    ],
+    thrift_cpp2_options = ["json"],
+    thrift_srcs = {
+        "platform_manager_config.thrift": [],
+        "platform_manager_presence.thrift": [],
+    },
+)
+
+thrift_library(
+    name = "platform_manager_snapshot",
+    languages = [
+        "cpp2",
+        "py3",
+    ],
+    thrift_cpp2_options = ["json"],
+    thrift_srcs = {
+        "platform_manager_snapshot.thrift": [],
+    },
+)
+
+thrift_library(
+    name = "platform_manager_service",
+    languages = [
+        "cpp2",
+        "py3",
+    ],
+    thrift_cpp2_options = ["json"],
+    thrift_srcs = {"platform_manager_service.thrift": ["PlatformManagerService"]},
+    deps = [
+        ":platform_manager_config",
+        ":platform_manager_snapshot",
+        "//thrift/annotation:cpp",
+        "//thrift/annotation:thrift",
+    ],
+)
+
+cpp_library(
+    name = "config_validator",
+    srcs = [
+        "ConfigValidator.cpp",
+    ],
+    exported_deps = [
+        "fbsource//third-party/range-v3:range-v3",
+        ":i2c_misc",
+        ":platform_manager_config-cpp2-types",
+        "//folly/logging:logging",
+    ],
+    exported_external_deps = [
+        "re2",
+    ],
+)
+
+cpp_library(
+    name = "i2c_explorer",
+    srcs = [
+        "I2cExplorer.cpp",
+    ],
+    exported_deps = [
+        "fbcode//fboss/lib/i2c:i2c_ctrl",
+        "fbcode//fboss/platform/helpers:platform_utils",
+        "fbcode//folly:file_util",
+        "fbcode//folly:string",
+        "fbcode//folly/logging:logging",
+        "fbsource//third-party/fmt:fmt",
+        ":i2c_misc",
+        ":platform_manager_config-cpp2-types",
+        ":utils",
+    ],
+    exported_external_deps = [
+        "re2",
+    ],
+)
+
+cpp_library(
+    name = "pci_explorer",
+    srcs = [
+        "PciExplorer.cpp",
+    ],
+    exported_deps = [
+        ":fbiob_ioctl_h",
+        ":i2c_explorer",
+        ":platform_manager_config-cpp2-types",
+        ":utils",
+        "//fboss/platform/helpers:platform_fs_utils",
+        "//folly:file_util",
+        "//folly:string",
+        "//folly/logging:logging",
+    ],
+    exported_external_deps = [
+        "re2",
+    ],
+)
+
+cpp_library(
+    name = "device_path_resolver",
+    srcs = ["DevicePathResolver.cpp"],
+    exported_deps = [
+        ":data_store",
+        ":i2c_explorer",
+        ":pci_explorer",
+        ":platform_manager_config-cpp2-types",
+        ":utils",
+    ],
+)
+
+cpp_library(
+    name = "presence_checker",
+    srcs = ["PresenceChecker.cpp"],
+    exported_deps = [
+        ":device_path_resolver",
+        ":utils",
+        "//fboss/platform/helpers:platform_fs_utils",
+    ],
+)
+
+cpp_library(
+    name = "pkg_manager",
+    srcs = [
+        "PkgManager.cpp",
+    ],
+    exported_deps = [
+        "fbsource//third-party/range-v3:range-v3",
+        ":platform_manager_config-cpp2-types",
+        "//fb303:service_data",
+        "//fboss/platform/helpers:platform_fs_utils",
+        "//fboss/platform/helpers:platform_utils",
+        "//folly:file_util",
+        "//folly:string",
+        "//folly/logging:logging",
+        "//thrift/lib/cpp2/protocol:protocol",
+    ],
+    exported_external_deps = [
+        "re2",
+    ],
+)
+
+cpp_library(
+    name = "platform_explorer",
+    srcs = [
+        "ExplorationSummary.cpp",
+        "PlatformExplorer.cpp",
+    ],
+    exported_deps = [
+        ":data_store",
+        ":device_path_resolver",
+        ":i2c_explorer",
+        ":pci_explorer",
+        ":platform_manager_config-cpp2-types",
+        ":platform_manager_service-cpp2-types",
+        ":presence_checker",
+        ":utils",
+        "//fb303:service_data",
+        "//fboss/platform/helpers:platform_fs_utils",
+        "//fboss/platform/helpers:platform_utils",
+        "//fboss/platform/weutil:fboss_eeprom_lib",
+        "//fboss/platform/weutil:ioctl_smbus_eeprom_reader",
+        "//folly:file_util",
+        "//folly/logging:logging",
+    ],
+    exported_external_deps = [
+        "re2",
+    ],
+)
+
+cpp_library(
+    name = "utils",
+    srcs = [
+        "Utils.cpp",
+    ],
+    exported_deps = [
+        "//fboss/lib:gpiod_line",
+        "//folly/logging:logging",
+    ],
+    exported_external_deps = [
+        "re2",
+        ("libgpiod", None, "gpiod"),
+    ],
+)
+
+cpp_library(
+    name = "config_utils",
+    srcs = [
+        "ConfigUtils.cpp",
+    ],
+    exported_deps = [
+        ":config_validator",
+        ":platform_manager_config-cpp2-types",
+        "//fboss/platform/config_lib:config_lib",
+        "//fboss/platform/helpers:platform_name_lib",
+        "//folly/logging:logging",
+        "//thrift/lib/cpp2/protocol:protocol",
+    ],
+)
+
+cpp_library(
+    name = "i2c_misc",
+    headers = [
+        "I2cAddr.h",
+    ],
+    exported_deps = [
+        "fbsource//third-party/fmt:fmt",
+    ],
+    exported_external_deps = [
+        "re2",
+    ],
+)
+
+cpp_library(
+    name = "data_store",
+    srcs = ["DataStore.cpp"],
+    exported_deps = [
+        "fbsource//third-party/fmt:fmt",
+        ":platform_manager_config-cpp2-types",
+        "//folly/logging:logging",
+    ],
+)
+
+cpp_library(
+    name = "platform_manager_handler",
+    srcs = [
+        "PlatformManagerHandler.cpp",
+    ],
+    exported_deps = [
+        ":platform_explorer",
+        ":platform_manager_service-cpp2-services",
+    ],
+)
+
+cpp_binary(
+    name = "platform_manager",
+    srcs = [
+        "Main.cpp",
+    ],
+    deps = [
+        ":config_utils",
+        ":pkg_manager",
+        ":platform_manager_handler",
+        "//fb303:logging",
+        "//fb303:service_data",
+        "//fboss/platform/helpers:init",
+    ],
+    external_deps = [("systemd", None, "systemd")],
+)
+
+cpp_library(
+    name = "fbiob_ioctl_h",
+    headers = [
+        "uapi/fbiob-ioctl.h",
+    ],
+)

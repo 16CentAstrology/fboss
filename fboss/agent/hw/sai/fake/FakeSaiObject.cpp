@@ -9,10 +9,7 @@
  */
 
 #include "fboss/agent/hw/sai/api/AddressUtil.h"
-#include "fboss/agent/hw/sai/api/SaiVersion.h"
 #include "fboss/agent/hw/sai/fake/FakeSai.h"
-
-#include <folly/logging/xlog.h>
 
 sai_status_t sai_get_object_count(
     sai_object_id_t /* switch_id */,
@@ -63,6 +60,9 @@ sai_status_t sai_get_object_count(
       break;
     case SAI_OBJECT_TYPE_HOSTIF_TRAP:
       *count = fs->hostIfTrapManager.map().size();
+      break;
+    case SAI_OBJECT_TYPE_HOSTIF_USER_DEFINED_TRAP:
+      *count = fs->hostIfUserDefinedTrapManager.map().size();
       break;
     case SAI_OBJECT_TYPE_NEIGHBOR_ENTRY:
       *count = fs->neighborManager.map().size();
@@ -131,6 +131,12 @@ sai_status_t sai_get_object_count(
     case SAI_OBJECT_TYPE_ACL_COUNTER:
       *count = fs->aclCounterManager.map().size();
       break;
+    case SAI_OBJECT_TYPE_ARS:
+      *count = fs->arsManager.map().size();
+      break;
+    case SAI_OBJECT_TYPE_ARS_PROFILE:
+      *count = fs->arsProfileManager.map().size();
+      break;
     case SAI_OBJECT_TYPE_COUNTER:
       *count = fs->counterManager.map().size();
       break;
@@ -139,6 +145,12 @@ sai_status_t sai_get_object_count(
       break;
     case SAI_OBJECT_TYPE_WRED:
       *count = fs->wredManager.map().size();
+      break;
+    case SAI_OBJECT_TYPE_TAM_COLLECTOR:
+      *count = fs->tamCollectorManager.map().size();
+      break;
+    case SAI_OBJECT_TYPE_TAM_TRANSPORT:
+      *count = fs->tamTransportManager.map().size();
       break;
     case SAI_OBJECT_TYPE_TAM_REPORT:
       *count = fs->tamReportManager.map().size();
@@ -194,6 +206,15 @@ sai_status_t sai_get_object_count(
       *count = fs->systemPortManager.map().size();
       break;
     }
+    case SAI_OBJECT_TYPE_UDF:
+      *count = fs->udfManager.map().size();
+      break;
+    case SAI_OBJECT_TYPE_UDF_GROUP:
+      *count = fs->udfGroupManager.map().size();
+      break;
+    case SAI_OBJECT_TYPE_UDF_MATCH:
+      *count = fs->udfMatchManager.map().size();
+      break;
     default:
       return SAI_STATUS_INVALID_PARAMETER;
   }
@@ -432,6 +453,18 @@ sai_status_t sai_get_object_key(
       }
       break;
     }
+    case SAI_OBJECT_TYPE_ARS: {
+      for (const auto& ars : fs->arsManager.map()) {
+        object_list[i++].key.object_id = ars.second.id;
+      }
+      break;
+    }
+    case SAI_OBJECT_TYPE_ARS_PROFILE: {
+      for (const auto& arsProfile : fs->arsProfileManager.map()) {
+        object_list[i++].key.object_id = arsProfile.second.id;
+      }
+      break;
+    }
     case SAI_OBJECT_TYPE_COUNTER: {
       *count = fs->counterManager.map().size();
       for (const auto& counter : fs->counterManager.map()) {
@@ -449,6 +482,18 @@ sai_status_t sai_get_object_key(
     case SAI_OBJECT_TYPE_WRED: {
       for (const auto& wred : fs->wredManager.map()) {
         object_list[i++].key.object_id = wred.second.id;
+      }
+      break;
+    }
+    case SAI_OBJECT_TYPE_TAM_COLLECTOR: {
+      for (const auto& ob : fs->tamCollectorManager.map()) {
+        object_list[i++].key.object_id = ob.second.id;
+      }
+      break;
+    }
+    case SAI_OBJECT_TYPE_TAM_TRANSPORT: {
+      for (const auto& ob : fs->tamTransportManager.map()) {
+        object_list[i++].key.object_id = ob.second.id;
       }
       break;
     }
@@ -541,6 +586,24 @@ sai_status_t sai_get_object_key(
     case SAI_OBJECT_TYPE_SYSTEM_PORT: {
       for (const auto& s : fs->systemPortManager.map()) {
         object_list[i++].key.object_id = s.second.id;
+      }
+      break;
+    }
+    case SAI_OBJECT_TYPE_UDF: {
+      for (const auto& udf : fs->udfManager.map()) {
+        object_list[i++].key.object_id = udf.second.id;
+      }
+      break;
+    }
+    case SAI_OBJECT_TYPE_UDF_GROUP: {
+      for (const auto& udfGroup : fs->udfGroupManager.map()) {
+        object_list[i++].key.object_id = udfGroup.second.id;
+      }
+      break;
+    }
+    case SAI_OBJECT_TYPE_UDF_MATCH: {
+      for (const auto& udfMatch : fs->udfMatchManager.map()) {
+        object_list[i++].key.object_id = udfMatch.second.id;
       }
       break;
     }

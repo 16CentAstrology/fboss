@@ -12,8 +12,6 @@
 #include <folly/FileUtil.h>
 #include <folly/Singleton.h>
 
-#include <folly/logging/xlog.h>
-
 namespace {
 struct singleton_tag_type {};
 } // namespace
@@ -31,12 +29,15 @@ void FakeSai::clear() {
   fs->aclEntryManager.clear();
   fs->aclCounterManager.clear();
   fs->aclTableManager.clear();
+  fs->arsManager.clear();
+  fs->arsProfileManager.clear();
   fs->bridgeManager.clearWithMembers();
   fs->counterManager.clear();
   fs->debugCounterManager.clear();
   fs->fdbManager.clear();
   fs->hashManager.clear();
   fs->hostIfTrapManager.clear();
+  fs->hostIfUserDefinedTrapManager.clear();
   fs->hostifTrapGroupManager.clear();
   fs->inSegEntryManager.clear();
   fs->neighborManager.clear();
@@ -51,6 +52,9 @@ void FakeSai::clear() {
   fs->samplePacketManager.clear();
   fs->scheduleManager.clear();
   fs->switchManager.clear();
+  fs->udfManager.clear();
+  fs->udfGroupManager.clear();
+  fs->udfMatchManager.clear();
   fs->virtualRouteManager.clear();
   fs->vlanManager.clearWithMembers();
   fs->wredManager.clear();
@@ -58,6 +62,8 @@ void FakeSai::clear() {
   fs->tamEventManager.clear();
   fs->tamEventActionManager.clear();
   fs->tamReportManager.clear();
+  fs->tamTransportManager.clear();
+  fs->tamCollectorManager.clear();
   fs->tunnelManager.clear();
   fs->tunnelTermManager.clear();
   fs->systemPortManager.clear();
@@ -67,19 +73,34 @@ sai_object_id_t FakeSai::getCpuPort() {
   return cpuPortId;
 }
 
+sai_object_id_t FakeSai::getCpuSystemPort() {
+  return cpuSystemPortId;
+}
+
 void sai_create_cpu_port() {
   // Create the CPU port
   auto fs = FakeSai::getInstance();
   std::vector<uint32_t> cpuPortLanes{};
   uint32_t cpuPortSpeed = 0;
   sai_object_id_t portId = fs->portManager.create(cpuPortLanes, cpuPortSpeed);
+  sai_system_port_config_t config;
+  config.num_voq = 10;
+  sai_object_id_t qosToTcMapId;
+  sai_object_id_t switchId;
+  sai_object_id_t systemPortId =
+      fs->systemPortManager.create(config, switchId, true, qosToTcMapId);
   auto& port = fs->portManager.get(portId);
-  for (uint8_t queueId = 0; queueId < 8; queueId++) {
-    auto saiQueueId =
-        fs->queueManager.create(SAI_QUEUE_TYPE_ALL, portId, queueId, portId);
+  auto& systemPort = fs->systemPortManager.get(systemPortId);
+  for (uint8_t queueId = 0; queueId < 10; queueId++) {
+    auto saiQueueId = fs->queueManager.create(
+        SAI_QUEUE_TYPE_MULTICAST, portId, queueId, portId);
     port.queueIdList.push_back(saiQueueId);
+    auto saiVoqId = fs->queueManager.create(
+        SAI_QUEUE_TYPE_MULTICAST_VOQ, portId, queueId, portId);
+    systemPort.queueIdList.push_back(saiVoqId);
   }
   fs->cpuPortId = portId;
+  fs->cpuSystemPortId = systemPortId;
 }
 
 sai_status_t sai_api_initialize(
@@ -116,6 +137,15 @@ sai_status_t sai_api_query(sai_api_t sai_api_id, void** api_method_table) {
   switch (sai_api_id) {
     case SAI_API_ACL:
       facebook::fboss::populate_acl_api((sai_acl_api_t**)api_method_table);
+      res = SAI_STATUS_SUCCESS;
+      break;
+    case SAI_API_ARS:
+      facebook::fboss::populate_ars_api((sai_ars_api_t**)api_method_table);
+      res = SAI_STATUS_SUCCESS;
+      break;
+    case SAI_API_ARS_PROFILE:
+      facebook::fboss::populate_ars_profile_api(
+          (sai_ars_profile_api_t**)api_method_table);
       res = SAI_STATUS_SUCCESS;
       break;
     case SAI_API_BRIDGE:
@@ -226,6 +256,10 @@ sai_status_t sai_api_query(sai_api_t sai_api_id, void** api_method_table) {
           (sai_virtual_router_api_t**)api_method_table);
       res = SAI_STATUS_SUCCESS;
       break;
+    case SAI_API_UDF:
+      facebook::fboss::populate_udf_api((sai_udf_api_t**)api_method_table);
+      res = SAI_STATUS_SUCCESS;
+      break;
     case SAI_API_VLAN:
       facebook::fboss::populate_vlan_api((sai_vlan_api_t**)api_method_table);
       res = SAI_STATUS_SUCCESS;
@@ -269,4 +303,14 @@ sai_status_t sai_dbg_generate_dump(const char* dump_file_name) {
 sai_object_type_t sai_object_type_query(sai_object_id_t /*object_id*/) {
   // FIXME: implement this
   return SAI_OBJECT_TYPE_NEXT_HOP;
+}
+
+sai_status_t sai_object_type_get_availability(
+    sai_object_id_t /*switch_id*/,
+    sai_object_type_t /*object_type*/,
+    uint32_t /*attr_count*/,
+    const sai_attribute_t* /*attr_list*/,
+    uint64_t* count) {
+  *count = 10000;
+  return SAI_STATUS_SUCCESS;
 }

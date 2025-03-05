@@ -12,7 +12,9 @@
 #include "fboss/agent/AddressUtil.h"
 #include "fboss/agent/ApplyThriftConfig.h"
 #include "fboss/agent/FbossHwUpdateError.h"
+#include "fboss/agent/HwAsicTable.h"
 #include "fboss/agent/SwSwitch.h"
+#include "fboss/agent/SwitchIdScopeResolver.h"
 #include "fboss/agent/ThriftHandler.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/hw/mock/MockPlatform.h"
@@ -27,7 +29,6 @@
 
 #include <folly/IPAddress.h>
 #include <gtest/gtest.h>
-#include <thrift/lib/cpp/util/EnumUtils.h>
 
 using namespace facebook::fboss;
 using namespace facebook::stats;
@@ -53,6 +54,8 @@ static std::string kNhopAddrB("2401:db00:2110:3055::0002");
 static folly::MacAddress kMacAddress("01:02:03:04:05:06");
 static VlanID kVlanA(1);
 static VlanID kVlanB(55);
+static InterfaceID kInterfaceA(1);
+static InterfaceID kInterfaceB(55);
 static PortID kPortIDA(1);
 static PortID kPortIDB(11);
 
@@ -79,9 +82,12 @@ FlowEntry makeFlow(
   flowEntry.flow()->srcPort() = 100;
   flowEntry.flow()->dstPrefix() = ipPrefix(dstIp, 64);
   flowEntry.counterID() = counter;
-  flowEntry.nextHops()->resize(1);
-  flowEntry.nextHops()[0].address() = toBinaryAddress(IPAddress(nhip));
-  flowEntry.nextHops()[0].address()->ifName() = nhopAddr;
+  std::vector<NextHopThrift> nexthops;
+  NextHopThrift nexthop;
+  nexthop.address() = toBinaryAddress(IPAddress(nhip));
+  nexthop.address()->ifName() = nhopAddr;
+  nexthops.push_back(nexthop);
+  flowEntry.nexthops() = nexthops;
   return flowEntry;
 }
 } // unnamed namespace
@@ -104,7 +110,7 @@ TEST_F(ThriftTest, getInterfaceDetail) {
   // Query the two interfaces configured by testStateA()
   InterfaceDetail info;
   handler.getInterfaceDetail(info, 1);
-  EXPECT_EQ("fboss1", *info.interfaceName());
+  EXPECT_EQ("eth1/5/1", *info.interfaceName());
   EXPECT_EQ(1, *info.interfaceId());
   EXPECT_EQ(1, *info.vlanId());
   EXPECT_EQ(0, *info.routerId());
@@ -119,7 +125,7 @@ TEST_F(ThriftTest, getInterfaceDetail) {
   EXPECT_THAT(*info.address(), UnorderedElementsAreArray(expectedAddrs));
 
   handler.getInterfaceDetail(info, 55);
-  EXPECT_EQ("fboss55", *info.interfaceName());
+  EXPECT_EQ("eth1/6/1", *info.interfaceName());
   EXPECT_EQ(55, *info.interfaceId());
   EXPECT_EQ(55, *info.vlanId());
   EXPECT_EQ(0, *info.routerId());
@@ -138,12 +144,19 @@ TEST_F(ThriftTest, getInterfaceDetail) {
   EXPECT_THROW(handler.getInterfaceDetail(info, 123), FbossError);
 }
 
-template <typename SwitchTypeT>
+template <typename SwitchTypeAndEnableIntfNbrTableT>
 class ThriftTestAllSwitchTypes : public ::testing::Test {
  public:
-  static auto constexpr switchType = SwitchTypeT::switchType;
+  static auto constexpr switchType =
+      SwitchTypeAndEnableIntfNbrTableT::switchType;
+  static auto constexpr intfNbrTable =
+      SwitchTypeAndEnableIntfNbrTableT::intfNbrTable;
+  ;
   void SetUp() override {
-    auto config = testConfigA(SwitchTypeT::switchType);
+    FLAGS_intf_nbr_tables = intfNbrTable;
+    FLAGS_dsf_num_parallel_sessions_per_remote_interface_node =
+        std::numeric_limits<uint32_t>::max();
+    auto config = testConfigA(switchType);
     handle_ = createTestHandle(&config);
     sw_ = handle_->getSw();
     sw_->initialConfigApplied(std::chrono::steady_clock::now());
@@ -157,16 +170,70 @@ class ThriftTestAllSwitchTypes : public ::testing::Test {
   bool isNpu() const {
     return switchType == cfg::SwitchType::NPU;
   }
-  int interfaceIdOffset() const {
-    return isVoq()
-        ? *sw_->getState()->getSwitchSettings()->getSystemPortRange()->minimum()
-        : 0;
+  int interfaceIdBegin() const {
+    auto switchId = getSwitchIdAndType().first;
+    if (isVoq()) {
+      auto dsfNode = sw_->getState()->getDsfNodes()->getNodeIf(switchId);
+      CHECK(dsfNode->getGlobalSystemPortOffset().has_value());
+      return *dsfNode->getGlobalSystemPortOffset() + 5;
+    }
+    return 1;
+  }
+
+  std::pair<SwitchID, cfg::SwitchType> getSwitchIdAndType() const {
+    if (isNpu()) {
+      return {SwitchID(kNpuSwitchIdBegin), cfg::SwitchType::NPU};
+    } else if (isFabric()) {
+      return {SwitchID(kFabricSwitchIdBegin), cfg::SwitchType::FABRIC};
+    } else if (isVoq()) {
+      return {SwitchID(kVoqSwitchIdBegin), cfg::SwitchType::VOQ};
+    }
+    throw FbossError("Invalid switch type");
   }
   SwSwitch* sw_;
   std::unique_ptr<HwTestHandle> handle_;
 };
 
-TYPED_TEST_SUITE(ThriftTestAllSwitchTypes, SwitchTypes);
+TYPED_TEST_SUITE(ThriftTestAllSwitchTypes, SwitchTypeAndEnableIntfNbrTable);
+
+TYPED_TEST(ThriftTestAllSwitchTypes, checkSwitchId) {
+  auto switchInfoTable = this->sw_->getSwitchInfoTable();
+  auto switchIdAndType = this->getSwitchIdAndType();
+  for (const auto& type :
+       {cfg::SwitchType::NPU, cfg::SwitchType::VOQ, cfg::SwitchType::FABRIC}) {
+    if (type == switchIdAndType.second) {
+      EXPECT_EQ(
+          *switchInfoTable.getSwitchIdsOfType(switchIdAndType.second).begin(),
+          switchIdAndType.first);
+    } else {
+      EXPECT_EQ(switchInfoTable.getSwitchIdsOfType(type).size(), 0);
+    }
+  }
+  auto hwAsicTable = this->sw_->getHwAsicTable();
+  EXPECT_NE(hwAsicTable, nullptr);
+  auto hwAsic = hwAsicTable->getHwAsicIf(switchIdAndType.first);
+  EXPECT_NE(hwAsic, nullptr);
+  if (this->isVoq()) {
+    EXPECT_EQ(hwAsic->getAsicMac(), folly::MacAddress("02:00:00:00:0F:0B"));
+  }
+  if (this->isFabric() || this->isVoq()) {
+    EXPECT_EQ(
+        *(switchInfoTable.getSwitchIdToSwitchInfo()
+              .at(switchIdAndType.first)
+
+              .connectionHandle()),
+        "68:00");
+  }
+  EXPECT_EQ(SwitchID(*hwAsic->getSwitchId()), switchIdAndType.first);
+  EXPECT_EQ(hwAsic->getSwitchType(), switchIdAndType.second);
+  auto config = testConfigA(switchIdAndType.second);
+  EXPECT_EQ(
+      *(this->sw_->getScopeResolver()
+            ->scope(PortID(*(config.ports()[0].logicalID())))
+            .switchIds()
+            .begin()),
+      switchIdAndType.first);
+}
 
 TYPED_TEST(ThriftTestAllSwitchTypes, listHwObjects) {
   ThriftHandler handler(this->sw_);
@@ -183,6 +250,20 @@ TYPED_TEST(ThriftTestAllSwitchTypes, getHwDebugDump) {
   EXPECT_HW_CALL(this->sw_, dumpDebugState(testing::_)).Times(1);
   // Mock getHwDebugDump doesn't write any thing so expect FbossError
   EXPECT_THROW(handler.getHwDebugDump(out), FbossError);
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getL2Table) {
+  ThriftHandler handler(this->sw_);
+  std::string out;
+  EXPECT_HW_CALL(this->sw_, fetchL2Table(testing::_))
+      .Times(this->isNpu() ? 1 : 0);
+
+  std::vector<L2EntryThrift> l2Entries;
+  if (this->isNpu()) {
+    handler.getL2Table(l2Entries);
+  } else {
+    EXPECT_THROW(handler.getL2Table(l2Entries), FbossError);
+  }
 }
 
 TEST(ThriftEnum, assertPortSpeeds) {
@@ -215,6 +296,9 @@ TEST(ThriftEnum, assertPortSpeeds) {
         break;
       case PortSpeed::HUNDREDG:
         EXPECT_EQ(static_cast<int>(key), 100000);
+        break;
+      case PortSpeed::HUNDREDANDSIXPOINTTWOFIVEG:
+        EXPECT_EQ(static_cast<int>(key), 106250);
         break;
       case PortSpeed::TWOHUNDREDG:
         EXPECT_EQ(static_cast<int>(key), 200000);
@@ -256,8 +340,10 @@ TYPED_TEST(ThriftTestAllSwitchTypes, flushNonExistentNeighbor) {
     EXPECT_EQ(handler.flushNeighborEntry(std::move(v4Addr), 1), 0);
     EXPECT_EQ(handler.flushNeighborEntry(std::move(v6Addr), 1), 0);
   } else {
-    EXPECT_THROW(handler.flushNeighborEntry(std::move(v4Addr), 1), FbossError);
-    EXPECT_THROW(handler.flushNeighborEntry(std::move(v6Addr), 1), FbossError);
+    EXPECT_THROW(
+        handler.flushNeighborEntry(std::move(v4Addr), 1001), FbossError);
+    EXPECT_THROW(
+        handler.flushNeighborEntry(std::move(v6Addr), 1001), FbossError);
   }
 }
 
@@ -265,20 +351,81 @@ TYPED_TEST(ThriftTestAllSwitchTypes, setPortState) {
   const PortID port5{5};
   ThriftHandler handler(this->sw_);
   handler.setPortState(port5, true);
-  this->sw_->linkStateChanged(port5, true);
+  this->sw_->linkStateChanged(port5, true, cfg::PortType::INTERFACE_PORT);
   waitForStateUpdates(this->sw_);
 
-  auto port = this->sw_->getState()->getPorts()->getPortIf(port5);
+  auto port = this->sw_->getState()->getPorts()->getNodeIf(port5);
   EXPECT_TRUE(port->isUp());
   EXPECT_TRUE(port->isEnabled());
 
-  this->sw_->linkStateChanged(port5, false);
+  this->sw_->linkStateChanged(port5, false, cfg::PortType::INTERFACE_PORT);
   handler.setPortState(port5, false);
   waitForStateUpdates(this->sw_);
 
-  port = this->sw_->getState()->getPorts()->getPortIf(port5);
+  port = this->sw_->getState()->getPorts()->getNodeIf(port5);
   EXPECT_FALSE(port->isUp());
   EXPECT_FALSE(port->isEnabled());
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, setPortDrainState) {
+  const PortID port5{5};
+  auto port = this->sw_->getState()->getPorts()->getNodeIf(port5);
+  EXPECT_FALSE(port->isDrained());
+
+  ThriftHandler handler(this->sw_);
+  if (this->isFabric()) {
+    handler.setPortDrainState(port5, true);
+    waitForStateUpdates(this->sw_);
+    port = this->sw_->getState()->getPorts()->getNodeIf(port5);
+    EXPECT_TRUE(port->isDrained());
+
+    handler.setPortDrainState(port5, false);
+    waitForStateUpdates(this->sw_);
+    port = this->sw_->getState()->getPorts()->getNodeIf(port5);
+    EXPECT_FALSE(port->isDrained());
+  } else {
+    EXPECT_THROW(handler.setPortDrainState(port5, true), FbossError);
+    EXPECT_THROW(handler.setPortDrainState(port5, false), FbossError);
+  }
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getPortStatus) {
+  const PortID port5{5};
+  auto port = this->sw_->getState()->getPorts()->getNodeIf(port5);
+  ThriftHandler handler(this->sw_);
+
+  std::map<int32_t, PortStatus> statusMap;
+  std::vector<int> ports{5};
+  handler.getPortStatus(statusMap, std::make_unique<std::vector<int>>(ports));
+  auto portStatus = statusMap.find(5);
+  EXPECT_FALSE(*portStatus->second.drained());
+
+  if (this->isFabric()) {
+    handler.setPortDrainState(port5, true);
+    waitForStateUpdates(this->sw_);
+    handler.getPortStatus(statusMap, std::make_unique<std::vector<int>>(ports));
+    portStatus = statusMap.find(5);
+    EXPECT_TRUE(*portStatus->second.drained());
+  }
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getSetSwitchDrainState) {
+  ThriftHandler handler(this->sw_);
+  auto switchDrainFn =
+      [this](const shared_ptr<SwitchState>& state) -> shared_ptr<SwitchState> {
+    shared_ptr<SwitchState> newState{state};
+    auto oldSwitchSettings =
+        utility::getFirstNodeIf(state->getSwitchSettings());
+    auto newSwitchSettings = oldSwitchSettings->modify(&newState);
+    newSwitchSettings->setSwitchDrainState(cfg::SwitchDrainState::DRAINED);
+    return newState;
+  };
+
+  if (this->isFabric()) {
+    EXPECT_FALSE(handler.isSwitchDrained());
+    this->sw_->updateStateBlocking("Switch drain", switchDrainFn);
+    EXPECT_TRUE(handler.isSwitchDrained());
+  }
 }
 
 TYPED_TEST(ThriftTestAllSwitchTypes, getAndSetNeighborsToBlock) {
@@ -306,10 +453,10 @@ TYPED_TEST(ThriftTestAllSwitchTypes, getAndSetNeighborsToBlock) {
         }
         waitForStateUpdates(handler.getSw());
 
-        auto gotBlockedNeighbors = handler.getSw()
-                                       ->getState()
-                                       ->getSwitchSettings()
-                                       ->getBlockNeighbors_DEPRECATED();
+        auto gotBlockedNeighbors =
+            utility::getFirstNodeIf(
+                handler.getSw()->getState()->getSwitchSettings())
+                ->getBlockNeighbors_DEPRECATED();
 
         std::vector<cfg::Neighbor> gotBlockedNeighborsViaThrift;
         handler.getBlockedNeighbors(gotBlockedNeighborsViaThrift);
@@ -350,8 +497,7 @@ TYPED_TEST(ThriftTestAllSwitchTypes, getAndSetNeighborsToBlock) {
   setNeighborsToBlock({});
   EXPECT_EQ(
       0,
-      this->sw_->getState()
-          ->getSwitchSettings()
+      utility::getFirstNodeIf(this->sw_->getState()->getSwitchSettings())
           ->getBlockNeighbors_DEPRECATED()
           .size());
   handler.getBlockedNeighbors(blockedNeighbors);
@@ -361,8 +507,7 @@ TYPED_TEST(ThriftTestAllSwitchTypes, getAndSetNeighborsToBlock) {
   setNeighborsToBlock(std::move(neighborsToBlock));
   EXPECT_EQ(
       0,
-      this->sw_->getState()
-          ->getSwitchSettings()
+      utility::getFirstNodeIf(this->sw_->getState()->getSwitchSettings())
           ->getBlockNeighbors_DEPRECATED()
           .size());
   handler.getBlockedNeighbors(blockedNeighbors);
@@ -385,9 +530,13 @@ TYPED_TEST(ThriftTestAllSwitchTypes, getAndSetNeighborsToBlock) {
 TYPED_TEST(ThriftTestAllSwitchTypes, getDsfNodes) {
   ThriftHandler handler(this->sw_);
   std::map<int64_t, cfg::DsfNode> dsfNodes;
-  handler.getDsfNodes(dsfNodes);
-  auto expected = this->isNpu() ? 0 : 2;
-  EXPECT_EQ(dsfNodes.size(), expected);
+  if (this->isNpu()) {
+    EXPECT_THROW(handler.getDsfNodes(dsfNodes), FbossError);
+  } else {
+    handler.getDsfNodes(dsfNodes);
+    EXPECT_EQ(
+        dsfNodes.size(), this->sw_->getState()->getDsfNodes()->numNodes());
+  }
 }
 
 TYPED_TEST(ThriftTestAllSwitchTypes, getSysPorts) {
@@ -398,14 +547,533 @@ TYPED_TEST(ThriftTestAllSwitchTypes, getSysPorts) {
     EXPECT_GT(sysPorts.size(), 1);
     EXPECT_EQ(
         sysPorts.size(),
-        this->sw_->getState()->getSystemPorts()->size() +
-            this->sw_->getState()->getRemoteSystemPorts()->size());
+        this->sw_->getState()->getSystemPorts()->numNodes() +
+            this->sw_->getState()->getRemoteSystemPorts()->numNodes());
   } else {
     EXPECT_EQ(sysPorts.size(), 0);
   }
 }
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getSysPortStats) {
+  ThriftHandler handler(this->sw_);
+  std::map<std::string, HwSysPortStats> sysPortStats;
+  EXPECT_HW_CALL(this->sw_, getSysPortStats()).Times(1);
+  this->sw_->updateStats();
+  handler.getSysPortStats(sysPortStats);
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getHwPortStats) {
+  ThriftHandler handler(this->sw_);
+  std::map<std::string, HwPortStats> hwPortStats;
+  EXPECT_HW_CALL(this->sw_, getPortStats()).Times(1);
+  this->sw_->updateStats();
+  handler.getHwPortStats(hwPortStats);
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getFabricReachabilityStats) {
+  ThriftHandler handler(this->sw_);
+  FabricReachabilityStats stats;
+  handler.getFabricReachabilityStats(stats);
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getCpuPortStats) {
+  ThriftHandler handler(this->sw_);
+  CpuPortStats cpuPortStats;
+  EXPECT_HW_CALL(this->sw_, getCpuPortStats()).Times(1);
+  this->sw_->updateStats();
+  handler.getCpuPortStats(cpuPortStats);
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getAllEcmpDetails) {
+  ThriftHandler handler(this->sw_);
+  std::vector<EcmpDetails> ecmpDetails;
+  EXPECT_HW_CALL(this->sw_, getAllEcmpDetails()).Times(1);
+  handler.getAllEcmpDetails(ecmpDetails);
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getAclTableGroup) {
+  SCOPE_EXIT {
+    FLAGS_enable_acl_table_group = false;
+  };
+  FLAGS_enable_acl_table_group = true;
+  ThriftHandler handler(this->sw_);
+
+  auto switchIdAndType = this->getSwitchIdAndType();
+
+  AclTableThrift aclTables;
+  handler.getAclTableGroup(aclTables);
+  EXPECT_EQ(aclTables.aclTableEntries()->size(), 0);
+  // No ACLs on fabric switches
+  if (!this->isFabric()) {
+    cfg::SwitchConfig config = testConfigA(switchIdAndType.second);
+    cfg::AclTableGroup tableGroup;
+    tableGroup.name() = "test-table-group";
+    tableGroup.stage() = cfg::AclStage::INGRESS;
+
+    auto createAclTable = [](auto tableNum) {
+      cfg::AclTable cfgTable;
+
+      cfgTable.name() = folly::to<std::string>("test-table-", tableNum);
+      cfgTable.priority() = tableNum;
+      cfgTable.aclEntries()->resize(2);
+      cfgTable.aclEntries()[0].name() =
+          folly::to<std::string>("table", tableNum, "_acl1");
+      cfgTable.aclEntries()[0].actionType() = cfg::AclActionType::DENY;
+      cfgTable.aclEntries()[0].srcIp() = "192.168.0.1";
+      cfgTable.aclEntries()[0].dstIp() = "192.168.0.0/24";
+      cfgTable.aclEntries()[0].srcPort() = 5;
+      cfgTable.aclEntries()[0].dstPort() = 8;
+      cfgTable.aclEntries()[1].name() =
+          folly::to<std::string>("table", tableNum, "_acl2");
+      cfgTable.aclEntries()[1].actionType() = cfg::AclActionType::DENY;
+      cfgTable.aclEntries()[1].srcIp() = "192.168.1.1";
+      cfgTable.aclEntries()[1].dstIp() = "192.168.1.0/24";
+      cfgTable.aclEntries()[1].srcPort() = 5;
+      cfgTable.aclEntries()[1].dstPort() = 8;
+
+      return cfgTable;
+    };
+
+    tableGroup.aclTables()->push_back(createAclTable(1));
+    tableGroup.aclTables()->push_back(createAclTable(2));
+
+    config.aclTableGroups() = {tableGroup};
+    this->sw_->applyConfig("New config with acl table group", config);
+    auto state = this->sw_->getState();
+    handler.getAclTableGroup(aclTables);
+    EXPECT_EQ(aclTables.aclTableEntries()->size(), 2);
+    int tableNum = 1;
+    for (auto& [aclTableName, aclEntries] : *aclTables.aclTableEntries()) {
+      EXPECT_EQ(aclTableName, folly::to<std::string>("test-table-", tableNum));
+      EXPECT_EQ(aclEntries.size(), 2);
+      for (int i = 0; i < 2; i++) {
+        EXPECT_EQ(
+            *aclEntries[i].name(),
+            folly::to<std::string>("table", tableNum, "_acl", i + 1));
+      }
+      tableNum++;
+    }
+  }
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getAclTable) {
+  ThriftHandler handler(this->sw_);
+
+  auto switchIdAndType = this->getSwitchIdAndType();
+
+  std::vector<AclEntryThrift> aclTable;
+  handler.getAclTable(aclTable);
+  EXPECT_EQ(aclTable.size(), 0);
+  // No ACLs on fabric switches
+  if (!this->isFabric()) {
+    cfg::SwitchConfig config = testConfigA(switchIdAndType.second);
+    config.acls()->resize(2);
+    config.acls()[0].name() = "acl1";
+    config.acls()[0].actionType() = cfg::AclActionType::DENY;
+    config.acls()[0].srcIp() = "192.168.0.1";
+    config.acls()[0].dstIp() = "192.168.0.0/24";
+    config.acls()[0].srcPort() = 5;
+    config.acls()[0].dstPort() = 8;
+    config.acls()[1].name() = "acl2";
+    config.acls()[1].actionType() = cfg::AclActionType::DENY;
+    config.acls()[1].srcIp() = "192.168.1.1";
+    config.acls()[1].dstIp() = "192.168.1.0/24";
+    config.acls()[1].srcPort() = 5;
+    config.acls()[1].dstPort() = 8;
+    this->sw_->applyConfig("New config with acls", config);
+    auto state = this->sw_->getState();
+    handler.getAclTable(aclTable);
+    EXPECT_EQ(aclTable.size(), 2);
+    EXPECT_EQ(*aclTable[0].name(), "acl1");
+    EXPECT_EQ(*aclTable[0].srcPort(), 5);
+    EXPECT_EQ(*aclTable[0].dstPort(), 8);
+    EXPECT_EQ(*aclTable[0].actionType(), "deny");
+    EXPECT_EQ(*aclTable[1].name(), "acl2");
+  }
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getSwitchReachability) {
+  ThriftHandler handler(this->sw_);
+  std::unique_ptr<std::vector<std::string>> switchNames =
+      std::make_unique<std::vector<std::string>>();
+  switchNames->push_back("dsfNodeCfg0");
+  std::map<std::string, std::vector<std::string>> reachabilityMatrix;
+  if (this->isNpu()) {
+    EXPECT_HW_CALL(this->sw_, getSwitchReachability(testing::_)).Times(0);
+    EXPECT_THROW(
+        handler.getSwitchReachability(
+            reachabilityMatrix, std::move(switchNames)),
+        FbossError);
+  } else {
+    EXPECT_HW_CALL(this->sw_, getSwitchReachability(testing::_)).Times(1);
+    handler.getSwitchReachability(reachabilityMatrix, std::move(switchNames));
+    EXPECT_EQ(reachabilityMatrix.size(), 1);
+  }
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getDsfSubscriptions) {
+  ThriftHandler handler(this->sw_);
+  std::vector<FsdbSubscriptionThrift> subscriptions;
+  if (this->isNpu()) {
+    EXPECT_THROW(handler.getDsfSubscriptions(subscriptions), FbossError);
+  } else if (this->isFabric()) {
+    handler.getDsfSubscriptions(subscriptions);
+    EXPECT_EQ(subscriptions.size(), 0);
+  } else {
+    // VOQ
+    handler.getDsfSubscriptions(subscriptions);
+    EXPECT_EQ(subscriptions.size(), 0);
+
+    // Add 1 IN node to DSF config
+    cfg::SwitchConfig config = testConfigA(cfg::SwitchType::VOQ);
+    auto dsfNodeCfg = makeDsfNodeCfg(5);
+    config.dsfNodes()->insert({5, dsfNodeCfg});
+    this->sw_->applyConfig("Config with 1 more IN node", config);
+
+    handler.getDsfSubscriptions(subscriptions);
+    EXPECT_EQ(subscriptions.size(), 2);
+    for (const auto& subscription : subscriptions) {
+      EXPECT_EQ(*subscription.name(), *dsfNodeCfg.name());
+      EXPECT_EQ((*subscription.paths()).size(), 3);
+      EXPECT_EQ(*subscription.state(), "DISCONNECTED");
+    }
+  }
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getDsfSubscriptionClientId) {
+  ThriftHandler handler(this->sw_);
+  std::string ret;
+  if (this->isNpu()) {
+    EXPECT_THROW(handler.getDsfSubscriptionClientId(ret), FbossError);
+  } else {
+    handler.getDsfSubscriptionClientId(ret);
+    EXPECT_TRUE(ret.find(":agent") != std::string::npos);
+  }
+}
+
+std::unique_ptr<UnicastRoute> makeUnicastRoute(
+    std::string prefixStr,
+    std::string nxtHop,
+    AdminDistance distance = AdminDistance::MAX_ADMIN_DISTANCE,
+    std::optional<RouteCounterID> counterID = std::nullopt,
+    std::optional<cfg::AclLookupClass> classID = std::nullopt) {
+  std::vector<std::string> vec;
+  folly::split('/', prefixStr, vec);
+  EXPECT_EQ(2, vec.size());
+  auto nr = std::make_unique<UnicastRoute>();
+  *nr->dest()->ip() = toBinaryAddress(IPAddress(vec.at(0)));
+  *nr->dest()->prefixLength() = folly::to<uint8_t>(vec.at(1));
+  nr->nextHopAddrs()->push_back(toBinaryAddress(IPAddress(nxtHop)));
+  nr->adminDistance() = distance;
+  if (counterID.has_value()) {
+    nr->counterID() = *counterID;
+  }
+  if (classID.has_value()) {
+    nr->classID() = *classID;
+  }
+  return nr;
+}
+
+// Test for the ThriftHandler::syncFib method
+TYPED_TEST(ThriftTestAllSwitchTypes, multipleClientSyncFib) {
+  if (this->isFabric()) {
+    // no FIB on fabric or phy
+    GTEST_SKIP();
+  }
+  RouterID rid = RouterID(0);
+
+  // Create a mock SwSwitch using the config, and wrap it in a ThriftHandler
+  ThriftHandler handler(this->sw_);
+
+  auto kIntf1 = InterfaceID(this->interfaceIdBegin());
+
+  // Two clients - BGP and OPENR
+  auto bgpClient = static_cast<int16_t>(ClientID::BGPD);
+  auto openrClient = static_cast<int16_t>(ClientID::OPENR);
+  auto bgpClientAdmin = this->sw_->clientIdToAdminDistance(bgpClient);
+  auto openrClientAdmin = this->sw_->clientIdToAdminDistance(openrClient);
+
+  // nhops to use
+  std::string nhop4, nhop6;
+  if (this->isVoq()) {
+    nhop4 = "10.0.5.2";
+    nhop6 = "2401:db00:2110:3005::0002";
+  } else {
+    nhop4 = "10.0.0.2";
+    nhop6 = "2401:db00:2110:3001::0002";
+  }
+
+  // resolve the nexthops
+  auto nh1 = makeResolvedNextHops({{kIntf1, nhop4}});
+  auto nh2 = makeResolvedNextHops({{kIntf1, nhop6}});
+
+  // prefixes to add
+  auto prefixA4 = "7.1.0.0/16";
+  auto prefixA6 = "aaaa:1::0/64";
+  auto prefixB4 = "7.2.0.0/16";
+  auto prefixB6 = "aaaa:2::0/64";
+  auto prefixC4 = "7.3.0.0/16";
+  auto prefixC6 = "aaaa:3::0/64";
+  auto prefixD4 = "7.4.0.0/16";
+  auto prefixD6 = "aaaa:4::0/64";
+
+  auto addRoutesForClient = [&](const auto& prefix4,
+                                const auto& prefix6,
+                                const auto& client,
+                                const auto& clientAdmin) {
+    if (this->isFabric()) {
+      EXPECT_THROW(
+          handler.addUnicastRoute(
+              client, makeUnicastRoute(prefix4, nhop4, clientAdmin)),
+          FbossError);
+      EXPECT_THROW(
+          handler.addUnicastRoute(
+              client, makeUnicastRoute(prefix6, nhop6, clientAdmin)),
+          FbossError);
+    } else {
+      handler.addUnicastRoute(
+          client, makeUnicastRoute(prefix4, nhop4, clientAdmin));
+      handler.addUnicastRoute(
+          client, makeUnicastRoute(prefix6, nhop6, clientAdmin));
+    }
+  };
+
+  addRoutesForClient(prefixA4, prefixA6, bgpClient, bgpClientAdmin);
+  addRoutesForClient(prefixB4, prefixB6, openrClient, openrClientAdmin);
+
+  auto verifyPrefixesPresent = [&](const auto& prefix4,
+                                   const auto& prefix6,
+                                   AdminDistance distance) {
+    if (this->isFabric()) {
+      return;
+    }
+    auto state = this->sw_->getState();
+    auto rtA4 = findRoute<folly::IPAddressV4>(
+        rid, IPAddress::createNetwork(prefix4), state);
+    EXPECT_NE(nullptr, rtA4);
+    EXPECT_EQ(
+        rtA4->getForwardInfo(),
+        RouteNextHopEntry(makeResolvedNextHops({{kIntf1, nhop4}}), distance));
+
+    auto rtA6 = findRoute<folly::IPAddressV6>(
+        rid, IPAddress::createNetwork(prefix6), state);
+    EXPECT_NE(nullptr, rtA6);
+    EXPECT_EQ(
+        rtA6->getForwardInfo(),
+        RouteNextHopEntry(makeResolvedNextHops({{kIntf1, nhop6}}), distance));
+  };
+  verifyPrefixesPresent(prefixA4, prefixA6, AdminDistance::EBGP);
+  verifyPrefixesPresent(prefixB4, prefixB6, AdminDistance::OPENR);
+
+  auto verifyPrefixesRemoved = [&](const auto& prefix4, const auto& prefix6) {
+    auto state = this->sw_->getState();
+    auto rtA4 = findRoute<folly::IPAddressV4>(
+        rid, IPAddress::createNetwork(prefix4), state);
+    EXPECT_EQ(nullptr, rtA4);
+    auto rtA6 = findRoute<folly::IPAddressV6>(
+        rid, IPAddress::createNetwork(prefix6), state);
+    EXPECT_EQ(nullptr, rtA6);
+  };
+
+  // Call syncFib for BGP. Remove all BGP routes and add some new routes
+  auto newBgpRoutes = std::make_unique<std::vector<UnicastRoute>>();
+  newBgpRoutes->push_back(
+      *makeUnicastRoute(prefixC6, nhop6, bgpClientAdmin).get());
+  newBgpRoutes->push_back(
+      *makeUnicastRoute(prefixC4, nhop4, bgpClientAdmin).get());
+  if (this->isFabric()) {
+    EXPECT_THROW(
+        handler.syncFib(bgpClient, std::move(newBgpRoutes)), FbossError);
+  } else {
+    handler.syncFib(bgpClient, std::move(newBgpRoutes));
+  }
+
+  // verify that old BGP prefixes are removed
+  verifyPrefixesRemoved(prefixA4, prefixA6);
+  // verify that OPENR prefixes exist
+  verifyPrefixesPresent(prefixB4, prefixB6, AdminDistance::OPENR);
+  // verify new BGP prefixes are added
+  verifyPrefixesPresent(prefixC4, prefixC6, AdminDistance::EBGP);
+
+  // Call syncFib for OPENR. Remove all OPENR routes and add some new routes
+  auto newOpenrRoutes = std::make_unique<std::vector<UnicastRoute>>();
+  newOpenrRoutes->push_back(
+      *makeUnicastRoute(prefixD4, nhop4, openrClientAdmin).get());
+  newOpenrRoutes->push_back(
+      *makeUnicastRoute(prefixD6, nhop6, openrClientAdmin).get());
+  if (this->isFabric()) {
+    EXPECT_THROW(
+        handler.syncFib(openrClient, std::move(newOpenrRoutes)), FbossError);
+  } else {
+    handler.syncFib(openrClient, std::move(newOpenrRoutes));
+  }
+
+  // verify that old OPENR prefixes are removed
+  verifyPrefixesRemoved(prefixB4, prefixB6);
+  // verify that new OPENR prefixes are added
+  verifyPrefixesPresent(prefixD4, prefixD6, AdminDistance::OPENR);
+
+  // Add back BGP and OPENR routes
+  addRoutesForClient(prefixA4, prefixA6, bgpClient, bgpClientAdmin);
+  addRoutesForClient(prefixB4, prefixB6, openrClient, openrClientAdmin);
+
+  // verify routes added
+  verifyPrefixesPresent(prefixA4, prefixA6, AdminDistance::EBGP);
+  verifyPrefixesPresent(prefixB4, prefixB6, AdminDistance::OPENR);
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getVlanAddresses) {
+  ThriftHandler handler(this->sw_);
+  using Addresses = std::vector<facebook::network::thrift::Address>;
+  using BinaryAddresses = std::vector<facebook::network::thrift::BinaryAddress>;
+  auto constexpr kVlan = 1;
+  auto constexpr kVlanName = "Vlan1";
+  if (this->isNpu()) {
+    {
+      Addresses addrs;
+      handler.getVlanAddresses(addrs, kVlan);
+      EXPECT_GT(addrs.size(), 0);
+    }
+    {
+      Addresses addrs;
+      handler.getVlanAddressesByName(
+          addrs, std::make_unique<std::string>(kVlanName));
+      EXPECT_GT(addrs.size(), 0);
+    }
+    {
+      BinaryAddresses addrs;
+      handler.getVlanBinaryAddresses(addrs, kVlan);
+      EXPECT_GT(addrs.size(), 0);
+    }
+    {
+      BinaryAddresses addrs;
+      handler.getVlanBinaryAddressesByName(
+          addrs, std::make_unique<std::string>(kVlanName));
+      EXPECT_GT(addrs.size(), 0);
+    }
+  } else {
+    {
+      Addresses addrs;
+      EXPECT_THROW(handler.getVlanAddresses(addrs, 1), FbossError);
+      EXPECT_THROW(
+          handler.getVlanAddressesByName(
+              addrs, std::make_unique<std::string>(kVlanName)),
+          FbossError);
+    }
+    {
+      BinaryAddresses addrs;
+      EXPECT_THROW(handler.getVlanBinaryAddresses(addrs, 1), FbossError);
+      EXPECT_THROW(
+          handler.getVlanBinaryAddressesByName(
+              addrs, std::make_unique<std::string>(kVlanName)),
+          FbossError);
+    }
+  }
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getAllInterfaces) {
+  ThriftHandler handler(this->sw_);
+  std::map<int32_t, InterfaceDetail> intfs;
+  handler.getAllInterfaces(intfs);
+  if (this->isFabric()) {
+    EXPECT_TRUE(intfs.empty());
+  } else {
+    EXPECT_FALSE(intfs.empty());
+  }
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getInterfaceList) {
+  ThriftHandler handler(this->sw_);
+  std::vector<std::string> intfs;
+  handler.getInterfaceList(intfs);
+  if (this->isFabric()) {
+    EXPECT_TRUE(intfs.empty());
+  } else {
+    EXPECT_FALSE(intfs.empty());
+  }
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getInterfaceDetail) {
+  ThriftHandler handler(this->sw_);
+  InterfaceDetail intfDetail;
+  auto intfId = 1;
+  if (this->isFabric()) {
+    EXPECT_THROW(handler.getInterfaceDetail(intfDetail, intfId), FbossError);
+  } else {
+    handler.getInterfaceDetail(intfDetail, intfId);
+    EXPECT_EQ(*intfDetail.interfaceId(), intfId);
+  }
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getAggregatePorts) {
+  if (this->isFabric()) {
+    // no agg ports on fabric
+    GTEST_SKIP();
+  }
+  auto switchIdAndType = this->getSwitchIdAndType();
+  ThriftHandler handler(this->sw_);
+  auto startState = this->sw_->getState();
+
+  auto config = testConfigA(switchIdAndType.second);
+  config.aggregatePorts()->resize(2);
+  *config.aggregatePorts()[0].key() = 55;
+  *config.aggregatePorts()[0].name() = "lag55";
+  *config.aggregatePorts()[0].description() = "upwards facing link-bundle";
+  setAggregatePortMemberIDs(
+      *config.aggregatePorts()[0].memberPorts(),
+      {1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+  *config.aggregatePorts()[1].key() = 155;
+  *config.aggregatePorts()[1].name() = "lag155";
+  *config.aggregatePorts()[1].description() = "downwards facing link-bundle";
+  config.aggregatePorts()[1].memberPorts()->resize(10);
+  setAggregatePortMemberIDs(
+      *config.aggregatePorts()[1].memberPorts(),
+      {11, 12, 13, 14, 15, 16, 17, 18, 19, 20});
+  this->sw_->applyConfig("add agg ports", config);
+  std::vector<AggregatePortThrift> aggPorts;
+  handler.getAggregatePortTable(aggPorts);
+  EXPECT_EQ(aggPorts.size(), 2);
+  EXPECT_EQ(*aggPorts[0].key(), 55);
+  EXPECT_EQ(*aggPorts[1].key(), 155);
+  EXPECT_EQ(
+      getAggregatePortMemberIDs(*aggPorts[0].memberPorts()),
+      getAggregatePortMemberIDs(*config.aggregatePorts()[0].memberPorts()));
+  EXPECT_EQ(
+      getAggregatePortMemberIDs(*aggPorts[1].memberPorts()),
+      getAggregatePortMemberIDs(*config.aggregatePorts()[1].memberPorts()));
+}
+
+TYPED_TEST(ThriftTestAllSwitchTypes, getSwitchIndicesForInterfaces) {
+  ThriftHandler handler(this->sw_);
+  std::map<int16_t, std::vector<std::string>> switchIndicesForInterfaces;
+  std::vector<std::string> interfaces;
+  handler.getInterfaceList(interfaces);
+  if (this->isFabric()) {
+    EXPECT_TRUE(interfaces.empty());
+    return;
+  }
+  // Remove dummy recycle port interface if switch type is VOQ
+  if (this->isVoq()) {
+    interfaces.erase(interfaces.begin());
+  }
+  handler.getSwitchIndicesForInterfaces(
+      switchIndicesForInterfaces,
+      std::make_unique<std::vector<std::string>>(interfaces));
+  EXPECT_EQ(switchIndicesForInterfaces.size(), 1);
+  EXPECT_EQ(switchIndicesForInterfaces.begin()->first, 0);
+  auto fetchedInterfaces = switchIndicesForInterfaces.begin()->second;
+  for (auto i = 0; i < interfaces.size(); i++) {
+    EXPECT_EQ(interfaces[i], fetchedInterfaces[i]);
+  }
+}
+
 TEST_F(ThriftTest, getAndSetMacAddrsToBlock) {
   ThriftHandler handler(sw_);
+
+  auto cfgMacAddrsToBlock = std::make_unique<std::vector<cfg::MacAndVlan>>();
+  cfgMacAddrsToBlock->resize(FLAGS_max_mac_address_to_block + 1);
+  EXPECT_THROW(
+      handler.setMacAddrsToBlock(std::move(cfgMacAddrsToBlock)), FbossError);
 
   auto blockListVerify =
       [&handler](
@@ -423,10 +1091,10 @@ TEST_F(ThriftTest, getAndSetMacAddrsToBlock) {
         handler.setMacAddrsToBlock(std::move(cfgMacAddrsToBlock));
         waitForStateUpdates(handler.getSw());
 
-        auto gotMacAddrsToBlock = handler.getSw()
-                                      ->getState()
-                                      ->getSwitchSettings()
-                                      ->getMacAddrsToBlock_DEPRECATED();
+        auto gotMacAddrsToBlock =
+            utility::getFirstNodeIf(
+                handler.getSw()->getState()->getSwitchSettings())
+                ->getMacAddrsToBlock_DEPRECATED();
         EXPECT_EQ(macAddrsToBlock, gotMacAddrsToBlock);
 
         std::vector<cfg::MacAndVlan> gotMacAddrsToBlockViaThrift;
@@ -451,8 +1119,7 @@ TEST_F(ThriftTest, getAndSetMacAddrsToBlock) {
   waitForStateUpdates(sw_);
   EXPECT_EQ(
       0,
-      sw_->getState()
-          ->getSwitchSettings()
+      utility::getFirstNodeIf(sw_->getState()->getSwitchSettings())
           ->getMacAddrsToBlock_DEPRECATED()
           .size());
   handler.getMacAddrsToBlock(macAddrsToBlock);
@@ -464,8 +1131,7 @@ TEST_F(ThriftTest, getAndSetMacAddrsToBlock) {
   waitForStateUpdates(sw_);
   EXPECT_EQ(
       0,
-      sw_->getState()
-          ->getSwitchSettings()
+      utility::getFirstNodeIf(sw_->getState()->getSwitchSettings())
           ->getMacAddrsToBlock_DEPRECATED()
           .size());
   handler.getMacAddrsToBlock(macAddrsToBlock);
@@ -488,6 +1154,10 @@ TEST_F(ThriftTest, getAndSetMacAddrsToBlock) {
 
 TEST_F(ThriftTest, setNeighborsToBlockAndMacAddrsToBlock) {
   ThriftHandler handler(sw_);
+  auto neighborsToBlock = std::make_unique<std::vector<cfg::Neighbor>>();
+  neighborsToBlock->resize(FLAGS_max_neighbors_to_block + 1);
+  EXPECT_THROW(
+      handler.setNeighborsToBlock(std::move(neighborsToBlock)), FbossError);
 
   auto getNeighborsToBlock = []() {
     auto neighborsToBlock = std::make_unique<std::vector<cfg::Neighbor>>();
@@ -522,143 +1192,6 @@ TEST_F(ThriftTest, setNeighborsToBlockAndMacAddrsToBlock) {
   // macAddrsToBlock already set, now set neighborsToBlock: expect FAIL
   EXPECT_THROW(handler.setNeighborsToBlock(getNeighborsToBlock()), FbossError);
   waitForStateUpdates(handler.getSw());
-}
-
-std::unique_ptr<UnicastRoute> makeUnicastRoute(
-    std::string prefixStr,
-    std::string nxtHop,
-    AdminDistance distance = AdminDistance::MAX_ADMIN_DISTANCE,
-    std::optional<RouteCounterID> counterID = std::nullopt,
-    std::optional<cfg::AclLookupClass> classID = std::nullopt) {
-  std::vector<std::string> vec;
-  folly::split("/", prefixStr, vec);
-  EXPECT_EQ(2, vec.size());
-  auto nr = std::make_unique<UnicastRoute>();
-  *nr->dest()->ip() = toBinaryAddress(IPAddress(vec.at(0)));
-  *nr->dest()->prefixLength() = folly::to<uint8_t>(vec.at(1));
-  nr->nextHopAddrs()->push_back(toBinaryAddress(IPAddress(nxtHop)));
-  nr->adminDistance() = distance;
-  if (counterID.has_value()) {
-    nr->counterID() = *counterID;
-  }
-  if (classID.has_value()) {
-    nr->classID() = *classID;
-  }
-  return nr;
-}
-
-// Test for the ThriftHandler::syncFib method
-TEST_F(ThriftTest, multipleClientSyncFib) {
-  RouterID rid = RouterID(0);
-
-  // Create a mock SwSwitch using the config, and wrap it in a ThriftHandler
-  ThriftHandler handler(sw_);
-
-  auto kIntf1 = InterfaceID(1);
-
-  // Two clients - BGP and OPENR
-  auto bgpClient = static_cast<int16_t>(ClientID::BGPD);
-  auto openrClient = static_cast<int16_t>(ClientID::OPENR);
-  auto bgpClientAdmin = sw_->clientIdToAdminDistance(bgpClient);
-  auto openrClientAdmin = sw_->clientIdToAdminDistance(openrClient);
-
-  // nhops to use
-  auto nhop4 = "10.0.0.2";
-  auto nhop6 = "2401:db00:2110:3001::0002";
-
-  // resolve the nexthops
-  auto nh1 = makeResolvedNextHops({{kIntf1, nhop4}});
-  auto nh2 = makeResolvedNextHops({{kIntf1, nhop6}});
-
-  // prefixes to add
-  auto prefixA4 = "7.1.0.0/16";
-  auto prefixA6 = "aaaa:1::0/64";
-  auto prefixB4 = "7.2.0.0/16";
-  auto prefixB6 = "aaaa:2::0/64";
-  auto prefixC4 = "7.3.0.0/16";
-  auto prefixC6 = "aaaa:3::0/64";
-  auto prefixD4 = "7.4.0.0/16";
-  auto prefixD6 = "aaaa:4::0/64";
-
-  auto addRoutesForClient = [&](const auto& prefix4,
-                                const auto& prefix6,
-                                const auto& client,
-                                const auto& clientAdmin) {
-    handler.addUnicastRoute(
-        client, makeUnicastRoute(prefix4, nhop4, clientAdmin));
-    handler.addUnicastRoute(
-        client, makeUnicastRoute(prefix6, nhop6, clientAdmin));
-  };
-
-  addRoutesForClient(prefixA4, prefixA6, bgpClient, bgpClientAdmin);
-  addRoutesForClient(prefixB4, prefixB6, openrClient, openrClientAdmin);
-
-  auto verifyPrefixesPresent = [&](const auto& prefix4,
-                                   const auto& prefix6,
-                                   AdminDistance distance) {
-    auto state = sw_->getState();
-    auto rtA4 = findRoute<folly::IPAddressV4>(
-        rid, IPAddress::createNetwork(prefix4), state);
-    EXPECT_NE(nullptr, rtA4);
-    EXPECT_EQ(
-        rtA4->getForwardInfo(),
-        RouteNextHopEntry(makeResolvedNextHops({{kIntf1, nhop4}}), distance));
-
-    auto rtA6 = findRoute<folly::IPAddressV6>(
-        rid, IPAddress::createNetwork(prefix6), state);
-    EXPECT_NE(nullptr, rtA6);
-    EXPECT_EQ(
-        rtA6->getForwardInfo(),
-        RouteNextHopEntry(makeResolvedNextHops({{kIntf1, nhop6}}), distance));
-  };
-  verifyPrefixesPresent(prefixA4, prefixA6, AdminDistance::EBGP);
-  verifyPrefixesPresent(prefixB4, prefixB6, AdminDistance::OPENR);
-
-  auto verifyPrefixesRemoved = [&](const auto& prefix4, const auto& prefix6) {
-    auto state = sw_->getState();
-    auto rtA4 = findRoute<folly::IPAddressV4>(
-        rid, IPAddress::createNetwork(prefix4), state);
-    EXPECT_EQ(nullptr, rtA4);
-    auto rtA6 = findRoute<folly::IPAddressV6>(
-        rid, IPAddress::createNetwork(prefix6), state);
-    EXPECT_EQ(nullptr, rtA6);
-  };
-
-  // Call syncFib for BGP. Remove all BGP routes and add some new routes
-  auto newBgpRoutes = std::make_unique<std::vector<UnicastRoute>>();
-  newBgpRoutes->push_back(
-      *makeUnicastRoute(prefixC6, nhop6, bgpClientAdmin).get());
-  newBgpRoutes->push_back(
-      *makeUnicastRoute(prefixC4, nhop4, bgpClientAdmin).get());
-  handler.syncFib(bgpClient, std::move(newBgpRoutes));
-
-  // verify that old BGP prefixes are removed
-  verifyPrefixesRemoved(prefixA4, prefixA6);
-  // verify that OPENR prefixes exist
-  verifyPrefixesPresent(prefixB4, prefixB6, AdminDistance::OPENR);
-  // verify new BGP prefixes are added
-  verifyPrefixesPresent(prefixC4, prefixC6, AdminDistance::EBGP);
-
-  // Call syncFib for OPENR. Remove all OPENR routes and add some new routes
-  auto newOpenrRoutes = std::make_unique<std::vector<UnicastRoute>>();
-  newOpenrRoutes->push_back(
-      *makeUnicastRoute(prefixD4, nhop4, openrClientAdmin).get());
-  newOpenrRoutes->push_back(
-      *makeUnicastRoute(prefixD6, nhop6, openrClientAdmin).get());
-  handler.syncFib(openrClient, std::move(newOpenrRoutes));
-
-  // verify that old OPENR prefixes are removed
-  verifyPrefixesRemoved(prefixB4, prefixB6);
-  // verify that new OPENR prefixes are added
-  verifyPrefixesPresent(prefixD4, prefixD6, AdminDistance::OPENR);
-
-  // Add back BGP and OPENR routes
-  addRoutesForClient(prefixA4, prefixA6, bgpClient, bgpClientAdmin);
-  addRoutesForClient(prefixB4, prefixB6, openrClient, openrClientAdmin);
-
-  // verify routes added
-  verifyPrefixesPresent(prefixA4, prefixA6, AdminDistance::EBGP);
-  verifyPrefixesPresent(prefixB4, prefixB6, AdminDistance::OPENR);
 }
 
 // Test for the ThriftHandler::syncFib method
@@ -1201,13 +1734,13 @@ TEST_F(ThriftTest, syncFibIsHwProtected) {
   UnicastRoute nr1 =
       *makeUnicastRoute("aaaa::/64", "2401:db00:2110:3001::1").get();
   addRoutes->push_back(nr1);
-  EXPECT_HW_CALL(sw_, stateChanged(_));
+  EXPECT_STATE_UPDATE(sw_);
   handler.addUnicastRoutes(10, std::move(addRoutes));
   auto newRoutes = std::make_unique<std::vector<UnicastRoute>>();
   UnicastRoute nr2 = *makeUnicastRoute("bbbb::/64", "42::42").get();
   newRoutes->push_back(nr2);
   // Fail HW update by returning current state
-  EXPECT_HW_CALL(sw_, stateChanged(_))
+  EXPECT_HW_CALL(sw_, stateChangedImpl(_))
       .Times(::testing::AtLeast(1))
       .WillOnce(Return(sw_->getState()));
   EXPECT_THROW(
@@ -1232,7 +1765,7 @@ TEST_F(ThriftTest, addUnicastRoutesIsHwProtected) {
   UnicastRoute nr1 = *makeUnicastRoute("aaaa::/64", "42::42").get();
   newRoutes->push_back(nr1);
   // Fail HW update by returning current state
-  EXPECT_HW_CALL(sw_, stateChanged(_)).WillOnce(Return(sw_->getState()));
+  EXPECT_HW_CALL(sw_, stateChangedImpl(_)).WillOnce(Return(sw_->getState()));
   EXPECT_THROW(
       {
         try {
@@ -1299,7 +1832,8 @@ TEST_F(ThriftTest, syncMplsFibIsHwProtected) {
   MplsRoute nr1 = *makeMplsRoute(101, "10.0.0.2").get();
   newRoutes->push_back(nr1);
   // Fail HW update by returning current state
-  EXPECT_HW_CALL(sw_, stateChanged(_)).WillRepeatedly(Return(sw_->getState()));
+  EXPECT_HW_CALL(sw_, stateChangedImpl(_))
+      .WillRepeatedly(Return(sw_->getState()));
   EXPECT_THROW(
       {
         try {
@@ -1320,7 +1854,8 @@ TEST_F(ThriftTest, addMplsRoutesIsHwProtected) {
   MplsRoute nr1 = *makeMplsRoute(101, "10.0.0.2").get();
   newRoutes->push_back(nr1);
   // Fail HW update by returning current state
-  EXPECT_HW_CALL(sw_, stateChanged(_)).WillRepeatedly(Return(sw_->getState()));
+  EXPECT_HW_CALL(sw_, stateChangedImpl(_))
+      .WillRepeatedly(Return(sw_->getState()));
   EXPECT_THROW(
       {
         try {
@@ -1341,7 +1876,7 @@ TEST_F(ThriftTest, hwUpdateErrorAfterPartialUpdate) {
       *makeUnicastRoute("aaaa::/64", "2401:db00:2110:3001::1").get();
   std::vector<UnicastRoute> routes;
   routes.push_back(nr1);
-  EXPECT_HW_CALL(sw_, stateChanged(_)).Times(2);
+  EXPECT_STATE_UPDATE_TIMES(sw_, 2);
   handler.addUnicastRoutes(
       10, std::make_unique<std::vector<UnicastRoute>>(routes));
   auto oneRouteAddedState = sw_->getState();
@@ -1356,7 +1891,7 @@ TEST_F(ThriftTest, hwUpdateErrorAfterPartialUpdate) {
       *makeUnicastRoute("bbbb::/64", "2401:db00:2110:3001::1").get();
   routes.push_back(nr2);
   // Fail HW update by returning one route added state.
-  EXPECT_HW_CALL(sw_, stateChanged(_))
+  EXPECT_HW_CALL(sw_, stateChangedImpl(_))
       .Times(::testing::AtLeast(1))
       .WillOnce(Return(oneRouteAddedState));
   EXPECT_THROW(
@@ -1426,7 +1961,7 @@ TEST_F(ThriftTest, UnicastRoutesWithClassID) {
   std::optional<cfg::AclLookupClass> classID1(
       cfg::AclLookupClass::DST_CLASS_L3_DPR);
   std::optional<cfg::AclLookupClass> classID2(
-      cfg::AclLookupClass::DST_CLASS_L3_LOCAL_IP6);
+      cfg::AclLookupClass::DST_CLASS_L3_LOCAL_2);
 
   // Add BGP routes with class ID
   handler.addUnicastRoute(
@@ -1828,7 +2363,7 @@ TEST_F(ThriftTest, getLoopbackMode) {
   ThriftHandler handler(sw_);
   std::map<int32_t, PortLoopbackMode> port2LoopbackMode;
   handler.getAllPortLoopbackMode(port2LoopbackMode);
-  EXPECT_EQ(port2LoopbackMode.size(), sw_->getState()->getPorts()->size());
+  EXPECT_EQ(port2LoopbackMode.size(), sw_->getState()->getPorts()->numNodes());
   std::for_each(
       port2LoopbackMode.begin(),
       port2LoopbackMode.end(),
@@ -1840,24 +2375,43 @@ TEST_F(ThriftTest, getLoopbackMode) {
 TEST_F(ThriftTest, setLoopbackMode) {
   ThriftHandler handler(sw_);
   std::map<int32_t, PortLoopbackMode> port2LoopbackMode;
-  auto firstPort = (*sw_->getState()->getPorts()->cbegin()).second->getID();
+  auto firstPort =
+      sw_->getState()->getPorts()->cbegin()->second->cbegin()->second->getID();
   auto otherPortsUnchanged = [firstPort, this]() {
-    for (auto& port : std::as_const(*sw_->getState()->getPorts())) {
-      if (port.second->getID() != firstPort) {
-        EXPECT_EQ(port.second->getLoopbackMode(), cfg::PortLoopbackMode::NONE);
+    for (auto& portMap : std::as_const(*sw_->getState()->getPorts())) {
+      for (auto& port : std::as_const(*portMap.second)) {
+        if (port.second->getID() != firstPort) {
+          EXPECT_EQ(
+              port.second->getLoopbackMode(), cfg::PortLoopbackMode::NONE);
+        }
       }
     }
   };
 
   for (auto lbMode :
-       {PortLoopbackMode::MAC, PortLoopbackMode::PHY, PortLoopbackMode::NONE}) {
+       {PortLoopbackMode::NIF,
+        PortLoopbackMode::MAC,
+        PortLoopbackMode::PHY,
+        PortLoopbackMode::NONE}) {
     // MAC
     handler.setPortLoopbackMode(firstPort, lbMode);
     handler.getAllPortLoopbackMode(port2LoopbackMode);
-    EXPECT_EQ(port2LoopbackMode.size(), sw_->getState()->getPorts()->size());
+    EXPECT_EQ(
+        port2LoopbackMode.size(), sw_->getState()->getPorts()->numNodes());
     EXPECT_EQ(port2LoopbackMode.find(firstPort)->second, lbMode);
     otherPortsUnchanged();
   }
+}
+
+TEST_F(ThriftTest, programLedExternalState) {
+  ThriftHandler handler(sw_);
+  auto firstPort =
+      sw_->getState()->getPorts()->cbegin()->second->cbegin()->second->getID();
+  handler.setExternalLedState(
+      firstPort, PortLedExternalState::EXTERNAL_FORCE_ON);
+  auto port = sw_->getState()->getPorts()->getNode(firstPort);
+  EXPECT_EQ(
+      port->getLedPortExternalState(), PortLedExternalState::EXTERNAL_FORCE_ON);
 }
 
 TEST_F(ThriftTest, programInternalPhyPorts) {
@@ -1875,12 +2429,13 @@ TEST_F(ThriftTest, programInternalPhyPorts) {
                            kComplianceCode,
                            kManagementInterface](double cableLength) {
     auto tcvrInfo = std::make_unique<TransceiverInfo>();
-    tcvrInfo->port() = id;
-    tcvrInfo->present() = true;
+    tcvrInfo->tcvrState()->port() = id;
+    tcvrInfo->tcvrState()->present() = true;
     Cable cable;
     cable.length() = cableLength;
-    tcvrInfo->cable() = cable;
-    tcvrInfo->transceiverManagementInterface() = kManagementInterface;
+    tcvrInfo->tcvrState()->cable() = cable;
+    tcvrInfo->tcvrState()->transceiverManagementInterface() =
+        kManagementInterface;
     TransceiverSettings tcvrSettings;
     std::vector<MediaInterfaceId> mediaInterfaces;
     for (int i = 0; i < 4; i++) {
@@ -1890,7 +2445,7 @@ TEST_F(ThriftTest, programInternalPhyPorts) {
       mediaInterfaces.push_back(intf);
     }
     tcvrSettings.mediaInterface() = std::move(mediaInterfaces);
-    tcvrInfo->settings() = tcvrSettings;
+    tcvrInfo->tcvrState()->settings() = tcvrSettings;
     return tcvrInfo;
   };
 
@@ -1906,26 +2461,26 @@ TEST_F(ThriftTest, programInternalPhyPorts) {
             cfg::PortProfileID::PROFILE_100G_4_NRZ_CL91_COPPER);
 
         // Make sure the enabled ports using the new profile config/pin configs
-        auto platform = sw_->getPlatform();
-        auto tcvr = sw_->getState()->getTransceivers()->getTransceiverIf(id);
+        auto tcvr = sw_->getState()->getTransceivers()->getNodeIf(id);
         std::optional<cfg::PlatformPortConfigOverrideFactor> factor;
         if (tcvr != nullptr) {
           factor = tcvr->toPlatformPortConfigOverrideFactor();
         }
-        platform->getPlatformMapping()
-            ->customizePlatformPortConfigOverrideFactor(factor);
+        sw_->getPlatformMapping()->customizePlatformPortConfigOverrideFactor(
+            factor);
         // Port must exist in the SwitchState
         const auto port =
-            sw_->getState()->getPorts()->getPort(PortID(kEnabledPort));
+            sw_->getState()->getPorts()->getNodeIf(PortID(kEnabledPort));
         EXPECT_TRUE(port->isEnabled());
         PlatformPortProfileConfigMatcher matcher{
             port->getProfileID(), port->getID(), factor};
-        auto portProfileCfg = platform->getPortProfileConfig(matcher);
+        auto portProfileCfg =
+            sw_->getPlatformMapping()->getPortProfileConfig(matcher);
         CHECK(portProfileCfg) << "No port profile config found with matcher:"
                               << matcher.toString();
         auto expectedProfileConfig = *portProfileCfg->iphy();
         const auto& expectedPinConfigs =
-            platform->getPlatformMapping()->getPortIphyPinConfigs(matcher);
+            sw_->getPlatformMapping()->getPortIphyPinConfigs(matcher);
 
         EXPECT_TRUE(expectedProfileConfig == port->getProfileConfig());
         EXPECT_TRUE(expectedPinConfigs == port->getPinConfigs());
@@ -1936,7 +2491,7 @@ TEST_F(ThriftTest, programInternalPhyPorts) {
       programmedPorts, preparedTcvrInfo(kCableLength), false);
 
   checkProgrammedPorts(programmedPorts);
-  auto tcvr = sw_->getState()->getTransceivers()->getTransceiver(id);
+  auto tcvr = sw_->getState()->getTransceivers()->getNode(id);
   EXPECT_EQ(tcvr->getID(), id);
   EXPECT_EQ(*tcvr->getCableLength(), kCableLength);
   EXPECT_EQ(*tcvr->getMediaInterface(), kMediaInterface);
@@ -1944,20 +2499,20 @@ TEST_F(ThriftTest, programInternalPhyPorts) {
 
   // Now change the cable length
   const auto oldPort =
-      sw_->getState()->getPorts()->getPort(PortID(kEnabledPort));
+      sw_->getState()->getPorts()->getNodeIf(PortID(kEnabledPort));
   constexpr auto kCableLength2 = 1;
   std::map<int32_t, cfg::PortProfileID> programmedPorts2;
   handler.programInternalPhyPorts(
       programmedPorts2, preparedTcvrInfo(kCableLength2), false);
 
   checkProgrammedPorts(programmedPorts2);
-  tcvr = sw_->getState()->getTransceivers()->getTransceiver(id);
+  tcvr = sw_->getState()->getTransceivers()->getNode(id);
   EXPECT_EQ(tcvr->getID(), id);
   EXPECT_EQ(*tcvr->getCableLength(), kCableLength2);
   EXPECT_EQ(*tcvr->getMediaInterface(), kMediaInterface);
   EXPECT_EQ(*tcvr->getManagementInterface(), kManagementInterface);
   const auto newPort =
-      sw_->getState()->getPorts()->getPort(PortID(kEnabledPort));
+      sw_->getState()->getPorts()->getNodeIf(PortID(kEnabledPort));
   // Because we're using Wedge100PlatformMapping here, we should see pinConfig
   // change due to the cable length change
   EXPECT_TRUE(oldPort->getProfileConfig() == newPort->getProfileConfig());
@@ -1973,28 +2528,28 @@ TEST_F(ThriftTest, programInternalPhyPorts) {
 
   // Finally remove the transceiver
   auto unpresentTcvr = std::make_unique<TransceiverInfo>();
-  unpresentTcvr->port() = id;
-  unpresentTcvr->present() = false;
+  unpresentTcvr->tcvrState()->port() = id;
+  unpresentTcvr->tcvrState()->present() = false;
   std::map<int32_t, cfg::PortProfileID> programmedPorts3;
   handler.programInternalPhyPorts(
       programmedPorts3, std::move(unpresentTcvr), false);
 
   // Still return programmed ports even though no transceiver there
   checkProgrammedPorts(programmedPorts3);
-  tcvr = sw_->getState()->getTransceivers()->getTransceiverIf(id);
+  tcvr = sw_->getState()->getTransceivers()->getNodeIf(id);
   EXPECT_TRUE(tcvr == nullptr);
 
   // Remove the same Transceiver again, and make sure no new state created.
   beforeGen = sw_->getState()->getGeneration();
   programmedPorts3.clear();
   unpresentTcvr = std::make_unique<TransceiverInfo>();
-  unpresentTcvr->port() = id;
-  unpresentTcvr->present() = false;
+  unpresentTcvr->tcvrState()->port() = id;
+  unpresentTcvr->tcvrState()->present() = false;
   handler.programInternalPhyPorts(
       programmedPorts3, std::move(unpresentTcvr), false);
   // Still return programmed ports even though no transceiver there
   checkProgrammedPorts(programmedPorts3);
-  tcvr = sw_->getState()->getTransceivers()->getTransceiverIf(id);
+  tcvr = sw_->getState()->getTransceivers()->getNodeIf(id);
   EXPECT_TRUE(tcvr == nullptr);
   EXPECT_EQ(beforeGen, sw_->getState()->getGeneration());
 }
@@ -2063,14 +2618,14 @@ TEST_F(ThriftTest, applySpeedAndProfileMismatchConfig) {
 TEST_F(ThriftTest, getCurrentStateJSON) {
   ThriftHandler handler(sw_);
   std::string out;
-  std::string in = "portMap/1";
+  std::string in = "portMaps/id=0/1";
   handler.getCurrentStateJSON(out, std::make_unique<std::string>(in));
   auto dyn = folly::parseJson(out);
   EXPECT_EQ(dyn["portId"], 1);
   EXPECT_EQ(dyn["portName"], "port1");
   EXPECT_EQ(dyn["portState"], "ENABLED");
 
-  in = "portMap/1/portOperState";
+  in = "portMaps/id=0/1/portOperState";
   handler.getCurrentStateJSON(out, std::make_unique<std::string>(in));
   EXPECT_EQ(out, "false");
 
@@ -2087,9 +2642,60 @@ TEST_F(ThriftTest, getCurrentStateJSON) {
       FbossError);
 }
 
+TEST_F(ThriftTest, getCurrentStateJSONForPaths) {
+  ThriftHandler handler(sw_);
+  std::map<std::string, std::string> pathToState;
+  std::string in = "portMaps/id=0/1";
+  std::vector<std::string> paths = {in};
+  handler.getCurrentStateJSONForPaths(
+      pathToState, std::make_unique<std::vector<std::string>>(paths));
+  ASSERT_TRUE(pathToState.find(in) != pathToState.end());
+  auto dyn = folly::parseJson(pathToState[in]);
+  EXPECT_EQ(dyn["portId"], 1);
+  EXPECT_EQ(dyn["portName"], "port1");
+  EXPECT_EQ(dyn["portState"], "ENABLED");
+
+  in = "portMaps/id=0/1/portOperState";
+  paths = {in};
+  handler.getCurrentStateJSONForPaths(
+      pathToState, std::make_unique<std::vector<std::string>>(paths));
+  ASSERT_TRUE(pathToState.find(in) != pathToState.end());
+  EXPECT_EQ(pathToState[in], "false");
+
+  // Empty thrift path
+  paths = {""};
+  EXPECT_THROW(
+      handler.getCurrentStateJSONForPaths(
+          pathToState, std::make_unique<std::vector<std::string>>(paths)),
+      FbossError);
+
+  // Invalid thrift path
+  paths = {"invalid/path"};
+  EXPECT_THROW(
+      handler.getCurrentStateJSONForPaths(
+          pathToState, std::make_unique<std::vector<std::string>>(paths)),
+      FbossError);
+}
+
+template <bool enableIntfNbrTable>
+struct EnableIntfNbrTable {
+  static constexpr auto intfNbrTable = enableIntfNbrTable;
+};
+
+using NbrTableTypes =
+    ::testing::Types<EnableIntfNbrTable<false>, EnableIntfNbrTable<true>>;
+
+template <typename EnableIntfNbrTableT>
 class ThriftTeFlowTest : public ::testing::Test {
+  static auto constexpr intfNbrTable = EnableIntfNbrTableT::intfNbrTable;
+
  public:
+  bool isIntfNbrTable() const {
+    return intfNbrTable == true;
+  }
+
   void SetUp() override {
+    FLAGS_intf_nbr_tables = isIntfNbrTable();
     auto config = testConfigA();
     cfg::ExactMatchTableConfig tableConfig;
     tableConfig.name() = "TeFlowTable";
@@ -2098,20 +2704,42 @@ class ThriftTeFlowTest : public ::testing::Test {
     handle_ = createTestHandle(&config);
     sw_ = handle_->getSw();
     sw_->initialConfigApplied(std::chrono::steady_clock::now());
-    sw_->getNeighborUpdater()->receivedNdpMine(
-        kVlanA,
-        folly::IPAddressV6(kNhopAddrA),
-        kMacAddress,
-        PortDescriptor(kPortIDA),
-        ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_ADVERTISEMENT,
-        0);
-    sw_->getNeighborUpdater()->receivedNdpMine(
-        kVlanB,
-        folly::IPAddressV6(kNhopAddrB),
-        kMacAddress,
-        PortDescriptor(kPortIDB),
-        ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_ADVERTISEMENT,
-        0);
+
+    if (isIntfNbrTable()) {
+      sw_->getNeighborUpdater()->receivedNdpMineForIntf(
+          kInterfaceA,
+          folly::IPAddressV6(kNhopAddrA),
+          kMacAddress,
+          PortDescriptor(kPortIDA),
+          ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_ADVERTISEMENT,
+          0);
+    } else {
+      sw_->getNeighborUpdater()->receivedNdpMine(
+          kVlanA,
+          folly::IPAddressV6(kNhopAddrA),
+          kMacAddress,
+          PortDescriptor(kPortIDA),
+          ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_ADVERTISEMENT,
+          0);
+    }
+
+    if (isIntfNbrTable()) {
+      sw_->getNeighborUpdater()->receivedNdpMineForIntf(
+          kInterfaceB,
+          folly::IPAddressV6(kNhopAddrB),
+          kMacAddress,
+          PortDescriptor(kPortIDB),
+          ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_ADVERTISEMENT,
+          0);
+    } else {
+      sw_->getNeighborUpdater()->receivedNdpMine(
+          kVlanB,
+          folly::IPAddressV6(kNhopAddrB),
+          kMacAddress,
+          PortDescriptor(kPortIDB),
+          ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_ADVERTISEMENT,
+          0);
+    }
 
     sw_->getNeighborUpdater()->waitForPendingUpdates();
     waitForBackgroundThread(sw_);
@@ -2120,221 +2748,3 @@ class ThriftTeFlowTest : public ::testing::Test {
   SwSwitch* sw_;
   std::unique_ptr<HwTestHandle> handle_;
 };
-
-TEST_F(ThriftTeFlowTest, addRemoveTeFlow) {
-  ThriftHandler handler(sw_);
-  auto teFlowEntries = std::make_unique<std::vector<FlowEntry>>();
-  auto flowEntry = makeFlow("100::1");
-  teFlowEntries->emplace_back(flowEntry);
-  handler.addTeFlows(std::move(teFlowEntries));
-  auto state = sw_->getState();
-  auto teFlowTable = state->getTeFlowTable();
-  auto verifyEntry = [&teFlowTable](
-                         const auto& flow,
-                         const auto& nhop,
-                         const auto& counter,
-                         const auto& intf) {
-    EXPECT_EQ(teFlowTable->size(), 1);
-    auto tableEntry = teFlowTable->getTeFlowIf(flow);
-    EXPECT_NE(tableEntry, nullptr);
-    EXPECT_EQ(*tableEntry->getCounterID(), counter);
-    EXPECT_EQ(tableEntry->getNextHops()->size(), 1);
-    auto expectedNhop = toBinaryAddress(IPAddress(nhop));
-    expectedNhop.ifName() = intf;
-    auto nexthop = tableEntry->getNextHops()->cref(0)->toThrift();
-    EXPECT_EQ(*nexthop.address(), expectedNhop);
-    EXPECT_EQ(tableEntry->getResolvedNextHops()->size(), 1);
-    auto resolveNexthop =
-        tableEntry->getResolvedNextHops()->cref(0)->toThrift();
-    EXPECT_EQ(*resolveNexthop.address(), expectedNhop);
-  };
-  verifyEntry(*flowEntry.flow(), kNhopAddrA, "counter0", "fboss1");
-
-  // modify the entry
-  auto flowEntry2 = makeFlow("100::1", kNhopAddrB, "counter1", "fboss55");
-  auto newFlowEntries = std::make_unique<std::vector<FlowEntry>>();
-  newFlowEntries->emplace_back(flowEntry2);
-  handler.addTeFlows(std::move(newFlowEntries));
-  state = sw_->getState();
-  teFlowTable = state->getTeFlowTable();
-  verifyEntry(*flowEntry.flow(), kNhopAddrB, "counter1", "fboss55");
-
-  auto teFlows = std::make_unique<std::vector<TeFlow>>();
-  teFlows->emplace_back(*flowEntry.flow());
-  handler.deleteTeFlows(std::move(teFlows));
-  state = sw_->getState();
-  teFlowTable = state->getTeFlowTable();
-  auto tableEntry = teFlowTable->getTeFlowIf(*flowEntry.flow());
-  EXPECT_EQ(tableEntry, nullptr);
-
-  // add flows in bulk
-  auto testPrefixes = {"100::1", "101::1", "102::1", "103::1"};
-  auto bulkEntries = std::make_unique<std::vector<FlowEntry>>();
-  for (const auto& prefix : testPrefixes) {
-    bulkEntries->emplace_back(makeFlow(prefix));
-  }
-  handler.addTeFlows(std::move(bulkEntries));
-  state = sw_->getState();
-  teFlowTable = state->getTeFlowTable();
-  EXPECT_EQ(teFlowTable->size(), 4);
-
-  // bulk delete
-  auto flowsToDelete = {"100::1", "101::1"};
-  auto deletionFlows = std::make_unique<std::vector<TeFlow>>();
-  for (const auto& prefix : flowsToDelete) {
-    TeFlow flow;
-    flow.dstPrefix() = ipPrefix(prefix, 64);
-    flow.srcPort() = 100;
-    deletionFlows->emplace_back(flow);
-  }
-  handler.deleteTeFlows(std::move(deletionFlows));
-  state = sw_->getState();
-  teFlowTable = state->getTeFlowTable();
-  EXPECT_EQ(teFlowTable->size(), 2);
-  for (const auto& prefix : flowsToDelete) {
-    TeFlow flow;
-    flow.dstPrefix() = ipPrefix(prefix, 64);
-    flow.srcPort() = 100;
-    EXPECT_EQ(teFlowTable->getTeFlowIf(flow), nullptr);
-  }
-}
-
-TEST_F(ThriftTeFlowTest, syncTeFlows) {
-  auto initalPrefixes = {"100::1", "101::1", "102::1", "103::1"};
-  ThriftHandler handler(sw_);
-  auto teFlowEntries = std::make_unique<std::vector<FlowEntry>>();
-  for (const auto& prefix : initalPrefixes) {
-    auto flowEntry = makeFlow(prefix);
-    teFlowEntries->emplace_back(flowEntry);
-  }
-  handler.addTeFlows(std::move(teFlowEntries));
-  auto state = sw_->getState();
-  auto teFlowTable = state->getTeFlowTable();
-  EXPECT_EQ(teFlowTable->size(), 4);
-
-  // Ensure that all entries are created
-  for (const auto& prefix : initalPrefixes) {
-    TeFlow flow;
-    flow.dstPrefix() = ipPrefix(prefix, 64);
-    flow.srcPort() = 100;
-    auto tableEntry = teFlowTable->getTeFlowIf(flow);
-    EXPECT_NE(tableEntry, nullptr);
-  }
-
-  auto syncPrefixes = {"100::1", "101::1", "104::1"};
-  auto syncFlowEntries = std::make_unique<std::vector<FlowEntry>>();
-  for (const auto& prefix : syncPrefixes) {
-    auto flowEntry = makeFlow(prefix);
-    syncFlowEntries->emplace_back(flowEntry);
-  }
-  handler.syncTeFlows(std::move(syncFlowEntries));
-  state = sw_->getState();
-  teFlowTable = state->getTeFlowTable();
-  EXPECT_EQ(teFlowTable->size(), 3);
-  // Ensure that newly added entries are present
-  for (const auto& prefix : syncPrefixes) {
-    TeFlow flow;
-    flow.dstPrefix() = ipPrefix(prefix, 64);
-    flow.srcPort() = 100;
-    auto tableEntry = teFlowTable->getTeFlowIf(flow);
-    EXPECT_NE(tableEntry, nullptr);
-  }
-  // Ensure that missing entries are removed
-  for (const auto& prefix : {"102::1", "103::1"}) {
-    TeFlow flow;
-    flow.dstPrefix() = ipPrefix(prefix, 64);
-    flow.srcPort() = 100;
-    auto tableEntry = teFlowTable->getTeFlowIf(flow);
-    EXPECT_EQ(tableEntry, nullptr);
-  }
-  // sync flows with no entries
-  auto nullFlowEntries = std::make_unique<std::vector<FlowEntry>>();
-  handler.syncTeFlows(std::move(nullFlowEntries));
-  state = sw_->getState();
-  teFlowTable = state->getTeFlowTable();
-  EXPECT_EQ(teFlowTable->size(), 0);
-}
-
-TEST_F(ThriftTeFlowTest, getTeFlowDetails) {
-  auto testPrefixes = {"100::1", "101::1", "102::1", "103::1"};
-  ThriftHandler handler(sw_);
-  auto teFlowEntries = std::make_unique<std::vector<FlowEntry>>();
-  for (const auto& prefix : testPrefixes) {
-    auto flowEntry = makeFlow(prefix);
-    teFlowEntries->emplace_back(flowEntry);
-  }
-  handler.addTeFlows(std::move(teFlowEntries));
-  auto state = sw_->getState();
-  auto teFlowTable = state->getTeFlowTable();
-  EXPECT_EQ(teFlowTable->size(), 4);
-
-  std::vector<TeFlowDetails> flowDetails;
-  handler.getTeFlowTableDetails(flowDetails);
-  EXPECT_EQ(flowDetails.size(), teFlowTable->size());
-
-  auto idx = 0;
-  for (const auto& prefix : testPrefixes) {
-    TeFlow flow;
-    flow.srcPort() = 100;
-    flow.dstPrefix() = ipPrefix(prefix, 64);
-    auto flowDetail = flowDetails[idx++];
-    auto tableEntry = state->getTeFlowTable()->getTeFlowIf(flow);
-    EXPECT_EQ(flowDetail.enabled(), tableEntry->getEnabled());
-    EXPECT_EQ(flowDetail.counterID(), tableEntry->getCounterID()->toThrift());
-    EXPECT_EQ(flowDetail.nexthops(), tableEntry->getNextHops()->toThrift());
-    EXPECT_EQ(
-        flowDetail.resolvedNexthops(),
-        tableEntry->getResolvedNextHops()->toThrift());
-  }
-}
-
-TEST_F(ThriftTeFlowTest, teFlowUpdateHwProtection) {
-  ThriftHandler handler(sw_);
-  auto teFlowEntries = std::make_unique<std::vector<FlowEntry>>();
-  auto flowEntry = makeFlow("100::1");
-  teFlowEntries->emplace_back(flowEntry);
-
-  // wait for any neighbour updates
-  sw_->getNeighborUpdater()->waitForPendingUpdates();
-  waitForBackgroundThread(sw_);
-  waitForStateUpdates(sw_);
-  // Fail HW update by returning current state
-  EXPECT_HW_CALL(sw_, stateChanged(_)).WillOnce(Return(sw_->getState()));
-
-  EXPECT_THROW(
-      {
-        try {
-          handler.addTeFlows(std::move(teFlowEntries));
-
-        } catch (const FbossTeUpdateError& flowError) {
-          EXPECT_EQ(flowError.failedAddUpdateFlows()->size(), 1);
-          EXPECT_EQ(
-              flowError.failedAddUpdateFlows()[0], makeFlow("100::1").flow());
-          throw;
-        }
-      },
-      FbossTeUpdateError);
-}
-
-TEST_F(ThriftTeFlowTest, teFlowSyncUpdateHwProtection) {
-  ThriftHandler handler(sw_);
-  auto teFlowEntries = std::make_unique<std::vector<FlowEntry>>();
-  auto flowEntry = makeFlow("100::1");
-  teFlowEntries->emplace_back(flowEntry);
-  // Fail HW update by returning current state
-  EXPECT_HW_CALL(sw_, stateChanged(_)).WillOnce(Return(sw_->getState()));
-
-  EXPECT_THROW(
-      {
-        try {
-          handler.syncTeFlows(std::move(teFlowEntries));
-
-        } catch (const FbossTeUpdateError& flowError) {
-          EXPECT_EQ(flowError.failedAddUpdateFlows()->size(), 1);
-          EXPECT_EQ(
-              flowError.failedAddUpdateFlows()[0], makeFlow("100::1").flow());
-          throw;
-        }
-      },
-      FbossTeUpdateError);
-}

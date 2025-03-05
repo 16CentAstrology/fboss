@@ -15,7 +15,6 @@
 
 #include "fboss/agent/SysError.h"
 #include "fboss/agent/hw/bcm/BcmAPI.h"
-#include "fboss/agent/hw/bcm/BcmConfig.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 
 DEFINE_bool(
@@ -27,7 +26,7 @@ DEFINE_bool(
 namespace facebook::fboss {
 
 std::string BcmPlatform::getHwConfigDumpFile() const {
-  return getVolatileStateDir() + "/" + FLAGS_hw_config_file;
+  return getDirectoryUtil()->getVolatileStateDir() + "/" + FLAGS_hw_config_file;
 }
 
 bool BcmPlatform::isBcmShellSupported() const {
@@ -80,38 +79,40 @@ phy::VCOFrequency BcmPlatform::getVCOFrequency(
     case cfg::PortSpeed::FOURHUNDREDG:
       return phy::VCOFrequency::VCO_26_5625GHZ;
     case cfg::PortSpeed::TWOHUNDREDG:
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case cfg::PortSpeed::HUNDREDG:
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case cfg::PortSpeed::FIFTYG:
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case cfg::PortSpeed::FIFTYTHREEPOINTONETWOFIVEG:
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
+    case cfg::PortSpeed::HUNDREDANDSIXPOINTTWOFIVEG:
+      [[fallthrough]];
     case cfg::PortSpeed::TWENTYFIVEG:
       switch (fecMode) {
         case phy::FecMode::RS544:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::RS544_2N:
           return phy::VCOFrequency::VCO_26_5625GHZ;
         case phy::FecMode::NONE:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::CL74:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::CL91:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::RS545:
-          FOLLY_FALLTHROUGH;
+          [[fallthrough]];
         case phy::FecMode::RS528:
           return phy::VCOFrequency::VCO_25_78125GHZ;
       }
     case cfg::PortSpeed::FORTYG:
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case cfg::PortSpeed::TWENTYG:
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case cfg::PortSpeed::XG:
       return phy::VCOFrequency::VCO_20_625GHZ;
     case cfg::PortSpeed::GIGE:
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case cfg::PortSpeed::EIGHTHUNDREDG:
     case cfg::PortSpeed::DEFAULT:
       return phy::VCOFrequency::UNKNOWN;

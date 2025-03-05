@@ -20,7 +20,6 @@
 #include "fboss/agent/hw/mock/MockRxPacket.h"
 #include "fboss/agent/packet/PktUtil.h"
 #include "fboss/agent/state/ArpResponseTable.h"
-#include "fboss/agent/state/Interface.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/state/Vlan.h"
 #include "fboss/agent/state/VlanMap.h"
@@ -28,7 +27,6 @@
 #include "fboss/agent/test/HwTestHandle.h"
 #include "fboss/agent/test/TestUtils.h"
 
-#include <boost/cast.hpp>
 #include <gtest/gtest.h>
 
 using namespace facebook::fboss;
@@ -56,7 +54,7 @@ unique_ptr<HwTestHandle> setupTestHandle() {
   auto respTable1 = make_shared<ArpResponseTable>();
   respTable1->setEntry(
       IPAddressV4("10.0.0.1"), MacAddress("00:02:00:00:00:01"), InterfaceID(1));
-  vlans->getVlan(VlanID(1))->setArpResponseTable(respTable1);
+  vlans->getNode(VlanID(1))->setArpResponseTable(respTable1);
 
   return createTestHandle(state);
 }
@@ -150,9 +148,10 @@ TEST(IPv4Test, Parse) {
       // Destination IP (10.0.0.10)
       "0a 00 00 0a");
 
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
+  EXPECT_HW_CALL(sw, stateChangedImpl(_)).Times(0);
   EXPECT_HW_CALL(sw, sendPacketSwitchedAsync_(_)).Times(0);
-  handle->rxPacket(make_unique<folly::IOBuf>(buf), portID, vlanID);
+  handle->rxPacket(
+      make_unique<folly::IOBuf>(buf), PortDescriptor(portID), vlanID);
   counters.update();
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.pkts.sum", 1);
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.drops.sum", 1);
@@ -182,9 +181,10 @@ TEST(IPv4Test, Parse) {
       // Destination IP (10.0.0.1)
       "0a 00 00 01");
 
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
+  EXPECT_HW_CALL(sw, stateChangedImpl(_)).Times(0);
   EXPECT_HW_CALL(sw, sendPacketSwitchedAsync_(_)).Times(0);
-  handle->rxPacket(make_unique<folly::IOBuf>(buf), portID, vlanID);
+  handle->rxPacket(
+      make_unique<folly::IOBuf>(buf), PortDescriptor(portID), vlanID);
   counters.update();
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.pkts.sum", 1);
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.drops.sum", 1);
@@ -193,6 +193,43 @@ TEST(IPv4Test, Parse) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "ipv4.too_small.sum", 0);
   counters.checkDelta(SwitchStats::kCounterPrefix + "ipv4.nexthop.sum", 0);
   counters.checkDelta(SwitchStats::kCounterPrefix + "ipv4.mine.sum", 1);
+  counters.checkDelta(SwitchStats::kCounterPrefix + "ipv4.ttl1_mine.sum", 0);
+  counters.checkDelta(SwitchStats::kCounterPrefix + "ipv4.no_arp.sum", 0);
+  counters.checkDelta(
+      SwitchStats::kCounterPrefix + "ipv4.wrong_version.sum", 0);
+
+  // Create an IP pkt with TTL1 to self
+  buf = PktUtil::parseHexData(
+      // dst mac, src mac
+      "02 00 01 00 00 01  02 00 02 01 02 03"
+      // 802.1q, VLAN 1
+      "81 00 00 01"
+      // IPv4
+      "08 00"
+      // Version(4), IHL(5), DSCP(7), ECN(1), Total Length(20)
+      "45  1d  00 14"
+      // Identification(0x3456), Flags(0x1), Fragment offset(0x1345)
+      "34 56  53 45"
+      // TTL(1), Protocol(6), Checksum (0x1234, fake)
+      "01  06  12 34"
+      // Source IP (1.2.3.4)
+      "01 02 03 04"
+      // Destination IP (10.0.0.1)
+      "0a 00 00 01");
+
+  EXPECT_HW_CALL(sw, stateChangedImpl(_)).Times(0);
+  EXPECT_HW_CALL(sw, sendPacketSwitchedAsync_(_)).Times(0);
+  handle->rxPacket(
+      make_unique<folly::IOBuf>(buf), PortDescriptor(portID), vlanID);
+  counters.update();
+  counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.pkts.sum", 1);
+  counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.drops.sum", 1);
+  counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.error.sum", 0);
+  counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.ipv4.sum", 1);
+  counters.checkDelta(SwitchStats::kCounterPrefix + "ipv4.too_small.sum", 0);
+  counters.checkDelta(SwitchStats::kCounterPrefix + "ipv4.nexthop.sum", 0);
+  counters.checkDelta(SwitchStats::kCounterPrefix + "ipv4.mine.sum", 1);
+  counters.checkDelta(SwitchStats::kCounterPrefix + "ipv4.ttl1_mine.sum", 1);
   counters.checkDelta(SwitchStats::kCounterPrefix + "ipv4.no_arp.sum", 0);
   counters.checkDelta(
       SwitchStats::kCounterPrefix + "ipv4.wrong_version.sum", 0);

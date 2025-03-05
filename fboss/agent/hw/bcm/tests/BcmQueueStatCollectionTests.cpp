@@ -14,18 +14,18 @@
 #include "fboss/agent/hw/bcm/tests/BcmTest.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
 
-#include "fboss/agent/hw/test/HwTestStatUtils.h"
-
 namespace facebook::fboss {
 
 TEST_F(BcmTest, onlyExpectedQueueStatsSeen) {
   auto setup = [this] {
     applyNewConfig(utility::onePortPerInterfaceConfig(
-        getHwSwitch(), masterLogicalPortIds(), cfg::PortLoopbackMode::MAC));
+        getHwSwitch(),
+        masterLogicalPortIds(),
+        getHwSwitch()->getPlatform()->getAsic()->desiredLoopbackModes()));
   };
   auto verify = [this] {
     for (auto i = 0; i < 10; ++i) {
-      updateHwSwitchStats(getHwSwitch());
+      getHwSwitch()->updateStats();
     }
     for (auto portId : masterLogicalPortIds()) {
       auto port = getHwSwitch()->getPortTable()->getBcmPort(portId);

@@ -18,7 +18,6 @@ namespace {
 static constexpr uint16_t kDefaultVlanId = 4095;
 static constexpr uint64_t kDefaultVirtualRouterId = 0;
 static constexpr uint64_t kDefault1QBridgeId = 0;
-static constexpr uint64_t kCpuPort = 0;
 static constexpr uint32_t kMaxPortUnicastQueues = 8;
 static constexpr uint32_t kMaxPortMulticastQueues = 8;
 static constexpr uint32_t kMaxPortQueues =
@@ -200,6 +199,9 @@ sai_status_t set_switch_attribute_fn(
     case SAI_SWITCH_ATTR_INGRESS_ACL:
       sw.setIngressAcl(attr->value.oid);
       break;
+    case SAI_SWITCH_ATTR_ARS_PROFILE:
+      sw.setArsProfile(attr->value.oid);
+      break;
     case SAI_SWITCH_ATTR_EXT_FAKE_LED:
     case SAI_SWITCH_ATTR_EXT_FAKE_LED_RESET:
       return sw.setLed(attr);
@@ -207,6 +209,7 @@ sai_status_t set_switch_attribute_fn(
     case SAI_SWITCH_ATTR_FDB_EVENT_NOTIFY:
     case SAI_SWITCH_ATTR_PACKET_EVENT_NOTIFY:
     case SAI_SWITCH_ATTR_TAM_EVENT_NOTIFY:
+    case SAI_SWITCH_ATTR_QUEUE_PFC_DEADLOCK_NOTIFY:
       // No callback implementation in SAI
       break;
     case SAI_SWITCH_ATTR_COUNTER_REFRESH_INTERVAL:
@@ -261,6 +264,21 @@ sai_status_t set_switch_attribute_fn(
       sw.setEcmpMemberCount(attr->value.u32);
       break;
 #endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+    case SAI_SWITCH_ATTR_CREDIT_WD:
+      sw.setCreditWatchdogEnable(attr->value.booldata);
+      break;
+    case SAI_SWITCH_ATTR_CREDIT_WD_TIMER:
+      sw.setCreditWatchdogMs(attr->value.u32);
+      break;
+#endif
+    case SAI_SWITCH_ATTR_PFC_DLR_PACKET_ACTION:
+      sw.setPfcDlrPacketAction(
+          static_cast<sai_packet_action_t>(attr->value.s32));
+      break;
+    case SAI_SWITCH_ATTR_TAM_OBJECT_ID:
+      sw.setTamObjectId(attr->value.oid);
+      break;
     default:
       res = SAI_STATUS_INVALID_PARAMETER;
       break;
@@ -437,6 +455,9 @@ sai_status_t get_switch_attribute_fn(
       case SAI_SWITCH_ATTR_INGRESS_ACL:
         attr[i].value.oid = sw.getIngressAcl();
         break;
+      case SAI_SWITCH_ATTR_ARS_PROFILE:
+        attr[i].value.oid = sw.getArsProfile();
+        break;
       case SAI_SWITCH_ATTR_COUNTER_REFRESH_INTERVAL:
         attr[i].value.u32 = sw.getCounterRefreshInterval();
         break;
@@ -502,10 +523,62 @@ sai_status_t get_switch_attribute_fn(
       case SAI_SWITCH_ATTR_FABRIC_PORT_LIST:
         attr[i].value.objlist.count = 0;
         break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 12, 0)
+      case SAI_SWITCH_ATTR_CREDIT_WD:
+        attr[i].value.booldata = sw.getCreditWatchdogEnable();
+        break;
+      case SAI_SWITCH_ATTR_CREDIT_WD_TIMER:
+        attr[i].value.u32 = sw.getCreditWatchdogMs();
+        break;
+#endif
+      case SAI_SWITCH_ATTR_PFC_DLR_PACKET_ACTION:
+        attr[i].value.s32 = sw.getPfcDlrPacketAction();
+        break;
+      case SAI_SWITCH_ATTR_TAM_OBJECT_ID:
+        attr[i].value.oid = sw.getTamObjectId();
+        break;
       default:
         return SAI_STATUS_INVALID_PARAMETER;
     }
   }
+  return SAI_STATUS_SUCCESS;
+}
+
+sai_status_t get_switch_stats_fn(
+    sai_object_id_t /*switchId*/,
+    uint32_t num_of_counters,
+    const sai_stat_id_t* /*counter_ids*/,
+    uint64_t* counters) {
+  for (auto i = 0; i < num_of_counters; ++i) {
+    counters[i] = 0;
+  }
+  return SAI_STATUS_SUCCESS;
+}
+
+/*
+ * In fake sai there isn't a dataplane, so all stats
+ * stay at 0. Leverage the corresponding non _ext
+ * stats fn to get the stats. If stats are always 0,
+ * modes (READ, READ_AND_CLEAR) don't matter
+ */
+sai_status_t get_switch_stats_ext_fn(
+    sai_object_id_t switchId,
+    uint32_t num_of_counters,
+    const sai_stat_id_t* counter_ids,
+    sai_stats_mode_t /*mode*/,
+    uint64_t* counters) {
+  return get_switch_stats_fn(switchId, num_of_counters, counter_ids, counters);
+}
+
+/*
+ *  noop clear stats API. Since fake doesnt have a
+ *  dataplane stats are always set to 0, so
+ *  no need to clear them
+ */
+sai_status_t clear_switch_stats_fn(
+    sai_object_id_t /*switch_id*/,
+    uint32_t /*number_of_counters*/,
+    const sai_stat_id_t* /*counter_ids*/) {
   return SAI_STATUS_SUCCESS;
 }
 
@@ -518,6 +591,9 @@ void populate_switch_api(sai_switch_api_t** switch_api) {
   _switch_api.remove_switch = &remove_switch_fn;
   _switch_api.set_switch_attribute = &set_switch_attribute_fn;
   _switch_api.get_switch_attribute = &get_switch_attribute_fn;
+  _switch_api.get_switch_stats = &get_switch_stats_fn;
+  _switch_api.get_switch_stats_ext = &get_switch_stats_ext_fn;
+  _switch_api.clear_switch_stats = &clear_switch_stats_fn;
   *switch_api = &_switch_api;
 }
 

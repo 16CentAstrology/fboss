@@ -19,7 +19,7 @@ class PlatformProductInfo;
 
 class Wedge40Platform : public WedgePlatform {
  public:
-  explicit Wedge40Platform(
+  Wedge40Platform(
       std::unique_ptr<PlatformProductInfo> productInfo,
       folly::MacAddress localMac);
 
@@ -52,9 +52,9 @@ class Wedge40Platform : public WedgePlatform {
 
  private:
   void setupAsic(
-      cfg::SwitchType switchType,
       std::optional<int64_t> switchId,
-      std::optional<cfg::Range64> systemPortRange) override;
+      const cfg::SwitchInfo& switchInfo,
+      std::optional<HwAsic::FabricNodeRole> fabricNodeRole) override;
   Wedge40Platform(Wedge40Platform const&) = delete;
   Wedge40Platform& operator=(Wedge40Platform const&) = delete;
   std::unique_ptr<Trident2Asic> asic_;

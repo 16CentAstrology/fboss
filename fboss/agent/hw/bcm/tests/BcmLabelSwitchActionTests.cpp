@@ -105,9 +105,8 @@ class BcmLabelSwitchActionTest : public BcmTest {
   void verifyTestLabelForwardingEntry(
       const std::shared_ptr<LabelForwardingEntry>& mplsEntry) {
     auto state = getHwSwitchEnsemble()->getProgrammedState();
-    auto entry =
-        state->getLabelForwardingInformationBase()->getLabelForwardingEntryIf(
-            mplsEntry->getID());
+    auto entry = state->getLabelForwardingInformationBase()->getNodeIf(
+        mplsEntry->getID());
     bcm_mpls_tunnel_switch_t info;
     bcm_mpls_tunnel_switch_t_init(&info);
     info.label = entry->getID();
@@ -214,7 +213,7 @@ class BcmLabelSwitchActionTest : public BcmTest {
   }
 
   void addMplsRoute(std::shared_ptr<LabelForwardingEntry> entry) {
-    LabelForwardingInformationBase::resolve(entry);
+    MultiLabelForwardingInformationBase::resolve(entry);
     auto updater = getHwSwitchEnsemble()->getRouteUpdater();
     MplsRoute route;
     route.topLabel() = entry->getID();
@@ -235,6 +234,9 @@ class BcmLabelSwitchActionTest : public BcmTest {
 
 TEST_F(BcmLabelSwitchActionTest, addLabelSwitchAction) {
   if (!isSupported(HwAsic::Feature::MPLS)) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto setup = [=]() { addAllTestLabelForwardingEntries(); };
@@ -246,6 +248,9 @@ TEST_F(BcmLabelSwitchActionTest, addLabelSwitchAction) {
 TEST_F(BcmLabelSwitchActionTest, addLabelSwitchActionWithL3Routes) {
   if (!isSupported(HwAsic::Feature::MPLS) ||
       !isSupported(HwAsic::Feature::MPLS_ECMP)) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto setup = [=]() {
@@ -259,6 +264,9 @@ TEST_F(BcmLabelSwitchActionTest, addLabelSwitchActionWithL3Routes) {
 
 TEST_F(BcmLabelSwitchActionTest, removeLabelSwitchAction) {
   if (!isSupported(HwAsic::Feature::MPLS)) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto setup = [=]() {

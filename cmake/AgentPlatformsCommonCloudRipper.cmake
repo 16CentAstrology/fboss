@@ -4,10 +4,7 @@
 # cmake/FooBar.cmake
 
 add_library(cloud_ripper_platform_mapping
-    fboss/agent/platforms/common/cloud_ripper/CloudRipperPlatformMapping.cpp
-    fboss/agent/platforms/common/cloud_ripper/CloudRipperVoqPlatformMapping.cpp
-    fboss/agent/platforms/common/cloud_ripper/CloudRipperFabricPlatformMapping.cpp
-
+    fboss/agent/platforms/common/cloud_ripper/oss/CloudRipperPlatformMapping.cpp
 )
 
 target_link_libraries(cloud_ripper_platform_mapping

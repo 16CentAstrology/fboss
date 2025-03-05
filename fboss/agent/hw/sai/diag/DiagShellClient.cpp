@@ -8,6 +8,7 @@
  *
  */
 
+#include "fboss/agent/FbossEventBase.h"
 #include "fboss/agent/hw/sai/switch/gen-cpp2/SaiCtrlAsyncClient.h"
 #include "folly/Memory.h"
 
@@ -15,11 +16,9 @@
 #include <folly/FileUtil.h>
 #include <folly/Range.h>
 #include <folly/ScopeGuard.h>
-#include <folly/SocketAddress.h>
 #include <folly/init/Init.h>
 #include <folly/io/async/AsyncSignalHandler.h>
 #include <folly/io/async/EventBase.h>
-#include <folly/io/async/EventBaseManager.h>
 #include "fboss/agent/hw/sai/diag/DiagShellClient.h"
 
 #include <netdb.h>
@@ -176,8 +175,8 @@ class SignalHandler : public AsyncSignalHandler {
 
 int main(int argc, char* argv[]) {
   folly::init(&argc, &argv);
-  folly::EventBase streamEvb;
-  folly::EventBase stdinEvb;
+  facebook::fboss::FbossEventBase streamEvb{"DiagShellClientStreamEventBase"};
+  facebook::fboss::FbossEventBase stdinEvb{"DiagShellClientStdinEventBase"};
 
   bool stopThread = false;
   // Converts the host to IP address if a hostname is given

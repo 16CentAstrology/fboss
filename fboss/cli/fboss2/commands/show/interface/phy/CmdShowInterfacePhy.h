@@ -53,14 +53,15 @@ class CmdShowInterfacePhy
       std::ostream& out,
       phy::PhyInfo& phyInfo,
       const std::string& ifName) {
+    auto& phyState = *phyInfo.state();
+    auto& phyStats = *phyInfo.stats();
     auto phyType =
-        apache::thrift::util::enumNameSafe(*phyInfo.phyChip()->type());
+        apache::thrift::util::enumNameSafe(*phyState.phyChip()->type());
     std::string prefix = phyType + "-";
     Table table;
     table.setHeader({"Interface", ifName});
     table.addRow({"PhyChipType", phyType});
-    auto linkState = phyInfo.state().has_value() ? phyInfo.state()->linkState()
-                                                 : phyInfo.linkState();
+    auto linkState = phyState.linkState();
     if (linkState.has_value()) {
       if (*linkState) {
         table.addRow(
@@ -70,145 +71,23 @@ class CmdShowInterfacePhy
             {"Link State", Table::StyledCell("DOWN", Table::Style::ERROR)});
       }
     }
-    auto linkFlapCount = phyInfo.stats().has_value()
-        ? phyInfo.stats()->linkFlapCount()
-        : phyInfo.linkFlapCount();
+    auto linkFlapCount = phyStats.linkFlapCount();
     if (linkFlapCount.has_value()) {
       table.addRow({"Link Flap Count", std::to_string(*linkFlapCount)});
     }
-    auto speed = phyInfo.state().has_value() ? phyInfo.state()->speed()
-                                             : phyInfo.speed();
+    auto speed = phyState.speed();
     table.addRow({"Speed", apache::thrift::util::enumNameSafe(*speed)});
-    auto timeCollected = phyInfo.state().has_value()
-        ? phyInfo.state()->timeCollected()
-        : phyInfo.timeCollected();
+    auto timeCollected = phyState.timeCollected();
     table.addRow(
         {phyType + " Data Collected",
          utils::getPrettyElapsedTime(*timeCollected) + " ago"});
     out << table;
-    if (auto state = phyInfo.state()) {
-      // Assume stats exist when state does
-      auto& stat = phyInfo.stats().ensure();
-      if (auto systemState = state->system()) {
-        printSideStateAndStat(
-            out, *systemState, stat.system().ensure(), prefix + "System ");
-      }
+    if (auto systemState = phyState.system()) {
       printSideStateAndStat(
-          out, *state->line(), *stat.line(), prefix + "Line ");
-    } else {
-      if (auto systemSide = phyInfo.system()) {
-        printSideInfo(out, *systemSide, prefix + "System ");
-      }
-      printSideInfo(out, *phyInfo.line(), prefix + "Line ");
+          out, *systemState, phyStats.system().ensure(), prefix + "System ");
     }
-  }
-
-  void printSideInfo(
-      std::ostream& out,
-      phy::PhySideInfo& sideInfo,
-      const std::string& prefix) {
-    if (auto rs = sideInfo.rs()) {
-      Table rsTable;
-      rsTable.setHeader({prefix + "Reconciliation Sublayer", ""});
-      rsTable.addRow(
-          {prefix + "Local Fault Live",
-           std::to_string(*(*rs).faultStatus()->localFault())});
-      rsTable.addRow(
-          {prefix + "Remote Fault Live",
-           std::to_string(*(*rs).faultStatus()->remoteFault())});
-      out << rsTable;
-    }
-    if (auto pcs = sideInfo.pcs()) {
-      Table pcsTable;
-      Table rsFecTable;
-      bool hasPcsData{false}, hasRsFecData{false};
-      if (auto pcsRxStatusLive = (*pcs).pcsRxStatusLive()) {
-        pcsTable.addRow(
-            {prefix + "PCS RX Link Status Live",
-             makeColorCellForLiveFlag(std::to_string(*pcsRxStatusLive))});
-        hasPcsData = true;
-      }
-      if (auto rsFec = (*pcs).rsFec()) {
-        rsFecTable.setHeader({prefix + "RS FEC", ""});
-        rsFecTable.addRow(
-            {prefix + "Corrected codewords",
-             std::to_string(*(rsFec->correctedCodewords()))});
-        rsFecTable.addRow(
-            {prefix + "Uncorrected codewords",
-             std::to_string(*(rsFec->uncorrectedCodewords()))});
-        std::ostringstream outStringStream;
-        outStringStream << *rsFec->preFECBer();
-        rsFecTable.addRow({prefix + "Pre-FEC BER", outStringStream.str()});
-        hasRsFecData = true;
-      }
-      if (hasPcsData) {
-        pcsTable.setHeader({prefix + "PCS", ""});
-        out << pcsTable;
-      }
-      if (hasRsFecData) {
-        out << rsFecTable;
-      }
-    }
-
-    if (!sideInfo.pmd()->lanes()->empty()) {
-      Table pmdTable;
-      pmdTable.setHeader(
-          {prefix + "PMD",
-           "Lane",
-           "RX Signal Detect Live",
-           "RX Signal Detect Changed",
-           "RX CDR Lock Live",
-           "RX CDR Lock Changed",
-           "Eye Heights",
-           "Eye Widths",
-           "Rx PPM"});
-      for (const auto& laneInfo : *sideInfo.pmd()->lanes()) {
-        auto lane = laneInfo.second;
-        std::string sigDetLive = "N/A";
-        std::string cdrLockLive = "N/A";
-        std::string sigDetChanged = "N/A";
-        std::string cdrLockChanged = "N/A";
-        std::string rxPPM = "N/A";
-        std::vector<float> eyeHeights = {};
-        std::vector<float> eyeWidths = {};
-        if (auto rxSigDetLive = lane.signalDetectLive()) {
-          sigDetLive = std::to_string(*rxSigDetLive);
-        }
-        if (auto rxSigDetChanged = lane.signalDetectChangedCount()) {
-          sigDetChanged = std::to_string(*rxSigDetChanged);
-        }
-        if (auto rxCdrLockLive = lane.cdrLockLive()) {
-          cdrLockLive = std::to_string(*rxCdrLockLive);
-        }
-        if (auto rxCdrLockChanged = lane.cdrLockChangedCount()) {
-          cdrLockChanged = std::to_string(*rxCdrLockChanged);
-        }
-        if (auto rxFreqPPM = lane.rxFrequencyPPM()) {
-          rxPPM = std::to_string(*rxFreqPPM);
-        }
-        if (auto eyes = lane.eyes()) {
-          for (const auto& eye : *eyes) {
-            if (auto eyeW = eye.width()) {
-              eyeWidths.push_back(*eyeW);
-            }
-            if (auto eyeH = eye.height()) {
-              eyeHeights.push_back(*eyeH);
-            }
-          }
-        }
-        pmdTable.addRow(
-            {"",
-             std::to_string(*lane.lane()),
-             makeColorCellForLiveFlag(sigDetLive),
-             sigDetChanged,
-             makeColorCellForLiveFlag(cdrLockLive),
-             cdrLockChanged,
-             folly::join(",", eyeHeights),
-             folly::join(",", eyeWidths),
-             rxPPM});
-      }
-      out << pmdTable;
-    }
+    printSideStateAndStat(
+        out, *phyState.line(), *phyStats.line(), prefix + "Line ");
   }
 
   void printSideStateAndStat(
@@ -225,13 +104,22 @@ class CmdShowInterfacePhy
       rsTable.addRow(
           {prefix + "Remote Fault Live",
            std::to_string(*(*rs).faultStatus()->remoteFault())});
+      rsTable.addRow(
+          {prefix + "High CRC Error Rate Live",
+           std::to_string(*(*rs).faultStatus()->highCrcErrorRateLive())});
+      rsTable.addRow(
+          {prefix + "High CRC Error Rate Changed",
+           std::to_string(
+               *(*rs).faultStatus()->highCrcErrorRateChangedCount())});
       out << rsTable;
     }
     if (sideState.pcs().has_value() || sideStats.pcs().has_value()) {
       Table pcsTable;
       Table rsFecTable;
       Table rsFecStateTable;
-      bool hasPcsData{false}, hasRsFecData{false}, hasRsFecState{false};
+      Table rsFecCodewordStatsTable;
+      bool hasPcsData{false}, hasRsFecData{false}, hasRsFecState{false},
+          hasRsFecCodewordStats{false};
       if (sideState.pcs().has_value()) {
         if (auto pcsRxStatusLive = sideState.pcs()->pcsRxStatusLive()) {
           pcsTable.setHeader({prefix + "PCS", ""});
@@ -246,12 +134,15 @@ class CmdShowInterfacePhy
           hasPcsData = true;
         }
         if (auto rsFecState = sideState.pcs()->rsFecState()) {
-          rsFecStateTable.setHeader(
-              {prefix + "RS FEC State",
-               "Lane",
-               "Alignment Lock Live",
-               "Alignment Lock Changed"});
           for (auto& fecLaneState : *rsFecState->lanes()) {
+            if (!hasRsFecState) {
+              // Display the header only once
+              rsFecStateTable.setHeader(
+                  {prefix + "RS FEC State",
+                   "Lane",
+                   "Alignment Lock Live",
+                   "Alignment Lock Changed"});
+            }
             std::string fecAmLive = "N/A";
             std::string fecAmChanged = "N/A";
             if (auto fecAmLiveState =
@@ -267,8 +158,8 @@ class CmdShowInterfacePhy
                  std::to_string(*(fecLaneState.second.lane())),
                  makeColorCellForLiveFlag(fecAmLive),
                  fecAmChanged});
+            hasRsFecState = true;
           }
-          hasRsFecState = true;
         }
       }
       if (sideStats.pcs().has_value()) {
@@ -283,13 +174,32 @@ class CmdShowInterfacePhy
           std::ostringstream outStringStream;
           outStringStream << *rsFec->preFECBer();
           rsFecTable.addRow({prefix + "Pre-FEC BER", outStringStream.str()});
+          if (rsFec->fecTail().has_value()) {
+            rsFecTable.addRow(
+                {prefix + "FEC Tail",
+                 std::to_string(rsFec->fecTail().value())});
+          }
           hasRsFecData = true;
+          if (!rsFec->codewordStats()->empty()) {
+            rsFecCodewordStatsTable.setHeader(
+                {prefix + "Codeword stats", "Symbol Errors", "# of codewords"});
+            for (auto& [symbolErrors, numCodewords] : *rsFec->codewordStats()) {
+              rsFecCodewordStatsTable.addRow(
+                  {"",
+                   std::to_string(symbolErrors),
+                   std::to_string(numCodewords)});
+            }
+            hasRsFecCodewordStats = true;
+          }
         }
         if (hasPcsData) {
           out << pcsTable;
         }
         if (hasRsFecData) {
           out << rsFecTable;
+        }
+        if (hasRsFecCodewordStats) {
+          out << rsFecCodewordStatsTable;
         }
         if (hasRsFecState) {
           out << rsFecStateTable;
@@ -305,65 +215,125 @@ class CmdShowInterfacePhy
       pmdLanes.insert(it.first);
     }
     if (!pmdLanes.empty()) {
-      Table pmdTable;
-      pmdTable.setHeader(
-          {prefix + "PMD",
-           "Lane",
-           "RX Signal Detect Live",
-           "RX Signal Detect Changed",
-           "RX CDR Lock Live",
-           "RX CDR Lock Changed",
-           "Eye Heights",
-           "Eye Widths",
-           "Rx PPM"});
-      for (auto pmdLane : pmdLanes) {
-        auto laneState = (*sideState.pmd()->lanes())[pmdLane];
-        auto laneStat = (*sideStats.pmd()->lanes())[pmdLane];
-        std::string sigDetLive = "N/A";
-        std::string cdrLockLive = "N/A";
-        std::string sigDetChanged = "N/A";
-        std::string cdrLockChanged = "N/A";
-        std::string rxPPM = "N/A";
-        std::vector<float> eyeHeights = {};
-        std::vector<float> eyeWidths = {};
-        if (auto rxSigDetLive = laneState.signalDetectLive()) {
-          sigDetLive = std::to_string(*rxSigDetLive);
-        }
-        if (auto rxSigDetChanged = laneStat.signalDetectChangedCount()) {
-          sigDetChanged = std::to_string(*rxSigDetChanged);
-        }
-        if (auto rxCdrLockLive = laneState.cdrLockLive()) {
-          cdrLockLive = std::to_string(*rxCdrLockLive);
-        }
-        if (auto rxCdrLockChanged = laneStat.cdrLockChangedCount()) {
-          cdrLockChanged = std::to_string(*rxCdrLockChanged);
-        }
-        if (auto rxFreqPPM = laneState.rxFrequencyPPM()) {
-          rxPPM = std::to_string(*rxFreqPPM);
-        }
-        if (auto eyes = laneStat.eyes()) {
-          for (const auto& eye : *eyes) {
-            if (auto eyeW = eye.width()) {
-              eyeWidths.push_back(*eyeW);
-            }
-            if (auto eyeH = eye.height()) {
-              eyeHeights.push_back(*eyeH);
-            }
+      printPmdLaneRxInfo(out, sideState, sideStats, pmdLanes, prefix);
+      printPmdLaneTxInfo(out, sideState, pmdLanes, prefix);
+    }
+  }
+
+  void printPmdLaneRxInfo(
+      std::ostream& out,
+      phy::PhySideState& sideState,
+      phy::PhySideStats& sideStats,
+      const std::set<int>& pmdLanes,
+      const std::string& prefix) {
+    Table pmdRxTable;
+    pmdRxTable.setHeader(
+        {prefix + "RX PMD",
+         "Lane",
+         "RX Signal Detect Live",
+         "RX Signal Detect Changed",
+         "RX CDR Lock Live",
+         "RX CDR Lock Changed",
+         "Eye Heights",
+         "Eye Widths",
+         "Rx PPM",
+         "RX SNR"});
+    for (auto pmdLane : pmdLanes) {
+      auto laneState = (*sideState.pmd()->lanes())[pmdLane];
+      auto laneStat = (*sideStats.pmd()->lanes())[pmdLane];
+      std::string sigDetLive = "N/A";
+      std::string cdrLockLive = "N/A";
+      std::string sigDetChanged = "N/A";
+      std::string cdrLockChanged = "N/A";
+      std::string rxPPM = "N/A";
+      std::string rxSNR = "N/A";
+      std::vector<float> eyeHeights = {};
+      std::vector<float> eyeWidths = {};
+      if (auto rxSigDetLive = laneState.signalDetectLive()) {
+        sigDetLive = std::to_string(*rxSigDetLive);
+      }
+      if (auto rxSigDetChanged = laneStat.signalDetectChangedCount()) {
+        sigDetChanged = std::to_string(*rxSigDetChanged);
+      }
+      if (auto rxCdrLockLive = laneState.cdrLockLive()) {
+        cdrLockLive = std::to_string(*rxCdrLockLive);
+      }
+      if (auto rxCdrLockChanged = laneStat.cdrLockChangedCount()) {
+        cdrLockChanged = std::to_string(*rxCdrLockChanged);
+      }
+      if (auto rxFreqPPM = laneState.rxFrequencyPPM()) {
+        rxPPM = std::to_string(*rxFreqPPM);
+      }
+      if (auto rxLaneSNR = laneStat.snr()) {
+        rxSNR = std::to_string(*rxLaneSNR);
+      }
+      if (auto eyes = laneStat.eyes()) {
+        for (const auto& eye : *eyes) {
+          if (auto eyeW = eye.width()) {
+            eyeWidths.push_back(*eyeW);
+          }
+          if (auto eyeH = eye.height()) {
+            eyeHeights.push_back(*eyeH);
           }
         }
-        pmdTable.addRow(
-            {"",
-             std::to_string(pmdLane),
-             makeColorCellForLiveFlag(sigDetLive),
-             sigDetChanged,
-             makeColorCellForLiveFlag(cdrLockLive),
-             cdrLockChanged,
-             folly::join(",", eyeHeights),
-             folly::join(",", eyeWidths),
-             rxPPM});
       }
-      out << pmdTable;
+      pmdRxTable.addRow(
+          {"",
+           std::to_string(pmdLane),
+           makeColorCellForLiveFlag(sigDetLive),
+           sigDetChanged,
+           makeColorCellForLiveFlag(cdrLockLive),
+           cdrLockChanged,
+           folly::join(",", eyeHeights),
+           folly::join(",", eyeWidths),
+           rxPPM,
+           rxSNR});
     }
+    out << pmdRxTable;
+  }
+
+  void printPmdLaneTxInfo(
+      std::ostream& out,
+      phy::PhySideState& sideState,
+      const std::set<int>& pmdLanes,
+      const std::string& prefix) {
+    Table pmdTxTable;
+    pmdTxTable.setHeader(
+        {prefix + "TX PMD",
+         "Lane",
+         "Pre3",
+         "Pre2",
+         "Pre1",
+         "Main",
+         "Post1",
+         "Post2",
+         "Post3"});
+    for (auto pmdLane : pmdLanes) {
+      auto laneState = (*sideState.pmd()->lanes())[pmdLane];
+      auto txSettings = *laneState.txSettings();
+      std::string pre3 = "N/A";
+      auto txPre3 = txSettings.pre3();
+      if (txPre3.has_value()) {
+        pre3 = std::to_string(*txPre3);
+      }
+      std::string pre2 = std::to_string(*txSettings.pre2());
+      std::string pre = std::to_string(*txSettings.pre());
+      std::string main = std::to_string(*txSettings.main());
+      std::string post = std::to_string(*txSettings.post());
+      std::string post2 = std::to_string(*txSettings.post2());
+      std::string post3 = std::to_string(*txSettings.post3());
+      pmdTxTable.addRow(
+          {"",
+           std::to_string(pmdLane),
+           pre3,
+           pre2,
+           pre,
+           main,
+           post,
+           post2,
+           post3});
+    }
+    out << pmdTxTable;
   }
 
   Table::StyledCell makeColorCellForLiveFlag(const std::string& flag) {
@@ -386,26 +356,34 @@ class CmdShowInterfacePhy
             utils::createClient<facebook::fboss::FbossCtrlAsyncClient>(
                 hostInfo);
         std::map<std::string, phy::PhyInfo> phyInfo;
-        agentClient->sync_getInterfacePhyInfo(phyInfo, queriedIfs.data());
+        if (queriedIfs.empty()) {
+          agentClient->sync_getAllInterfacePhyInfo(phyInfo);
+        } else {
+          agentClient->sync_getInterfacePhyInfo(phyInfo, queriedIfs.data());
+        }
         for (auto& interfacePhyInfo : phyInfo) {
           model.phyInfo_ref()[interfacePhyInfo.first].insert(
               {phy::DataPlanePhyChipType::IPHY, interfacePhyInfo.second});
         }
       }
-    } catch (apache::thrift::transport::TTransportException& e) {
+    } catch (apache::thrift::transport::TTransportException&) {
       std::cerr << "Cannot connect to wedge_agent\n";
     }
     try {
       if (phyChipType.xphyIncluded) {
         auto qsfpClient = utils::createClient<QsfpServiceAsyncClient>(hostInfo);
         std::map<std::string, phy::PhyInfo> phyInfo;
-        qsfpClient->sync_getInterfacePhyInfo(phyInfo, queriedIfs.data());
+        if (queriedIfs.empty()) {
+          qsfpClient->sync_getAllInterfacePhyInfo(phyInfo);
+        } else {
+          qsfpClient->sync_getInterfacePhyInfo(phyInfo, queriedIfs.data());
+        }
         for (auto& interfacePhyInfo : phyInfo) {
           model.phyInfo_ref()[interfacePhyInfo.first].insert(
               {phy::DataPlanePhyChipType::XPHY, interfacePhyInfo.second});
         }
       }
-    } catch (apache::thrift::transport::TTransportException& e) {
+    } catch (apache::thrift::transport::TTransportException&) {
       std::cerr << "Cannot connect to qsfp_service\n";
     }
     return model;

@@ -48,12 +48,13 @@ struct SaiBufferPoolTraits {
         SaiIntDefault<sai_uint64_t>>;
   };
   using AdapterKey = BufferPoolSaiId;
-  using AdapterHostKey = Attributes::Type;
   using CreateAttributes = std::tuple<
       Attributes::Type,
       Attributes::Size,
       Attributes::ThresholdMode,
       std::optional<Attributes::XoffSize>>;
+  using AdapterHostKey =
+      std::tuple<Attributes::Type, Attributes::Size, Attributes::ThresholdMode>;
 
   static constexpr std::array<sai_stat_id_t, 1> CounterIdsToReadAndClear = {
       SAI_BUFFER_POOL_STAT_WATERMARK_BYTES,
@@ -92,6 +93,10 @@ struct SaiBufferProfileTraits {
         EnumType,
         SAI_BUFFER_PROFILE_ATTR_SHARED_DYNAMIC_TH,
         sai_int8_t>;
+    using SharedStaticThreshold = SaiAttribute<
+        EnumType,
+        SAI_BUFFER_PROFILE_ATTR_SHARED_STATIC_TH,
+        sai_uint64_t>;
     using XoffTh =
         SaiAttribute<EnumType, SAI_BUFFER_PROFILE_ATTR_XOFF_TH, sai_uint64_t>;
     using XonTh =
@@ -100,6 +105,31 @@ struct SaiBufferProfileTraits {
         EnumType,
         SAI_BUFFER_PROFILE_ATTR_XON_OFFSET_TH,
         sai_uint64_t>;
+    struct AttributeSharedFadtMaxTh {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using SharedFadtMaxTh =
+        SaiExtensionAttribute<sai_uint64_t, AttributeSharedFadtMaxTh>;
+    struct AttributeSharedFadtMinTh {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using SharedFadtMinTh =
+        SaiExtensionAttribute<sai_uint64_t, AttributeSharedFadtMinTh>;
+    struct AttributeSramFadtMaxTh {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using SramFadtMaxTh =
+        SaiExtensionAttribute<sai_uint64_t, AttributeSramFadtMaxTh>;
+    struct AttributeSramFadtMinTh {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using SramFadtMinTh =
+        SaiExtensionAttribute<sai_uint64_t, AttributeSramFadtMinTh>;
+    struct AttributeSramFadtXonOffset {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using SramFadtXonOffset =
+        SaiExtensionAttribute<sai_uint64_t, AttributeSramFadtXonOffset>;
   };
   using AdapterKey = BufferProfileSaiId;
   using CreateAttributes = std::tuple<
@@ -107,9 +137,19 @@ struct SaiBufferProfileTraits {
       std::optional<Attributes::ReservedBytes>,
       std::optional<Attributes::ThresholdMode>,
       std::optional<Attributes::SharedDynamicThreshold>,
+#if not defined(BRCM_SAI_SDK_XGS_AND_DNX)
+      // TODO(nivinl): Get rid of the check once support is
+      // available in SAI 8.2/11.3 - CS00012374846.
+      std::optional<Attributes::SharedStaticThreshold>,
+#endif
       std::optional<Attributes::XoffTh>,
       std::optional<Attributes::XonTh>,
-      std::optional<Attributes::XonOffsetTh>>;
+      std::optional<Attributes::XonOffsetTh>,
+      std::optional<Attributes::SharedFadtMaxTh>,
+      std::optional<Attributes::SharedFadtMinTh>,
+      std::optional<Attributes::SramFadtMaxTh>,
+      std::optional<Attributes::SramFadtMinTh>,
+      std::optional<Attributes::SramFadtXonOffset>>;
   using AdapterHostKey = CreateAttributes;
 };
 
@@ -117,9 +157,15 @@ SAI_ATTRIBUTE_NAME(BufferProfile, PoolId);
 SAI_ATTRIBUTE_NAME(BufferProfile, ReservedBytes);
 SAI_ATTRIBUTE_NAME(BufferProfile, ThresholdMode);
 SAI_ATTRIBUTE_NAME(BufferProfile, SharedDynamicThreshold);
+SAI_ATTRIBUTE_NAME(BufferProfile, SharedStaticThreshold);
 SAI_ATTRIBUTE_NAME(BufferProfile, XoffTh);
 SAI_ATTRIBUTE_NAME(BufferProfile, XonTh);
 SAI_ATTRIBUTE_NAME(BufferProfile, XonOffsetTh);
+SAI_ATTRIBUTE_NAME(BufferProfile, SharedFadtMaxTh);
+SAI_ATTRIBUTE_NAME(BufferProfile, SharedFadtMinTh);
+SAI_ATTRIBUTE_NAME(BufferProfile, SramFadtMaxTh);
+SAI_ATTRIBUTE_NAME(BufferProfile, SramFadtMinTh);
+SAI_ATTRIBUTE_NAME(BufferProfile, SramFadtXonOffset);
 
 struct SaiIngressPriorityGroupTraits {
   static constexpr sai_api_t ApiType = SAI_API_BUFFER;
@@ -152,13 +198,10 @@ struct SaiIngressPriorityGroupTraits {
   /*
    * XXX: As of now, get_ingress_priority_group_stats_ext() is unsupported
    * for Broadcom SAI platforms and hence avoid reading the watermark stats
-   * as clearOnRead counters. This needs to be fixed up once the issue
-   * tracked in CS00012282384 is addressed.
+   * as clearOnRead counters. This is addressed for DNX via CS00012282384,
+   * however, still open for rest of the SAI platforms.
    */
-  static constexpr std::array<sai_stat_id_t, 0> CounterIdsToReadAndClear = {
-      // SAI_INGRESS_PRIORITY_GROUP_STAT_SHARED_WATERMARK_BYTES,
-      // SAI_INGRESS_PRIORITY_GROUP_STAT_XOFF_ROOM_WATERMARK_BYTES,
-  };
+  static constexpr std::array<sai_stat_id_t, 0> CounterIdsToReadAndClear = {};
   static constexpr std::array<sai_stat_id_t, 0> CounterIdsToRead = {};
 };
 

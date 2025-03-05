@@ -39,6 +39,8 @@ namespace {
 unique_ptr<HwTestHandle> setupTestHandle() {
   // Setup the initial state object
   cfg::SwitchConfig thriftCfg;
+  thriftCfg.switchSettings()->switchIdToSwitchInfo() = {
+      std::make_pair(0, createSwitchInfo(cfg::SwitchType::NPU))};
 
   // Add VLAN 1, and ports 1-39 which belong to it.
   cfg::Vlan thriftVlan;
@@ -81,7 +83,31 @@ unique_ptr<HwTestHandle> setupTestHandle() {
 
 } // unnamed namespace
 
-TEST(CaptureTest, FullCapture) {
+template <bool enableIntfNbrTable>
+struct EnableIntfNbrTable {
+  static constexpr auto intfNbrTable = enableIntfNbrTable;
+};
+
+using NbrTableTypes =
+    ::testing::Types<EnableIntfNbrTable<false>, EnableIntfNbrTable<true>>;
+
+template <typename EnableIntfNbrTableT>
+class CaptureTest : public ::testing::Test {
+  static auto constexpr intfNbrTable = EnableIntfNbrTableT::intfNbrTable;
+
+  void SetUp() override {
+    FLAGS_intf_nbr_tables = isIntfNbrTable();
+  }
+
+ public:
+  bool isIntfNbrTable() const {
+    return intfNbrTable == true;
+  }
+};
+
+TYPED_TEST_SUITE(CaptureTest, NbrTableTypes);
+
+TYPED_TEST(CaptureTest, FullCapture) {
   auto handle = setupTestHandle();
   auto sw = handle->getSw();
 
@@ -199,7 +225,8 @@ TEST(CaptureTest, FullCapture) {
   // This should trigger the switch to send an ARP request
   // and set a pending entry.
   EXPECT_HW_CALL(sw, sendPacketSwitchedAsync_(_)).Times(1);
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(1);
+  // pending entry is not created for intf neighbors
+  EXPECT_STATE_UPDATE_TIMES(sw, this->isIntfNbrTable() ? 0 : 1);
   sw->packetReceived(ipPkt.clone());
   sw->getNeighborUpdater()->waitForPendingUpdates();
   waitForStateUpdates(sw);
@@ -207,7 +234,7 @@ TEST(CaptureTest, FullCapture) {
   // Receive an ARP reply for the desired IP. This should cause the
   // arp entry to change from pending to active. That in turn would
   // trigger a static l2 entry add update
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(2);
+  EXPECT_STATE_UPDATE_TIMES(sw, 2);
   sw->packetReceived(arpPkt.clone());
   sw->getNeighborUpdater()->waitForPendingUpdates();
   waitForStateUpdates(sw);

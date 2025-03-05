@@ -3,6 +3,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import os
 
 import platform
@@ -214,7 +216,6 @@ class HostType(object):
                 ostype = "darwin"
             elif is_windows():
                 ostype = "windows"
-                # pyre-fixme[16]: Module `sys` has no attribute `getwindowsversion`.
                 distrovers = str(sys.getwindowsversion().major)
             elif sys.platform.startswith("freebsd"):
                 ostype = "freebsd"
@@ -268,10 +269,12 @@ class HostType(object):
             return None
         if self.is_darwin():
             return "homebrew"
-        if self.distro in ("fedora", "centos", "centos_stream"):
+        if self.distro in ("fedora", "centos", "centos_stream", "rocky"):
             return "rpm"
-        if self.distro.startswith(("debian", "ubuntu")):
+        if self.distro.startswith(("debian", "ubuntu", "pop!_os", "mint")):
             return "deb"
+        if self.distro == "arch":
+            return "pacman-package"
         return None
 
     @staticmethod

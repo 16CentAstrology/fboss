@@ -14,6 +14,7 @@
 #include "fboss/agent/state/QosPolicy.h"
 #include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SwitchState.h"
+#include "fboss/agent/test/TestUtils.h"
 
 #include "fboss/agent/types.h"
 
@@ -32,7 +33,7 @@ class QosMapManagerTest : public ManagerTestBase {
     ManagerTestBase::SetUp();
   }
   void validateQosPolicy(
-      SaiQosMapHandle* saiQosMapHandle,
+      const SaiQosMapHandle* saiQosMapHandle,
       TestQosPolicy testQosPolicy) {
     EXPECT_TRUE(saiQosMapHandle);
     EXPECT_TRUE(saiQosMapHandle->dscpToTcMap);
@@ -71,7 +72,16 @@ class QosMapManagerTest : public ManagerTestBase {
       std::shared_ptr<SwitchState> in = std::make_shared<SwitchState>()) {
     in->publish();
     auto newState = in->clone();
-    newState->setDefaultDataPlaneQosPolicy(policy);
+    auto switchSettings =
+        utility::getFirstNodeIf(newState->getSwitchSettings());
+    if (switchSettings) {
+      auto newSwitchSettings = switchSettings->modify(&newState);
+      newSwitchSettings->setDefaultDataPlaneQosPolicy(policy);
+    } else {
+      auto newSwitchSettings = std::make_shared<SwitchSettings>();
+      newSwitchSettings->setDefaultDataPlaneQosPolicy(policy);
+      addSwitchSettingsToState(newState, newSwitchSettings);
+    }
     return newState;
   }
 };
@@ -79,7 +89,7 @@ class QosMapManagerTest : public ManagerTestBase {
 TEST_F(QosMapManagerTest, addQosMap) {
   TestQosPolicy testQosPolicy{{10, 0, 2}, {42, 1, 4}};
   auto qp = makeQosPolicy("default", testQosPolicy);
-  saiManagerTable->qosMapManager().addQosMap(qp);
+  saiManagerTable->qosMapManager().addQosMap(qp, true);
   auto saiQosMapHandle = saiManagerTable->qosMapManager().getQosMap();
   validateQosPolicy(saiQosMapHandle, testQosPolicy);
 }
@@ -95,10 +105,10 @@ TEST_F(QosMapManagerTest, addQosMapDelta) {
 TEST_F(QosMapManagerTest, removeQosMap) {
   TestQosPolicy testQosPolicy{{10, 0, 2}, {42, 1, 4}};
   auto qp = makeQosPolicy("default", testQosPolicy);
-  saiManagerTable->qosMapManager().addQosMap(qp);
+  saiManagerTable->qosMapManager().addQosMap(qp, true);
   auto saiQosMapHandle = saiManagerTable->qosMapManager().getQosMap();
   EXPECT_TRUE(saiQosMapHandle);
-  saiManagerTable->qosMapManager().removeQosMap();
+  saiManagerTable->qosMapManager().removeQosMap(qp, true);
   saiQosMapHandle = saiManagerTable->qosMapManager().getQosMap();
   EXPECT_FALSE(saiQosMapHandle);
 }
@@ -118,13 +128,13 @@ TEST_F(QosMapManagerTest, removeQosMapDelta) {
 TEST_F(QosMapManagerTest, changeQosMap) {
   TestQosPolicy testQosPolicy{{10, 0, 2}, {42, 1, 4}};
   auto qp = makeQosPolicy("default", testQosPolicy);
-  saiManagerTable->qosMapManager().addQosMap(qp);
+  saiManagerTable->qosMapManager().addQosMap(qp, true);
   auto saiQosMapHandle = saiManagerTable->qosMapManager().getQosMap();
   EXPECT_TRUE(saiQosMapHandle);
 
   TestQosPolicy testQosPolicy2{{11, 2, 4}, {43, 0, 4}, {1, 1, 1}};
   auto qp2 = makeQosPolicy("default", testQosPolicy2);
-  saiManagerTable->qosMapManager().changeQosMap(qp, qp2);
+  saiManagerTable->qosMapManager().changeQosMap(qp, qp2, true);
   saiQosMapHandle = saiManagerTable->qosMapManager().getQosMap();
   EXPECT_TRUE(saiQosMapHandle);
   validateQosPolicy(saiQosMapHandle, testQosPolicy2);
@@ -186,17 +196,18 @@ TEST_F(QosMapManagerTest, expMap) {
 
 TEST_F(QosMapManagerTest, addPortQos) {
   auto switchState = std::make_shared<SwitchState>();
-  auto qosPolicies = std::make_shared<QosPolicyMap>();
+  auto qosPolicies = std::make_shared<MultiSwitchQosPolicyMap>();
   TestQosPolicy testQosPolicy{{10, 0, 2}, {42, 1, 4}};
-  qosPolicies->addNode(makeQosPolicy("qos", testQosPolicy));
+  auto qosPolicy = makeQosPolicy("qos", testQosPolicy);
+  qosPolicies->addNode(qosPolicy, scopeResolver().scope(qosPolicy));
   switchState->resetQosPolicies(qosPolicies);
   state::PortFields portFields;
   portFields.portId() = PortID(1);
   portFields.portName() = "eth1/1/1";
   auto port = std::make_shared<Port>(std::move(portFields));
   port->setQosPolicy("qos");
-  switchState->getPorts()->addPort(port);
-  EXPECT_FALSE(saiPlatform->getHwSwitch()->isValidStateUpdate(
+  switchState->getPorts()->addNode(port, scopeResolver().scope(port));
+  EXPECT_TRUE(saiPlatform->getHwSwitch()->isValidStateUpdate(
       StateDelta(std::make_shared<SwitchState>(), switchState)));
 }
 
@@ -208,19 +219,22 @@ TEST_F(QosMapManagerTest, changAddsPortQos) {
   portFields.portName() = "eth1/1/1";
   auto port = std::make_shared<Port>(std::move(portFields));
   port->setQosPolicy("qos");
-  auto ports = std::make_shared<PortMap>();
-  ports->addPort(port);
+  auto ports = std::make_shared<MultiSwitchPortMap>();
+  ports->addNode(port, scopeResolver().scope(port));
   oldState->resetPorts(ports);
   oldState->publish();
   EXPECT_TRUE(saiPlatform->getHwSwitch()->isValidStateUpdate(
       StateDelta(std::make_shared<SwitchState>(), oldState)));
   auto newState = oldState->clone();
   auto newPort = port->modify(&newState);
-  auto qosPolicies = std::make_shared<QosPolicyMap>();
-  qosPolicies->addNode(makeQosPolicy("qos", testQosPolicy));
+  auto qosPolicies = std::make_shared<MultiSwitchQosPolicyMap>();
+  auto qosPolicy = makeQosPolicy("qos", testQosPolicy);
+  qosPolicies->addNode(qosPolicy, scopeResolver().scope(qosPolicy));
   newState->resetQosPolicies(qosPolicies);
-  newState->setDefaultDataPlaneQosPolicy(nullptr);
+  auto switchSettings = utility::getFirstNodeIf(newState->getSwitchSettings());
+  auto newSwitchSettings = switchSettings->modify(&newState);
+  newSwitchSettings->setDefaultDataPlaneQosPolicy(nullptr);
   newPort->setQosPolicy("qos");
-  EXPECT_FALSE(saiPlatform->getHwSwitch()->isValidStateUpdate(
+  EXPECT_TRUE(saiPlatform->getHwSwitch()->isValidStateUpdate(
       StateDelta(oldState, newState)));
 }

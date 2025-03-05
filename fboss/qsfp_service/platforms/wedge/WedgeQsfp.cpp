@@ -10,13 +10,15 @@
 
 #include "fboss/qsfp_service/platforms/wedge/WedgeQsfp.h"
 #include <folly/Conv.h>
-#include <folly/Memory.h>
 #include <folly/Random.h>
 #include <folly/ScopeGuard.h>
 
 #include <folly/logging/xlog.h>
 #include "fboss/qsfp_service/StatsPublisher.h"
+#include "fboss/qsfp_service/TransceiverManager.h"
 #include "fboss/qsfp_service/module/QsfpModule.h"
+
+#include "fboss/qsfp_service/module/cmis/gen-cpp2/cmis_types.h"
 
 using namespace facebook::fboss;
 using folly::MutableByteRange;
@@ -63,46 +65,54 @@ void generateIOErrorForTest(std::string functionName) {
 namespace facebook {
 namespace fboss {
 
-WedgeQsfp::WedgeQsfp(int module, TransceiverI2CApi* wedgeI2CBus)
-    : module_(module), threadSafeI2CBus_(wedgeI2CBus) {
+WedgeQsfp::WedgeQsfp(
+    int module,
+    TransceiverI2CApi* wedgeI2CBus,
+    TransceiverManager* const tcvrManager,
+    std::unique_ptr<I2cLogBuffer> logBuffer)
+    : module_(module),
+      threadSafeI2CBus_(wedgeI2CBus),
+      tcvrManager_(tcvrManager),
+      logBuffer_(std::move(logBuffer)) {
   moduleName_ = folly::to<std::string>(module);
 }
 
 WedgeQsfp::~WedgeQsfp() {}
 
-// Note that the module_ starts at 0, but the I2C bus module
-// assumes that QSFP module numbers extend from 1 to 16.
-//
-bool WedgeQsfp::detectTransceiver() {
-  return threadSafeI2CBus_->isPresent(module_ + 1);
-}
-
-void WedgeQsfp::ensureOutOfReset() {
-  threadSafeI2CBus_->ensureOutOfReset(module_ + 1);
-}
-
 int WedgeQsfp::readTransceiver(
     const TransceiverAccessParameter& param,
-    uint8_t* fieldValue) {
+    uint8_t* fieldValue,
+    const int field) {
   auto offset = param.offset;
   auto len = param.len;
-  wedgeQsfpstats_.recordReadAttempted();
+  ioStatsRecorder_.recordReadAttempted();
   try {
     SCOPE_EXIT {
-      wedgeQsfpstats_.updateReadDownTime();
+      ioStatsRecorder_.updateReadDownTime();
     };
     SCOPE_FAIL {
-      wedgeQsfpstats_.recordReadFailed();
+      ioStatsRecorder_.recordReadFailed();
       StatsPublisher::bumpReadFailure();
     };
     SCOPE_SUCCESS {
-      wedgeQsfpstats_.recordReadSuccess();
+      ioStatsRecorder_.recordReadSuccess();
     };
     generateIOErrorForTest("readTransceiver()");
     threadSafeI2CBus_->moduleRead(module_ + 1, param, fieldValue);
+    if (logBuffer_) {
+      logBuffer_->log(param, field, fieldValue, I2cLogBuffer::Operation::Read);
+    }
   } catch (const std::exception& ex) {
     XLOG(ERR) << "Read from transceiver " << module_ << " at offset " << offset
               << " with length " << len << " failed: " << ex.what();
+    if (logBuffer_) {
+      logBuffer_->log(
+          param,
+          field,
+          fieldValue,
+          I2cLogBuffer::Operation::Read,
+          /*success*/ false);
+    }
     throw;
   }
   return len;
@@ -110,32 +120,44 @@ int WedgeQsfp::readTransceiver(
 
 int WedgeQsfp::writeTransceiver(
     const TransceiverAccessParameter& param,
-    uint8_t* fieldValue) {
+    const uint8_t* fieldValue,
+    uint64_t delay,
+    const int field) {
   auto offset = param.offset;
   auto len = param.len;
-  wedgeQsfpstats_.recordWriteAttempted();
+  ioStatsRecorder_.recordWriteAttempted();
   try {
     SCOPE_EXIT {
-      wedgeQsfpstats_.updateWriteDownTime();
+      ioStatsRecorder_.updateWriteDownTime();
     };
     SCOPE_FAIL {
-      wedgeQsfpstats_.recordWriteFailed();
+      ioStatsRecorder_.recordWriteFailed();
       StatsPublisher::bumpWriteFailure();
     };
     SCOPE_SUCCESS {
-      wedgeQsfpstats_.recordWriteSuccess();
+      ioStatsRecorder_.recordWriteSuccess();
     };
     generateIOErrorForTest("writeTransceiver()");
     threadSafeI2CBus_->moduleWrite(module_ + 1, param, fieldValue);
-
+    if (logBuffer_) {
+      logBuffer_->log(param, field, fieldValue, I2cLogBuffer::Operation::Write);
+    }
     // Intel transceiver require some delay for every write.
     // So in the case of writing succeeded, we wait for 20ms.
     // Also this works because we do not write more than 1 byte for now.
-    usleep(20000);
+    usleep(delay);
   } catch (const std::exception& ex) {
     XLOG(ERR) << "Write to transceiver " << module_ << " at offset " << offset
               << " with length " << len
               << " failed: " << folly::exceptionStr(ex);
+    if (logBuffer_) {
+      logBuffer_->log(
+          param,
+          field,
+          fieldValue,
+          I2cLogBuffer::Operation::Write,
+          /*success*/ false);
+    }
     throw;
   }
   return len;
@@ -150,8 +172,16 @@ int WedgeQsfp::getNum() const {
 }
 
 std::optional<TransceiverStats> WedgeQsfp::getTransceiverStats() {
-  auto result = std::optional<TransceiverStats>();
-  result = wedgeQsfpstats_.getStats();
+  auto result = TransceiverStats();
+  auto ioStats = ioStatsRecorder_.getStats();
+  // Once TransceiverStats is deprecated in favor of IOStats, remove the below
+  // conversion and directly return ioStats
+  result.numReadAttempted() = ioStats.numReadAttempted().value();
+  result.numReadFailed() = ioStats.numReadFailed().value();
+  result.numWriteAttempted() = ioStats.numWriteAttempted().value();
+  result.numWriteFailed() = ioStats.numWriteFailed().value();
+  result.readDownTime() = ioStats.readDownTime().value();
+  result.writeDownTime() = ioStats.writeDownTime().value();
   return result;
 }
 
@@ -169,8 +199,11 @@ TransceiverManagementInterface WedgeQsfp::getTransceiverManagementInterface() {
 
   for (int i = 0; i < kNumInterfaceDetectionRetries; ++i) {
     try {
-      threadSafeI2CBus_->moduleRead(
-          module_ + 1, {TransceiverI2CApi::ADDR_QSFP, 0, 1}, buf.data());
+      readTransceiver(
+          {TransceiverAccessParameter::ADDR_QSFP, 0, 1},
+          buf.data(),
+          // common enum to all tcvr types
+          CAST_TO_INT(CmisField::MGMT_INTERFACE));
       XLOG(DBG3) << folly::sformat(
           "Transceiver {:d}  identifier: {:#x}", module_, buf[0]);
       TransceiverManagementInterface modInterfaceType =
@@ -235,26 +268,32 @@ std::array<uint8_t, 16> WedgeQsfp::getModulePartNo() {
 
   // Read 16 byte part no from page 0 reg 148 for  CMIS and page 0 reg 168 for
   // SFF module. Restore the page in the end
-  threadSafeI2CBus_->moduleRead(
-      module_ + 1,
-      {TransceiverI2CApi::ADDR_QSFP, kCommonModulePageReg, 1},
-      &savedPage);
+  readTransceiver(
+      {TransceiverAccessParameter::ADDR_QSFP, kCommonModulePageReg, 1},
+      &savedPage,
+      // common enum to all tcvr types
+      CAST_TO_INT(CmisField::PART_NUM));
   if (savedPage != page) {
-    threadSafeI2CBus_->moduleWrite(
-        module_ + 1,
-        {TransceiverI2CApi::ADDR_QSFP, kCommonModulePageReg, 1},
-        &page);
+    writeTransceiver(
+        {TransceiverAccessParameter::ADDR_QSFP, kCommonModulePageReg, 1},
+        &page,
+        POST_I2C_WRITE_DELAY_US,
+        // common enum to all tcvr types
+        CAST_TO_INT(CmisField::PART_NUM));
   }
 
-  threadSafeI2CBus_->moduleRead(
-      module_ + 1,
-      {TransceiverI2CApi::ADDR_QSFP, partNoRegOffset, 16},
-      partNo.data());
+  readTransceiver(
+      {TransceiverAccessParameter::ADDR_QSFP, partNoRegOffset, 16},
+      partNo.data(),
+      // common enum to all tcvr types
+      CAST_TO_INT(CmisField::PART_NUM));
   if (savedPage != page) {
-    threadSafeI2CBus_->moduleWrite(
-        module_ + 1,
-        {TransceiverI2CApi::ADDR_QSFP, kCommonModulePageReg, 1},
-        &savedPage);
+    writeTransceiver(
+        {TransceiverAccessParameter::ADDR_QSFP, kCommonModulePageReg, 1},
+        &savedPage,
+        POST_I2C_WRITE_DELAY_US,
+        // common enum to all tcvr types
+        CAST_TO_INT(CmisField::PART_NUM));
   }
 
   return partNo;
@@ -270,11 +309,45 @@ std::array<uint8_t, 2> WedgeQsfp::getFirmwareVer() {
   }
 
   // Read 2 byte firmware version from base page reg 39-40 for CMIS module
-  threadSafeI2CBus_->moduleRead(
-      module_ + 1,
-      {TransceiverI2CApi::ADDR_QSFP, kCommonModuleFwVerReg, 2},
-      fwVer.data());
+  readTransceiver(
+      {TransceiverAccessParameter::ADDR_QSFP, kCommonModuleFwVerReg, 2},
+      fwVer.data(),
+      // common enum to all tcvr types
+      CAST_TO_INT(CmisField::FW_VERSION));
   return fwVer;
+}
+
+size_t WedgeQsfp::getI2cLogBufferCapacity() {
+  if (logBuffer_) {
+    return logBuffer_->getI2cLogBufferCapacity();
+  }
+  return 0;
+}
+
+void WedgeQsfp::setTcvrInfoInLog(
+    const TransceiverManagementInterface& mgmtIf,
+    const std::set<std::string>& portNames,
+    const std::optional<FirmwareStatus>& status,
+    const std::optional<Vendor>& vendor) {
+  if (logBuffer_) {
+    logBuffer_->setTcvrInfoInLog(mgmtIf, portNames, status, vendor);
+  }
+}
+
+std::pair<size_t, size_t> WedgeQsfp::dumpTransceiverI2cLog() {
+  std::pair<size_t, size_t> entries = {0, 0};
+  if (logBuffer_) {
+    try {
+      entries = logBuffer_->dumpToFile();
+    } catch (std::exception& ex) {
+      XLOG(ERR) << fmt::format(
+          "Failed to dump log for module{}: {:s}", module_, ex.what());
+    }
+  } else {
+    XLOG(ERR) << fmt::format("Module has no I2C Log: {}", module_);
+  }
+
+  return entries;
 }
 
 } // namespace fboss

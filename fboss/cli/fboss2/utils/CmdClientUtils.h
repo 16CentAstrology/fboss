@@ -10,45 +10,48 @@
 #pragma once
 
 #include <thrift/lib/cpp2/async/HeaderClientChannel.h>
+
 #include "fboss/agent/if/gen-cpp2/FbossCtrl.h"
-#include "fboss/cli/fboss2/CmdGlobalOptions.h"
-#include "fboss/cli/fboss2/utils/HostInfo.h"
+#include "fboss/agent/if/gen-cpp2/FbossHwCtrl.h"
+#include "fboss/cli/fboss2/utils/CmdClientUtilsCommon.h"
+#include "fboss/led_service/if/gen-cpp2/LedService.h"
 #include "fboss/qsfp_service/if/gen-cpp2/QsfpService.h"
 
-#include <memory>
-#include <string>
+#include <chrono>
 
 namespace facebook::fboss::utils {
 
-static auto constexpr kConnTimeout = 1000;
-static auto constexpr kRecvTimeout = 45000;
-static auto constexpr kSendTimeout = 5000;
+using RunForHwAgentFn = std::function<void(
+    apache::thrift::Client<facebook::fboss::FbossHwCtrl>& client)>;
 
-template <typename T>
-std::unique_ptr<T> createClient(const HostInfo& hostInfo);
-
-// Some clients do not require info about host info
-template <typename T>
-std::unique_ptr<T> createClient();
-
-template <typename Client>
-std::unique_ptr<Client> createPlaintextClient(
-    const HostInfo& hostInfo,
-    const int port) {
-  auto eb = folly::EventBaseManager::get()->getEventBase();
-  auto addr = folly::SocketAddress(hostInfo.getIp(), port);
-  auto sock = folly::AsyncSocket::newSocket(eb, addr, kConnTimeout);
-  sock->setSendTimeout(kSendTimeout);
-  auto channel =
-      apache::thrift::HeaderClientChannel::newChannel(std::move(sock));
-  channel->setTimeout(kRecvTimeout);
-  return std::make_unique<Client>(std::move(channel));
-}
+using RunForAgentFn =
+    std::function<void(apache::thrift::Client<FbossCtrl>& client)>;
 
 std::unique_ptr<facebook::fboss::FbossCtrlAsyncClient> createAgentClient(
     const HostInfo& hostInfo);
 
+std::unique_ptr<facebook::fboss::FbossCtrlAsyncClient> createAgentClient(
+    const HostInfo& hostInfo,
+    const std::chrono::milliseconds& timeout);
+
+std::unique_ptr<apache::thrift::Client<FbossCtrl>> createAgentClient(
+    const HostInfo& hostInfo,
+    int switchIndex);
+
+std::unique_ptr<apache::thrift::Client<FbossHwCtrl>> createHwAgentClient(
+    const HostInfo& hostInfo,
+    int switchIndex);
+
 std::unique_ptr<facebook::fboss::QsfpServiceAsyncClient> createQsfpClient(
     const HostInfo& hostInfo);
+
+std::unique_ptr<
+    apache::thrift::Client<facebook::fboss::led_service::LedService>>
+createLedClient(const HostInfo& hostInfo);
+
+int getNumHwSwitches(const HostInfo& hostInfo);
+
+void runOnAllHwAgents(const HostInfo& hostInfo, RunForHwAgentFn fn);
+void runOnAllHwAgents(const HostInfo& hostInfo, RunForAgentFn fn);
 
 } // namespace facebook::fboss::utils

@@ -2,6 +2,13 @@
 
 #pragma once
 
+#include <fboss/thrift_cow/visitors/ThriftTCType.h>
+
+#include <folly/String.h>
+#include <folly/logging/xlog.h>
+#include <string>
+#include <vector>
+
 namespace facebook::fboss::thrift_cow {
 
 enum class VisitorType {
@@ -18,14 +25,22 @@ enum class VisitorType {
 template <typename Impl>
 class TraverseHelper {
  public:
-  void push(std::string&& tok) {
+  void push(std::string&& tok, ThriftTCType tc) {
     currentPath_.emplace_back(std::move(tok));
-    onPush();
+    if (XLOG_IS_ON(DBG6)) {
+      XLOG(DBG6) << "Traversing up to path " << folly::join("/", currentPath_);
+    }
+    onPush(tc);
   }
 
-  void pop() {
+  void pop(ThriftTCType tc) {
+    std::string tok = std::move(currentPath_.back());
     currentPath_.pop_back();
-    onPop();
+    if (XLOG_IS_ON(DBG6)) {
+      XLOG(DBG6) << "Traversing down to path "
+                 << folly::join("/", currentPath_);
+    }
+    onPop(std::move(tok), tc);
   }
 
   bool shouldShortCircuit(VisitorType visitorType) const {
@@ -38,11 +53,12 @@ class TraverseHelper {
   }
 
  private:
-  void onPush() {
-    return static_cast<Impl*>(this)->onPushImpl();
+  void onPush(ThriftTCType tc) {
+    return static_cast<Impl*>(this)->onPushImpl(tc);
   }
-  void onPop() {
-    return static_cast<Impl*>(this)->onPopImpl();
+  void onPop(std::string&& popped, ThriftTCType tc) {
+    return static_cast<Impl*>(this)->onPopImpl(
+        std::forward<std::string>(popped), tc);
   }
 
   std::vector<std::string> currentPath_;
@@ -56,8 +72,8 @@ struct SimpleTraverseHelper : TraverseHelper<SimpleTraverseHelper> {
   bool shouldShortCircuitImpl(VisitorType visitorType) const {
     return false;
   }
-  void onPushImpl() {}
-  void onPopImpl() {}
+  void onPushImpl(ThriftTCType tc) {}
+  void onPopImpl(std::string&& popped, ThriftTCType tc) {}
 };
 
 } // namespace facebook::fboss::thrift_cow

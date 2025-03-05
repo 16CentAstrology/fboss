@@ -14,15 +14,11 @@
 
 #include "fboss/agent/state/SwitchState.h"
 
-namespace {
-constexpr auto kAclTable1 = "AclTable1";
-}
-
 namespace facebook::fboss {
 
-AclTableMap::AclTableMap() {}
+AclTableMap::AclTableMap() = default;
 
-AclTableMap::~AclTableMap() {}
+AclTableMap::~AclTableMap() = default;
 
 std::shared_ptr<AclTableMap> AclTableMap::createDefaultAclTableMapFromThrift(
     std::map<std::string, state::AclEntryFields> const& thriftMap) {
@@ -33,8 +29,11 @@ std::shared_ptr<AclTableMap> AclTableMap::createDefaultAclTableMapFromThrift(
 
 std::shared_ptr<AclMap> AclTableMap::getDefaultAclTableMap(
     std::map<std::string, state::AclTableFields> const& thriftMap) {
-  if (thriftMap.find(kAclTable1) != thriftMap.end()) {
-    auto aclTable = thriftMap.at(kAclTable1);
+  if (thriftMap.find(
+          cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE()) !=
+      thriftMap.end()) {
+    auto aclTable =
+        thriftMap.at(cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE());
     return AclTable::getDefaultAclTable(aclTable);
   } else {
     XLOG(ERR) << "AclTableMap missing from warmboot state file";
@@ -42,6 +41,6 @@ std::shared_ptr<AclMap> AclTableMap::getDefaultAclTableMap(
   }
 }
 
-template class ThriftMapNode<AclTableMap, AclTableMapTraits>;
+template struct ThriftMapNode<AclTableMap, AclTableMapTraits>;
 
 } // namespace facebook::fboss

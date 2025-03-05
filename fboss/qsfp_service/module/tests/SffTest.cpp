@@ -22,13 +22,16 @@ class SffTest : public TransceiverManagerTestHelper {
  public:
   template <typename XcvrImplT>
   SffModule* overrideSffModule(TransceiverID id, bool willRefresh = true) {
-    auto xcvrImpl = std::make_unique<XcvrImplT>(id);
-
+    qsfpImpls_.push_back(
+        std::make_unique<XcvrImplT>(id, transceiverManager_.get()));
     auto xcvr = static_cast<SffModule*>(
         transceiverManager_->overrideTransceiverForTesting(
             id,
             std::make_unique<SffModule>(
-                transceiverManager_.get(), std::move(xcvrImpl))));
+                transceiverManager_->getPortNames(id),
+                qsfpImpls_.back().get(),
+                tcvrConfig_,
+                transceiverManager_->getTransceiverName(id))));
 
     if (willRefresh) {
       // Refresh once to make sure the override transceiver finishes refresh
@@ -51,21 +54,23 @@ TEST_F(SffTest, cwdm4TransceiverInfoTest) {
   // Verify getTransceiverInfo() result
   const auto& info = xcvr->getTransceiverInfo();
   EXPECT_EQ(
-      *info.extendedSpecificationComplianceCode(),
+      *info.tcvrState()->extendedSpecificationComplianceCode(),
       ExtendedSpecComplianceCode::CWDM4_100G);
-  EXPECT_EQ(info.moduleMediaInterface(), MediaInterfaceCode::CWDM4_100G);
-  for (auto& media : *info.settings()->mediaInterface()) {
+  EXPECT_EQ(
+      info.tcvrState()->moduleMediaInterface(), MediaInterfaceCode::CWDM4_100G);
+  for (auto& media : *info.tcvrState()->settings()->mediaInterface()) {
     EXPECT_EQ(
         *media.media()->extendedSpecificationComplianceCode_ref(),
         ExtendedSpecComplianceCode::CWDM4_100G);
     EXPECT_EQ(media.code(), MediaInterfaceCode::CWDM4_100G);
   }
 
-  EXPECT_EQ(100, info.cable().value_or({}).om3().value_or({}));
-  EXPECT_EQ(true, info.status().value_or({}).interruptL().value_or({}));
+  EXPECT_EQ(100, info.tcvrState()->cable().value_or({}).om3().value_or({}));
+  EXPECT_EQ(
+      true, info.tcvrState()->status().value_or({}).interruptL().value_or({}));
 
   utility::HwTransceiverUtils::verifyDiagsCapability(
-      info,
+      *info.tcvrState(),
       transceiverManager_->getDiagsCapability(xcvrID),
       false /* skipCheckingIndividualCapability */);
 
@@ -104,7 +109,7 @@ TEST_F(SffTest, cwdm4TransceiverInfoTest) {
       {"RxOutputEmph", {2, 1, 1, 3}},
       {"RxOutputAmp", {1, 3, 2, 3}},
   };
-  auto settings = info.settings().value_or({});
+  auto settings = info.tcvrState()->settings().value_or({});
   tests.verifyMediaLaneSettings(
       expectedMediaLaneSettings, xcvr->numMediaLanes());
   tests.verifyHostLaneSettings(expectedHostLaneSettings, xcvr->numHostLanes());
@@ -136,6 +141,36 @@ TEST_F(SffTest, cwdm4TransceiverInfoTest) {
 
   // This test will write registers, save it to the last
   testCachedMediaSignals(xcvr);
+
+  TransceiverPortState goodPortState1{
+      "", 0, cfg::PortSpeed::HUNDREDG, 4, TransmitterTechnology::OPTICAL};
+  TransceiverPortState goodPortState2{
+      "", 0, cfg::PortSpeed::FORTYG, 4, TransmitterTechnology::OPTICAL};
+  for (auto portState : {goodPortState1, goodPortState2}) {
+    EXPECT_TRUE(xcvr->tcvrPortStateSupported(portState));
+  }
+
+  TransceiverPortState badPortState1{
+      "",
+      0,
+      cfg::PortSpeed::HUNDREDG,
+      1,
+      TransmitterTechnology::COPPER}; // Copper not supported
+  TransceiverPortState badPortState2{
+      "",
+      1,
+      cfg::PortSpeed::XG,
+      2,
+      TransmitterTechnology::OPTICAL}; // Invalid speed
+  TransceiverPortState badPortState3{
+      "",
+      0,
+      cfg::PortSpeed::FORTYG,
+      3,
+      TransmitterTechnology::OPTICAL}; // Invalid num lanes
+  for (auto portState : {badPortState1, badPortState2, badPortState3}) {
+    EXPECT_FALSE(xcvr->tcvrPortStateSupported(portState));
+  }
 }
 
 // Tests that a SFF DAC module can properly refresh
@@ -150,10 +185,11 @@ TEST_F(SffTest, dacTransceiverInfoTest) {
   // Verify getTransceiverInfo() result
   const auto& info = xcvr->getTransceiverInfo();
   EXPECT_EQ(
-      *info.extendedSpecificationComplianceCode(),
+      *info.tcvrState()->extendedSpecificationComplianceCode(),
       ExtendedSpecComplianceCode::CR4_100G);
-  EXPECT_EQ(info.moduleMediaInterface(), MediaInterfaceCode::CR4_100G);
-  for (auto& media : *info.settings()->mediaInterface()) {
+  EXPECT_EQ(
+      info.tcvrState()->moduleMediaInterface(), MediaInterfaceCode::CR4_100G);
+  for (auto& media : *info.tcvrState()->settings()->mediaInterface()) {
     EXPECT_EQ(
         *media.media()->extendedSpecificationComplianceCode_ref(),
         ExtendedSpecComplianceCode::CR4_100G);
@@ -161,7 +197,7 @@ TEST_F(SffTest, dacTransceiverInfoTest) {
   }
 
   utility::HwTransceiverUtils::verifyDiagsCapability(
-      info,
+      *info.tcvrState(),
       transceiverManager_->getDiagsCapability(xcvrID),
       false /* skipCheckingIndividualCapability */);
 
@@ -185,10 +221,11 @@ TEST_F(SffTest, fr1TransceiverInfoTest) {
   // Verify getTransceiverInfo() result
   const auto& info = xcvr->getTransceiverInfo();
   EXPECT_EQ(
-      *info.extendedSpecificationComplianceCode(),
+      *info.tcvrState()->extendedSpecificationComplianceCode(),
       ExtendedSpecComplianceCode::FR1_100G);
-  EXPECT_EQ(info.moduleMediaInterface(), MediaInterfaceCode::FR1_100G);
-  for (auto& media : *info.settings()->mediaInterface()) {
+  EXPECT_EQ(
+      info.tcvrState()->moduleMediaInterface(), MediaInterfaceCode::FR1_100G);
+  for (auto& media : *info.tcvrState()->settings()->mediaInterface()) {
     EXPECT_EQ(
         media.media()->get_extendedSpecificationComplianceCode(),
         ExtendedSpecComplianceCode::FR1_100G);
@@ -197,7 +234,9 @@ TEST_F(SffTest, fr1TransceiverInfoTest) {
 
   auto diagsCap = transceiverManager_->getDiagsCapability(xcvrID);
   utility::HwTransceiverUtils::verifyDiagsCapability(
-      info, diagsCap, false /* skipCheckingIndividualCapability */);
+      *info.tcvrState(),
+      diagsCap,
+      false /* skipCheckingIndividualCapability */);
   EXPECT_TRUE(diagsCap.has_value());
   std::vector<prbs::PrbsPolynomial> expectedCapabilities = {
       prbs::PrbsPolynomial::PRBS31};
@@ -230,10 +269,11 @@ TEST_F(SffTest, miniphotonTransceiverInfoTest) {
   // Verify getTransceiverInfo() result
   const auto& info = xcvr->getTransceiverInfo();
   EXPECT_EQ(
-      *info.extendedSpecificationComplianceCode(),
+      *info.tcvrState()->extendedSpecificationComplianceCode(),
       ExtendedSpecComplianceCode::CWDM4_100G);
-  EXPECT_EQ(info.moduleMediaInterface(), MediaInterfaceCode::CWDM4_100G);
-  for (auto& media : *info.settings()->mediaInterface()) {
+  EXPECT_EQ(
+      info.tcvrState()->moduleMediaInterface(), MediaInterfaceCode::CWDM4_100G);
+  for (auto& media : *info.tcvrState()->settings()->mediaInterface()) {
     EXPECT_EQ(
         media.media()->get_extendedSpecificationComplianceCode(),
         ExtendedSpecComplianceCode::CWDM4_100G);
@@ -241,7 +281,7 @@ TEST_F(SffTest, miniphotonTransceiverInfoTest) {
   }
 
   utility::HwTransceiverUtils::verifyDiagsCapability(
-      info,
+      *info.tcvrState(),
       transceiverManager_->getDiagsCapability(xcvrID),
       false /* skipCheckingIndividualCapability */);
 
@@ -260,10 +300,11 @@ TEST_F(SffTest, unknownTransceiverInfoTest) {
 
   const auto& info = xcvr->getTransceiverInfo();
   EXPECT_EQ(
-      *info.extendedSpecificationComplianceCode(),
+      *info.tcvrState()->extendedSpecificationComplianceCode(),
       ExtendedSpecComplianceCode::CWDM4_100G);
-  EXPECT_EQ(info.moduleMediaInterface(), MediaInterfaceCode::CWDM4_100G);
-  for (auto& media : *info.settings()->mediaInterface()) {
+  EXPECT_EQ(
+      info.tcvrState()->moduleMediaInterface(), MediaInterfaceCode::CWDM4_100G);
+  for (auto& media : *info.tcvrState()->settings()->mediaInterface()) {
     EXPECT_EQ(
         media.media()->get_extendedSpecificationComplianceCode(),
         ExtendedSpecComplianceCode::CWDM4_100G);
@@ -306,17 +347,19 @@ class SfpTest : public TransceiverManagerTestHelper {
  public:
   template <typename XcvrImplT>
   Sff8472Module* overrideSfpModule(TransceiverID id) {
-    auto xcvrImpl = std::make_unique<XcvrImplT>(id);
+    qsfpImpls_.push_back(
+        std::make_unique<XcvrImplT>(id, transceiverManager_.get()));
     // This override function use ids starting from 1
     transceiverManager_->overrideMgmtInterface(
         static_cast<int>(id) + 1,
         uint8_t(TransceiverModuleIdentifier::SFP_PLUS));
-
+    auto portNames = transceiverManager_->getPortNames(id);
+    auto tcvrName = transceiverManager_->getTransceiverName(id);
     auto xcvr = static_cast<Sff8472Module*>(
         transceiverManager_->overrideTransceiverForTesting(
             id,
             std::make_unique<Sff8472Module>(
-                transceiverManager_.get(), std::move(xcvrImpl))));
+                portNames, qsfpImpls_.back().get(), tcvrName)));
     // Refresh once to make sure the override transceiver finishes refresh
     transceiverManager_->refreshStateMachines();
 
@@ -335,9 +378,12 @@ TEST_F(SfpTest, sfp10GTransceiverInfoTest) {
 
   // Verify getTransceiverInfo() result
   const auto& info = xcvr->getTransceiverInfo();
-  EXPECT_EQ((*info.settings()->mediaInterface()).size(), xcvr->numMediaLanes());
-  EXPECT_EQ(info.moduleMediaInterface(), MediaInterfaceCode::LR_10G);
-  for (auto& media : *info.settings()->mediaInterface()) {
+  EXPECT_EQ(
+      (*info.tcvrState()->settings()->mediaInterface()).size(),
+      xcvr->numMediaLanes());
+  EXPECT_EQ(
+      info.tcvrState()->moduleMediaInterface(), MediaInterfaceCode::LR_10G);
+  for (auto& media : *info.tcvrState()->settings()->mediaInterface()) {
     EXPECT_EQ(
         media.media()->get_ethernet10GComplianceCode(),
         Ethernet10GComplianceCode::LR_10G);
@@ -345,7 +391,7 @@ TEST_F(SfpTest, sfp10GTransceiverInfoTest) {
   }
 
   utility::HwTransceiverUtils::verifyDiagsCapability(
-      info,
+      *info.tcvrState(),
       transceiverManager_->getDiagsCapability(xcvrID),
       false /* skipCheckingIndividualCapability */);
 
@@ -375,6 +421,54 @@ TEST_F(SfpTest, sfp10GTransceiverInfoTest) {
   tests.verifyVendorName("FACETEST");
 }
 
+TEST_F(SfpTest, sfp10GBaseTTransceiverInfoTest) {
+  auto xcvrID = TransceiverID(1);
+  auto xcvr = overrideSfpModule<Sfp10GBaseTTransceiver>(xcvrID);
+
+  // Verify SffModule logic
+  EXPECT_EQ(xcvr->numHostLanes(), 1);
+  EXPECT_EQ(xcvr->numMediaLanes(), 1);
+
+  // Verify getTransceiverInfo() result
+  const auto& info = xcvr->getTransceiverInfo();
+  EXPECT_EQ(
+      (*info.tcvrState()->settings()->mediaInterface()).size(),
+      xcvr->numMediaLanes());
+  EXPECT_EQ(
+      info.tcvrState()->moduleMediaInterface(), MediaInterfaceCode::BASE_T_10G);
+  for (auto& media : *info.tcvrState()->settings()->mediaInterface()) {
+    EXPECT_EQ(
+        media.media()->get_extendedSpecificationComplianceCode(),
+        ExtendedSpecComplianceCode::BASE_T_10G);
+    EXPECT_EQ(media.code(), MediaInterfaceCode::BASE_T_10G);
+  }
+
+  utility::HwTransceiverUtils::verifyDiagsCapability(
+      *info.tcvrState(),
+      transceiverManager_->getDiagsCapability(xcvrID),
+      false /* skipCheckingIndividualCapability */);
+
+  // Using TransceiverTestsHelper to verify TransceiverInfo
+  TransceiverTestsHelper tests(info);
+  tests.verifyVendorName("FACETEST");
+  // Verify DOM is not read
+  EXPECT_TRUE(info.tcvrStats()->channels()->empty());
+
+  TransceiverPortState goodPortState{
+      "", 0, cfg::PortSpeed::XG, 1, TransmitterTechnology::COPPER};
+  EXPECT_TRUE(xcvr->tcvrPortStateSupported(goodPortState));
+
+  TransceiverPortState badPortState1{
+      "", 0, cfg::PortSpeed::HUNDREDG, 1, TransmitterTechnology::COPPER};
+  TransceiverPortState badPortState2{
+      "", 1, cfg::PortSpeed::XG, 1, TransmitterTechnology::COPPER};
+  TransceiverPortState badPortState3{
+      "", 0, cfg::PortSpeed::XG, 1, TransmitterTechnology::OPTICAL};
+  for (auto portState : {badPortState1, badPortState2, badPortState3}) {
+    EXPECT_FALSE(xcvr->tcvrPortStateSupported(portState));
+  }
+}
+
 TEST_F(SffTest, 200GCr4TransceiverInfoTest) {
   auto xcvrID = TransceiverID(1);
   auto xcvr = overrideSffModule<Sff200GCr4Transceiver>(xcvrID);
@@ -386,10 +480,11 @@ TEST_F(SffTest, 200GCr4TransceiverInfoTest) {
   // Verify getTransceiverInfo() result
   const auto& info = xcvr->getTransceiverInfo();
   EXPECT_EQ(
-      *info.extendedSpecificationComplianceCode(),
+      *info.tcvrState()->extendedSpecificationComplianceCode(),
       ExtendedSpecComplianceCode::CR_50G_CHANNELS);
-  EXPECT_EQ(info.moduleMediaInterface(), MediaInterfaceCode::CR4_200G);
-  for (auto& media : *info.settings()->mediaInterface()) {
+  EXPECT_EQ(
+      info.tcvrState()->moduleMediaInterface(), MediaInterfaceCode::CR4_200G);
+  for (auto& media : *info.tcvrState()->settings()->mediaInterface()) {
     EXPECT_EQ(
         media.media()->get_extendedSpecificationComplianceCode(),
         ExtendedSpecComplianceCode::CR_50G_CHANNELS);
@@ -397,13 +492,39 @@ TEST_F(SffTest, 200GCr4TransceiverInfoTest) {
   }
 
   utility::HwTransceiverUtils::verifyDiagsCapability(
-      info,
+      *info.tcvrState(),
       transceiverManager_->getDiagsCapability(xcvrID),
       false /* skipCheckingIndividualCapability */);
 
   // Using TransceiverTestsHelper to verify TransceiverInfo
   TransceiverTestsHelper tests(info);
   tests.verifyVendorName("FACETEST");
+
+  TransceiverPortState goodPortState1{
+      "", 0, cfg::PortSpeed::TWOHUNDREDG, 4, TransmitterTechnology::COPPER};
+  TransceiverPortState goodPortState2{
+      "", 2, cfg::PortSpeed::FIFTYG, 2, TransmitterTechnology::COPPER};
+  TransceiverPortState goodPortState3{
+      "", 1, cfg::PortSpeed::TWENTYFIVEG, 1, TransmitterTechnology::COPPER};
+  for (auto portState : {goodPortState1, goodPortState2, goodPortState3}) {
+    EXPECT_TRUE(xcvr->tcvrPortStateSupported(portState));
+  }
+
+  TransceiverPortState badPortState1{
+      "",
+      0,
+      cfg::PortSpeed::HUNDREDG,
+      4,
+      TransmitterTechnology::OPTICAL}; // Optical not supported
+  TransceiverPortState badPortState2{
+      "",
+      0,
+      cfg::PortSpeed::FORTYG,
+      3,
+      TransmitterTechnology::OPTICAL}; // Optical not supported
+  for (auto portState : {badPortState1, badPortState2}) {
+    EXPECT_FALSE(xcvr->tcvrPortStateSupported(portState));
+  }
 }
 
 } // namespace facebook::fboss

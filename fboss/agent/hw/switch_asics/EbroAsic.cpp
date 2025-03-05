@@ -19,13 +19,11 @@ bool EbroAsic::isSupportedNonFabric(Feature feature) const {
     case HwAsic::Feature::MPLS_ECMP:
     case HwAsic::Feature::ERSPANv6:
     case HwAsic::Feature::SFLOWv6:
-    case HwAsic::Feature::HOSTTABLE_FOR_HOSTROUTES:
     case HwAsic::Feature::ECN:
     case HwAsic::Feature::L3_QOS:
     case HwAsic::Feature::QOS_MAP_GLOBAL:
     case HwAsic::Feature::SMAC_EQUALS_DMAC_CHECK_ENABLED:
     case HwAsic::Feature::PORT_TTL_DECREMENT_DISABLE:
-    case HwAsic::Feature::WEIGHTED_NEXTHOPGROUP_MEMBER:
     case HwAsic::Feature::SAI_WEIGHTED_NEXTHOPGROUP_MEMBER:
     case HwAsic::Feature::SWITCH_ATTR_INGRESS_ACL:
     case HwAsic::Feature::ACL_COPY_TO_CPU:
@@ -34,14 +32,13 @@ bool EbroAsic::isSupportedNonFabric(Feature feature) const {
     case HwAsic::Feature::SFLOW_SAMPLING:
     case HwAsic::Feature::SAI_ECN_WRED:
     case HwAsic::Feature::RESOURCE_USAGE_STATS:
-    case HwAsic::Feature::DEBUG_COUNTER:
+    case HwAsic::Feature::BLACKHOLE_ROUTE_DROP_COUNTER:
     case HwAsic::Feature::PENDING_L2_ENTRY:
     case HwAsic::Feature::COUNTER_REFRESH_INTERVAL:
     case HwAsic::Feature::MAC_AGING:
     case HwAsic::Feature::TELEMETRY_AND_MONITORING:
     case HwAsic::Feature::REMOVE_PORTS_FOR_COLDBOOT:
     case HwAsic::Feature::DEFAULT_VLAN:
-    case HwAsic::Feature::L2_LEARNING:
     case HwAsic::Feature::TRAFFIC_HASHING:
     case HwAsic::Feature::ACL_TABLE_GROUP:
     case HwAsic::Feature::CPU_PORT:
@@ -58,12 +55,10 @@ bool EbroAsic::isSupportedNonFabric(Feature feature) const {
     case HwAsic::Feature::ECMP_MEMBER_WIDTH_INTROSPECTION:
     case HwAsic::Feature::FABRIC_PORT_MTU:
     case HwAsic::Feature::SAI_MPLS_INSEGMENT:
-    case HwAsic::Feature::FABRIC_PORTS:
     case HwAsic::Feature::SAI_PORT_SPEED_CHANGE:
     case HwAsic::Feature::ROUTE_METADATA:
     case HwAsic::Feature::P4_WARMBOOT:
     case HwAsic::Feature::IN_PAUSE_INCREMENTS_DISCARDS:
-    case HwAsic::Feature::SAI_ACL_ENTRY_SRC_PORT_QUALIFIER:
     case HwAsic::Feature::PMD_RX_LOCK_STATUS:
     case HwAsic::Feature::PMD_RX_SIGNAL_DETECT:
     case HwAsic::Feature::FEC_AM_LOCK_STATUS:
@@ -76,13 +71,25 @@ bool EbroAsic::isSupportedNonFabric(Feature feature) const {
     case HwAsic::Feature::MULTIPLE_ACL_TABLES:
     case HwAsic::Feature::UDF_HASH_FIELD_QUERY:
     case HwAsic::Feature::SAI_SAMPLEPACKET_TRAP:
-      return true;
-    // VOQ vs NPU mode dependent features
+    case HwAsic::Feature::QUEUE_ECN_COUNTER:
+    case HwAsic::Feature::SAI_CONFIGURE_SEVEN_TAP:
+    case HwAsic::Feature::SAI_CONFIGURE_SIX_TAP:
+    case HwAsic::Feature::SEPARATE_BYTE_AND_PACKET_ACL_COUNTER:
+    case HwAsic::Feature::L3_MTU_ERROR_TRAP:
+    case HwAsic::Feature::ACL_COUNTER_LABEL:
+    case HwAsic::Feature::SAI_PORT_SERDES_PROGRAMMING:
+    case HwAsic::Feature::PORT_WRED_COUNTER:
     case HwAsic::Feature::BRIDGE_PORT_8021Q:
     case HwAsic::Feature::WARMBOOT:
-      return getSwitchType() == cfg::SwitchType::NPU;
+    case HwAsic::Feature::ACL_METADATA_QUALIFER:
+    case HwAsic::Feature::PORT_SERDES_ZERO_PREEMPHASIS:
+    case HwAsic::Feature::SAI_ECMP_HASH_ALGORITHM:
+    case HwAsic::Feature::ENABLE_DELAY_DROP_CONGESTION_THRESHOLD:
+    case HwAsic::Feature::L3_INTF_MTU:
+    case HwAsic::Feature::CPU_QUEUE_WATERMARK_STATS:
+      return true;
+    case HwAsic::Feature::ACL_BYTE_COUNTER:
     case HwAsic::Feature::RESERVED_ENCAP_INDEX_RANGE:
-      return getSwitchType() == cfg::SwitchType::VOQ;
     case HwAsic::Feature::HOSTTABLE:
     case HwAsic::Feature::HASH_FIELDS_CUSTOMIZATION:
     case HwAsic::Feature::QCM:
@@ -99,6 +106,7 @@ bool EbroAsic::isSupportedNonFabric(Feature feature) const {
     case HwAsic::Feature::OBM_COUNTERS:
     case HwAsic::Feature::EGRESS_QUEUE_FLEX_COUNTER:
     case HwAsic::Feature::PFC:
+    case HwAsic::Feature::PFC_XON_TO_XOFF_COUNTER:
     case HwAsic::Feature::INGRESS_L3_INTERFACE:
     case HwAsic::Feature::NON_UNICAST_HASH:
     case HwAsic::Feature::DETAILED_L2_UPDATE:
@@ -123,17 +131,84 @@ bool EbroAsic::isSupportedNonFabric(Feature feature) const {
     case HwAsic::Feature::LINK_TRAINING:
     case HwAsic::Feature::SAI_RX_REASON_COUNTER:
     case HwAsic::Feature::VOQ:
-    case HwAsic::Feature::RECYCLE_PORTS:
     case HwAsic::Feature::XPHY_PORT_STATE_TOGGLE:
     case HwAsic::Feature::SAI_PORT_GET_PMD_LANES:
     case HwAsic::Feature::FABRIC_TX_QUEUES:
     case HwAsic::Feature::SAI_PORT_VCO_CHANGE:
     case HwAsic::Feature::SAI_TTL0_PACKET_FORWARD_ENABLE:
     case HwAsic::Feature::SHARED_INGRESS_EGRESS_BUFFER_POOL:
-    case HwAsic::Feature::DLB:
+    case HwAsic::Feature::FLOWLET:
     case HwAsic::Feature::TC_TO_QUEUE_QOS_MAP_ON_SYSTEM_PORT:
-    case HwAsic::Feature::SAI_CONFIGURE_SIX_TAP:
+    case HwAsic::Feature::PORT_FABRIC_ISOLATE:
+    case HwAsic::Feature::CPU_TX_VIA_RECYCLE_PORT:
+    case HwAsic::Feature::SWITCH_DROP_STATS:
+    case HwAsic::Feature::PACKET_INTEGRITY_DROP_STATS:
+    case HwAsic::Feature::SAI_UDF_HASH:
+    case HwAsic::Feature::INGRESS_PRIORITY_GROUP_HEADROOM_WATERMARK:
+    case HwAsic::Feature::RX_LANE_SQUELCH_ENABLE:
+    case HwAsic::Feature::SAI_PORT_ETHER_STATS:
+    case HwAsic::Feature::SLOW_STAT_UPDATE:
+    case HwAsic::Feature::VOQ_DELETE_COUNTER:
+    case HwAsic::Feature::DRAM_ENQUEUE_DEQUEUE_STATS:
+    case HwAsic::Feature::FLOWLET_PORT_ATTRIBUTES:
+    // Ebro Asic does not support EAPOL trap for Macsec. Currently this is
+    // needed only for FAUU and DMAG devices.
+    case HwAsic::Feature::SAI_EAPOL_TRAP:
+    case HwAsic::Feature::SAI_USER_DEFINED_TRAP:
+    case HwAsic::Feature::CREDIT_WATCHDOG:
+    case HwAsic::Feature::ECMP_DLB_OFFSET:
+    case HwAsic::Feature::SAI_FEC_CORRECTED_BITS:
+    case HwAsic::Feature::SAI_FEC_CODEWORDS_STATS:
+    case HwAsic::Feature::LINK_INACTIVE_BASED_ISOLATE:
+    case HwAsic::Feature::RX_SNR:
+    case HwAsic::Feature::MANAGEMENT_PORT:
+    case HwAsic::Feature::ANY_ACL_DROP_COUNTER:
+    case HwAsic::Feature::EGRESS_FORWARDING_DROP_COUNTER:
+    case HwAsic::Feature::ANY_TRAP_DROP_COUNTER:
+    case HwAsic::Feature::SAI_PRBS:
+    case HwAsic::Feature::FABRIC_PORTS:
+    case HwAsic::Feature::RCI_WATERMARK_COUNTER:
+    case HwAsic::Feature::DTL_WATERMARK_COUNTER:
+    case HwAsic::Feature::LINK_ACTIVE_INACTIVE_NOTIFY:
+    case HwAsic::Feature::WEIGHTED_NEXTHOPGROUP_MEMBER:
+    case HwAsic::Feature::PQP_ERROR_EGRESS_DROP_COUNTER:
+    case HwAsic::Feature::FABRIC_LINK_DOWN_CELL_DROP_COUNTER:
+    case HwAsic::Feature::CRC_ERROR_DETECT:
+    case HwAsic::Feature::EVENTOR_PORT_FOR_SFLOW:
+    case HwAsic::Feature::SWITCH_REACHABILITY_CHANGE_NOTIFY:
+    case HwAsic::Feature::CABLE_PROPOGATION_DELAY:
+    case HwAsic::Feature::DATA_CELL_FILTER:
+    case HwAsic::Feature::DRAM_BLOCK_TIME:
+    case HwAsic::Feature::VOQ_LATENCY_WATERMARK_BIN:
+    case HwAsic::Feature::ACL_ENTRY_ETHER_TYPE:
+    case HwAsic::Feature::EGRESS_CORE_BUFFER_WATERMARK:
+    case HwAsic::Feature::DELETED_CREDITS_STAT:
+    case HwAsic::Feature::INGRESS_PRIORITY_GROUP_DROPPED_PACKETS:
+    case HwAsic::Feature::NO_RX_REASON_TRAP:
+    case HwAsic::Feature::EGRESS_GVOQ_WATERMARK_BYTES:
+    case HwAsic::Feature::INGRESS_PRIORITY_GROUP_SHARED_WATERMARK:
+    case HwAsic::Feature::MULTIPLE_EGRESS_BUFFER_POOL:
+    case HwAsic::Feature::PORT_MTU_ERROR_TRAP:
+    case HwAsic::Feature::DEDICATED_CPU_BUFFER_POOL:
+    case HwAsic::Feature::EGRESS_ACL_TABLE:
+    case HwAsic::Feature::FAST_LLFC_COUNTER:
+    case HwAsic::Feature::INGRESS_SRAM_MIN_BUFFER_WATERMARK:
+    case HwAsic::Feature::FDR_FIFO_WATERMARK:
+    case HwAsic::Feature::EGRESS_CELL_ERROR_STATS:
+    case HwAsic::Feature::SAMPLE_RATE_CONFIG_PER_MIRROR:
+    case HwAsic::Feature::SFLOW_SAMPLES_PACKING:
+    case HwAsic::Feature::VENDOR_SWITCH_NOTIFICATION:
+    case HwAsic::Feature::SDK_REGISTER_DUMP:
       return false;
+    case HwAsic::Feature::SAI_ACL_ENTRY_SRC_PORT_QUALIFIER:
+      /*
+       * Source port ACL qualifier is used in certain HW tests
+       * to trap packets to CPU. This feature is supported only
+       * with P4 warmboot supported SDKs.
+       * 1.42.* SDK uses DIP based ACL qualifier in HW tests
+       * whereas P4 WB capable SDKs use Source Port qualifier
+       */
+      return isP4WarmbootEnabled();
   }
   return false;
 }
@@ -141,7 +216,6 @@ bool EbroAsic::isSupportedNonFabric(Feature feature) const {
 bool EbroAsic::isSupportedFabric(Feature feature) const {
   switch (feature) {
     case HwAsic::Feature::REMOVE_PORTS_FOR_COLDBOOT:
-    case HwAsic::Feature::FABRIC_PORTS:
       return true;
     default:
       return false;
@@ -149,8 +223,9 @@ bool EbroAsic::isSupportedFabric(Feature feature) const {
   return false;
 }
 
-int EbroAsic::getDefaultNumPortQueues(cfg::StreamType streamType, bool /*cpu*/)
-    const {
+int EbroAsic::getDefaultNumPortQueues(
+    cfg::StreamType streamType,
+    cfg::PortType /*portType*/) const {
   switch (streamType) {
     case cfg::StreamType::MULTICAST:
       throw FbossError(
@@ -170,6 +245,7 @@ std::set<cfg::StreamType> EbroAsic::getQueueStreamTypes(
   switch (portType) {
     case cfg::PortType::CPU_PORT:
     case cfg::PortType::INTERFACE_PORT:
+    case cfg::PortType::MANAGEMENT_PORT:
       /*
        * For Ebro asic, SDK 1.42.* queue type is ALL whereas SDK 1.56.* queue
        * type is unicast. Once SDK 1.56.* is rolled out after P4 warmboot
@@ -180,6 +256,7 @@ std::set<cfg::StreamType> EbroAsic::getQueueStreamTypes(
     case cfg::PortType::FABRIC_PORT:
       return {cfg::StreamType::FABRIC_TX};
     case cfg::PortType::RECYCLE_PORT:
+    case cfg::PortType::EVENTOR_PORT:
       // TODO: handle when we start modeling
       // recycle port for Ebro ASIC
       break;
@@ -196,5 +273,34 @@ cfg::Range64 EbroAsic::getReservedEncapIndexRange() const {
     return makeRange(100, 4093);
   }
   return HwAsic::getReservedEncapIndexRange();
+}
+
+const std::map<cfg::PortType, cfg::PortLoopbackMode>&
+EbroAsic::desiredLoopbackModes() const {
+  switch (getSwitchType()) {
+    case cfg::SwitchType::NPU: {
+      static const std::map<cfg::PortType, cfg::PortLoopbackMode>
+          kDefaultLoopbackMode = {
+              {cfg::PortType::INTERFACE_PORT, cfg::PortLoopbackMode::MAC}};
+      return kDefaultLoopbackMode;
+    } break;
+    case cfg::SwitchType::VOQ: {
+      static const std::map<cfg::PortType, cfg::PortLoopbackMode>
+          kDefaultLoopbackMode = {
+              {cfg::PortType::INTERFACE_PORT, cfg::PortLoopbackMode::MAC},
+              {cfg::PortType::FABRIC_PORT, cfg::PortLoopbackMode::MAC}};
+      return kDefaultLoopbackMode;
+    } break;
+    case cfg::SwitchType::FABRIC: {
+      static const std::map<cfg::PortType, cfg::PortLoopbackMode>
+          kDefaultLoopbackMode = {
+              {cfg::PortType::FABRIC_PORT, cfg::PortLoopbackMode::MAC}};
+      return kDefaultLoopbackMode;
+    } break;
+    case cfg::SwitchType::PHY:
+      /* unsupported */
+      break;
+  }
+  throw FbossError("Unsupported switchType for Ebro: ", getSwitchType());
 }
 } // namespace facebook::fboss

@@ -18,9 +18,7 @@
 #include "fboss/agent/hw/bcm/BcmPortTable.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 
-extern "C" {
-#include <bcm/field.h>
-}
+extern "C" {}
 
 namespace facebook::fboss {
 
@@ -84,8 +82,10 @@ void BcmBstStatsMgr::getAndPublishDeviceWatermark() {
 }
 
 void BcmBstStatsMgr::getAndPublishGlobalWatermarks(
-    const std::map<int, bcm_port_t>& itmToPortMap) const {
+    const std::map<int, bcm_port_t>& itmToPortMap) {
   auto cosMgr = hw_->getCosMgr();
+  uint64_t globalHeadroomWatermarkBytes{};
+  uint64_t globalSharedWatermarkBytes{};
   for (auto it = itmToPortMap.begin(); it != itmToPortMap.end(); it++) {
     int itm = it->first;
     bcm_port_t bcmPortId = it->second;
@@ -98,7 +98,17 @@ void BcmBstStatsMgr::getAndPublishGlobalWatermarks(
             itm, PortID(bcmPortId), -1, bcmBstStatIdIngPool) *
         hw_->getMMUCellBytes();
     publishGlobalWatermarks(itm, maxGlobalHeadroomBytes, maxGlobalSharedBytes);
+    globalHeadroomWatermarkBytes =
+        std::max(globalHeadroomWatermarkBytes, maxGlobalHeadroomBytes);
+    globalSharedWatermarkBytes =
+        std::max(globalSharedWatermarkBytes, maxGlobalSharedBytes);
   }
+  auto ingressBufferPoolName =
+      (*hw_->getPortTable()->begin()).second->getIngressBufferPoolName();
+  globalHeadroomWatermarkBytes_[ingressBufferPoolName] =
+      globalHeadroomWatermarkBytes;
+  globalSharedWatermarkBytes_[ingressBufferPoolName] =
+      globalSharedWatermarkBytes;
 }
 
 void BcmBstStatsMgr::createItmToPortMap(

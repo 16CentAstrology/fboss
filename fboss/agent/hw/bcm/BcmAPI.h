@@ -9,6 +9,7 @@
  */
 #pragma once
 
+#include "fboss/agent/hw/bcm/BcmSdkVer.h"
 #include "fboss/agent/hw/bcm/types.h"
 #include "fboss/agent/platforms/common/utils/BcmYamlConfig.h"
 
@@ -17,7 +18,7 @@
 #include <string>
 
 #include <folly/Range.h>
-#include <folly/experimental/StringKeyedUnorderedMap.h>
+#include <folly/container/F14Map.h>
 #include <yaml-cpp/yaml.h>
 
 // defined in fboss/agent/hw/bcm/BcmUnit.cpp
@@ -165,7 +166,7 @@ class BcmAPI {
   /*
    * SDK6 bcm config map.
    */
-  typedef folly::StringKeyedUnorderedMap<std::string> HwConfigMap;
+  typedef folly::F14NodeMap<std::string, std::string> HwConfigMap;
   static HwConfigMap& getHwConfig();
 
   static bool isHwInSimMode();
@@ -173,6 +174,10 @@ class BcmAPI {
   static BcmYamlConfig& getHwYamlConfig();
 
   static bool isHwUsingHSDK();
+
+#if defined(BCM_SDK_VERSION_GTE_6_5_29)
+  static void bdeDestroy();
+#endif
 
  private:
   // Forbidden copy constructor and assignment operator
@@ -194,6 +199,9 @@ class BcmAPI {
 
   static void bdeCreate();
   static void bdeCreateSim();
+#if defined(BCM_SDK_VERSION_GTE_6_5_29)
+  static void bdeDestroySim();
+#endif
 
   static void initHSDKImpl(const std::string& yamlConfig);
 

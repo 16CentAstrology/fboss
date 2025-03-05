@@ -70,7 +70,7 @@ TunIntf::TunIntf(
     int mtu)
     : folly::EventHandler(evb),
       sw_(sw),
-      name_(util::createTunIntfName(ifID)),
+      name_(utility::createTunIntfName(ifID)),
       ifID_(ifID),
       ifIndex_(ifIndex),
       mtu_(mtu) {
@@ -88,8 +88,7 @@ TunIntf::TunIntf(
   disableIPv6AddrGenMode(ifIndex_);
 
   XLOG(DBG2) << "Added interface " << name_ << " with fd " << fd_ << " @ index "
-             << ifIndex_ << ", "
-             << "DOWN";
+             << ifIndex_ << ", " << "DOWN";
 }
 
 TunIntf::TunIntf(
@@ -101,7 +100,7 @@ TunIntf::TunIntf(
     int mtu)
     : folly::EventHandler(evb),
       sw_(sw),
-      name_(util::createTunIntfName(ifID)),
+      name_(utility::createTunIntfName(ifID)),
       ifID_(ifID),
       status_(status),
       addrs_(addr),

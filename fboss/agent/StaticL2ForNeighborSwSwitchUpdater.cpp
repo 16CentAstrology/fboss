@@ -20,7 +20,7 @@ namespace facebook::fboss {
 
 StaticL2ForNeighborSwSwitchUpdater::StaticL2ForNeighborSwSwitchUpdater(
     SwSwitch* sw)
-    : StaticL2ForNeighborUpdater(sw->getHw()), sw_(sw) {}
+    : StaticL2ForNeighborUpdater(), sw_(sw) {}
 
 template <typename NeighborEntryT>
 void StaticL2ForNeighborSwSwitchUpdater::ensureMacEntry(
@@ -72,7 +72,7 @@ void StaticL2ForNeighborSwSwitchUpdater::pruneMacEntry(
       // Check if another neighbor still points to this MAC
       newState = MacTableUtils::updateOrAddStaticEntryIfNbrExists(
           newState, vlanId, mac);
-      auto vlan = newState->getVlans()->getVlanIf(vlanId);
+      auto vlan = newState->getVlans()->getNodeIf(vlanId);
       macPruned = vlan->getMacTable()->getMacIf(mac) == nullptr;
     }
     return macPruned ? newState : nullptr;
@@ -105,4 +105,9 @@ void StaticL2ForNeighborSwSwitchUpdater::ensureMacEntryIfNeighborExists(
   sw_->updateState(
       "ensure static MAC for nbr: " + macEntry->str(), std::move(ensureMac));
 }
+
+bool StaticL2ForNeighborSwSwitchUpdater::needL2EntryForNeighbor() const {
+  return sw_->needL2EntryForNeighbor();
+}
+
 } // namespace facebook::fboss

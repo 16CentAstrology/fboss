@@ -9,11 +9,13 @@
  */
 
 #include "fboss/agent/test/EcmpSetupHelper.h"
+#include "fboss/agent/hw/switch_asics/HwAsic.h"
 
 #include <iterator>
 
 #include "fboss/agent/ApplyThriftConfig.h"
 #include "fboss/agent/RouteUpdateWrapper.h"
+#include "fboss/agent/SwSwitch.h"
 #include "fboss/agent/state/AggregatePort.h"
 #include "fboss/agent/state/Interface.h"
 #include "fboss/agent/state/Port.h"
@@ -23,6 +25,8 @@
 #include "fboss/agent/types.h"
 
 #include <folly/IPAddress.h>
+
+DECLARE_bool(intf_nbr_tables);
 
 using boost::container::flat_map;
 using boost::container::flat_set;
@@ -38,9 +42,12 @@ using namespace facebook::fboss;
 std::optional<AggregatePortID> getAggPortID(
     const std::shared_ptr<SwitchState>& inputState,
     const PortID& portId) {
-  for (auto idAndAggPort : std::as_const(*inputState->getAggregatePorts())) {
-    if (idAndAggPort.second->isMemberPort(portId)) {
-      return idAndAggPort.second->getID();
+  for (const auto& [_, aggPorts] :
+       std::as_const(*inputState->getAggregatePorts())) {
+    for (auto idAndAggPort : std::as_const(*aggPorts)) {
+      if (idAndAggPort.second->isMemberPort(portId)) {
+        return idAndAggPort.second->getID();
+      }
     }
   }
   return std::nullopt;
@@ -50,30 +57,57 @@ flat_map<InterfaceID, folly::CIDRNetwork> computeInterface2Subnet(
     const std::shared_ptr<SwitchState>& inputState,
     bool v6) {
   boost::container::flat_map<InterfaceID, folly::CIDRNetwork> intf2Network;
-  for (auto iter : std::as_const(*inputState->getInterfaces())) {
-    const auto& intf = iter.second;
-    for (const auto& cidrStr : intf->getAddressesCopy()) {
-      auto subnet = folly::IPAddress::createNetwork(cidrStr.first.str());
-      if (!v6 && subnet.first.isV4()) {
-        intf2Network[intf->getID()] = subnet;
-      } else if (v6 && subnet.first.isV6() && !subnet.first.isLinkLocal()) {
-        intf2Network[intf->getID()] = subnet;
+  auto getIntf2Network = [&](const auto& interfaces) {
+    for (const auto& [_, intfMap] : std::as_const(*interfaces)) {
+      for (auto iter : std::as_const(*intfMap)) {
+        const auto& intf = iter.second;
+        for (const auto& cidrStr : intf->getAddressesCopy()) {
+          auto subnet = folly::IPAddress::createNetwork(cidrStr.first.str());
+          if (!v6 && subnet.first.isV4()) {
+            intf2Network[intf->getID()] = subnet;
+          } else if (v6 && subnet.first.isV6() && !subnet.first.isLinkLocal()) {
+            intf2Network[intf->getID()] = subnet;
+          }
+        }
       }
     }
-  }
+  };
+  getIntf2Network(inputState->getInterfaces());
+  getIntf2Network(inputState->getRemoteInterfaces());
   return intf2Network;
 }
 } // namespace
 
 namespace facebook::fboss::utility {
 
-boost::container::flat_set<PortDescriptor> getPortsWithExclusiveVlanMembership(
-    const std::shared_ptr<SwitchState>& state) {
+boost::container::flat_set<PortDescriptor> getSingleVlanOrRoutedCabledPorts(
+    const SwSwitch* sw) {
   boost::container::flat_set<PortDescriptor> ports;
-  for (auto [id, vlan] : std::as_const(*state->getVlans())) {
-    auto memberPorts = vlan->getPorts();
-    if (memberPorts.size() == 1) {
-      ports.insert(PortDescriptor{PortID(memberPorts.begin()->first)});
+
+  if (!sw->getSwitchInfoTable().haveL3Switches()) {
+    XLOG(INFO) << "No L3 switches found, skipping single vlan/routed ports";
+    return {};
+  }
+  /*
+   * VOQ switches do not have any vlan ports. They have only routed ports.
+   * So, we need to get the routed ports which are of type INTERFACE_PORT.
+   */
+  if (sw->getSwitchInfoTable().l3SwitchType() == cfg::SwitchType::VOQ) {
+    for (const auto& portMap : std::as_const(*sw->getState()->getPorts())) {
+      for (const auto& port : std::as_const(*portMap.second)) {
+        if (port.second->getPortType() == cfg::PortType::INTERFACE_PORT) {
+          ports.insert(PortDescriptor{PortID(port.second->getID())});
+        }
+      }
+    }
+  } else {
+    for (const auto& vlanTable : std::as_const(*sw->getState()->getVlans())) {
+      for (auto [id, vlan] : std::as_const(*vlanTable.second)) {
+        auto memberPorts = vlan->getPorts();
+        if (memberPorts.size() == 1) {
+          ports.insert(PortDescriptor{PortID(memberPorts.begin()->first)});
+        }
+      }
     }
   }
   return ports;
@@ -85,12 +119,15 @@ BaseEcmpSetupHelper<AddrT, NextHopT>::BaseEcmpSetupHelper() {}
 template <typename AddrT, typename NextHopT>
 flat_map<PortDescriptor, InterfaceID>
 BaseEcmpSetupHelper<AddrT, NextHopT>::computePortDesc2Interface(
-    const std::shared_ptr<SwitchState>& inputState) const {
+    const std::shared_ptr<SwitchState>& inputState,
+    const std::set<cfg::PortType>& portTypes) const {
   boost::container::flat_map<PortDescriptor, InterfaceID> portDesc2Interface;
-  flat_set<PortID> portIds;
-  for (const auto& port : std::as_const(*inputState->getPorts())) {
-    if (port.second->getPortType() == cfg::PortType::INTERFACE_PORT) {
-      portIds.insert(port.second->getID());
+  std::set<PortID> portIds;
+  for (const auto& portMap : std::as_const(*inputState->getPorts())) {
+    for (const auto& port : std::as_const(*portMap.second)) {
+      if (portTypes.find(port.second->getPortType()) != portTypes.end()) {
+        portIds.insert(port.second->getID());
+      }
     }
   }
   for (const auto& portId : portIds) {
@@ -104,6 +141,19 @@ BaseEcmpSetupHelper<AddrT, NextHopT>::computePortDesc2Interface(
       portDesc2Interface.insert(std::make_pair(portDesc, *intf));
     }
   }
+  // SystemPorts
+  auto findPortDesc2Interface = [&](const auto& systemPortMaps) {
+    for (const auto& systemPortMap : std::as_const(*systemPortMaps)) {
+      for (const auto& systemPort : std::as_const(*systemPortMap.second)) {
+        PortDescriptor portDesc = PortDescriptor(systemPort.second->getID());
+        if (auto intf = getInterface(portDesc, inputState)) {
+          portDesc2Interface.insert(std::make_pair(portDesc, *intf));
+        }
+      }
+    }
+  };
+  findPortDesc2Interface(inputState->getSystemPorts());
+  findPortDesc2Interface(inputState->getRemoteSystemPorts());
   return portDesc2Interface;
 }
 
@@ -154,20 +204,33 @@ BaseEcmpSetupHelper<AddrT, NextHopT>::resolveVlanRifNextHop(
     const NextHopT& nhop,
     const std::shared_ptr<Interface>& intf,
     bool useLinkLocal) const {
+  using NeighborTableT = typename std::conditional_t<
+      std::is_same<AddrT, folly::IPAddressV4>::value,
+      ArpTable,
+      NdpTable>;
+
   auto outputState{inputState->clone()};
-  auto vlan = outputState->getVlans()->getVlan(intf->getVlanID());
-  auto nbrTable = vlan->template getNeighborEntryTable<AddrT>()->modify(
-      vlan->getID(), &outputState);
+
+  NeighborTableT* nbrTable;
+  if (FLAGS_intf_nbr_tables) {
+    nbrTable = intf->template getNeighborEntryTable<AddrT>()->modify(
+        intf->getID(), &outputState);
+  } else {
+    auto vlan = outputState->getVlans()->getNode(intf->getVlanID());
+    nbrTable = vlan->template getNeighborEntryTable<AddrT>()->modify(
+        vlan->getID(), &outputState);
+  }
+
   auto nhopIp = useLinkLocal ? nhop.linkLocalNhopIp.value() : nhop.ip;
   if (nbrTable->getEntryIf(nhop.ip)) {
     nbrTable->updateEntry(
         nhopIp,
         nhop.mac,
         nhop.portDesc,
-        vlan->getInterfaceID(),
+        intf->getID(),
         NeighborState::REACHABLE);
   } else {
-    nbrTable->addEntry(nhopIp, nhop.mac, nhop.portDesc, vlan->getInterfaceID());
+    nbrTable->addEntry(nhopIp, nhop.mac, nhop.portDesc, intf->getID());
   }
   return outputState;
 }
@@ -183,6 +246,8 @@ BaseEcmpSetupHelper<AddrT, NextHopT>::resolvePortRifNextHop(
   auto outputState{inputState->clone()};
   auto nbrTable = intf->getNeighborEntryTable<AddrT>()->toThrift();
   auto nhopIp = useLinkLocal ? nhop.linkLocalNhopIp.value() : nhop.ip;
+  bool isLocal =
+      inputState->getInterfaces()->getNodeIf(intf->getID()) != nullptr;
   state::NeighborEntryFields nbr;
   nbr.mac() = nhop.mac.toString();
   nbr.interfaceId() = static_cast<int>(intf->getID());
@@ -192,11 +257,13 @@ BaseEcmpSetupHelper<AddrT, NextHopT>::resolvePortRifNextHop(
   if (encapIdx) {
     nbr.encapIndex() = *encapIdx;
   }
-  nbrTable.insert({*nbr.ipaddress(), nbr});
-  auto interfaceMap = outputState->getInterfaces()->modify(&outputState);
-  auto interface = interfaceMap->getInterface(intf->getID())->clone();
+  nbr.isLocal() = isLocal;
+  nbrTable[*nbr.ipaddress()] = nbr;
+  auto origIntf = isLocal
+      ? outputState->getInterfaces()->getNode(intf->getID())
+      : outputState->getRemoteInterfaces()->getNode(intf->getID());
+  auto interface = origIntf->modify(&outputState);
   interface->setNeighborEntryTable<AddrT>(nbrTable);
-  interfaceMap->updateNode(interface);
   return outputState;
 }
 
@@ -207,10 +274,23 @@ BaseEcmpSetupHelper<AddrT, NextHopT>::unresolveVlanRifNextHop(
     const NextHopT& nhop,
     const std::shared_ptr<Interface>& intf,
     bool useLinkLocal) const {
+  using NeighborTableT = typename std::conditional_t<
+      std::is_same<AddrT, folly::IPAddressV4>::value,
+      ArpTable,
+      NdpTable>;
+
   auto outputState{inputState->clone()};
-  auto vlan = outputState->getVlans()->getVlan(intf->getVlanID());
-  auto nbrTable = vlan->template getNeighborEntryTable<AddrT>()->modify(
-      vlan->getID(), &outputState);
+
+  NeighborTableT* nbrTable;
+  if (FLAGS_intf_nbr_tables) {
+    nbrTable = intf->template getNeighborEntryTable<AddrT>()->modify(
+        intf->getID(), &outputState);
+  } else {
+    auto vlan = outputState->getVlans()->getNode(intf->getVlanID());
+    nbrTable = vlan->template getNeighborEntryTable<AddrT>()->modify(
+        vlan->getID(), &outputState);
+  }
+
   auto nhopIp = useLinkLocal ? nhop.linkLocalNhopIp.value() : nhop.ip;
   nbrTable->removeEntry(nhopIp);
   return outputState;
@@ -227,10 +307,11 @@ BaseEcmpSetupHelper<AddrT, NextHopT>::unresolvePortRifNextHop(
   auto nbrTable = intf->getNeighborEntryTable<AddrT>()->toThrift();
   auto nhopIp = useLinkLocal ? nhop.linkLocalNhopIp.value() : nhop.ip;
   nbrTable.erase(nhopIp.str());
-  auto interfaceMap = outputState->getInterfaces()->modify(&outputState);
-  auto interface = interfaceMap->getInterface(intf->getID())->clone();
+  auto origIntf = outputState->getInterfaces()->getNodeIf(intf->getID())
+      ? outputState->getInterfaces()->getNode(intf->getID())
+      : outputState->getRemoteInterfaces()->getNode(intf->getID());
+  auto interface = origIntf->modify(&outputState);
   interface->setNeighborEntryTable<AddrT>(nbrTable);
-  interfaceMap->updateNode(interface);
   return outputState;
 }
 
@@ -242,15 +323,19 @@ BaseEcmpSetupHelper<AddrT, NextHopT>::resolveNextHop(
     bool useLinkLocal,
     std::optional<int64_t> encapIdx) const {
   auto intfID = portDesc2Interface_.find(nhop.portDesc)->second;
-  auto intf = inputState->getInterfaces()->getInterface(intfID);
+  auto intf = inputState->getInterfaces()->getNodeIf(intfID)
+      ? inputState->getInterfaces()->getNode(intfID)
+      : inputState->getRemoteInterfaces()->getNodeIf(intfID);
   switch (intf->getType()) {
     case cfg::InterfaceType::VLAN:
       CHECK(!encapIdx.has_value())
           << " Encap index not supported for VLAN rifs";
       return resolveVlanRifNextHop(inputState, nhop, intf, useLinkLocal);
     case cfg::InterfaceType::SYSTEM_PORT:
+    case cfg::InterfaceType::PORT:
       return resolvePortRifNextHop(
           inputState, nhop, intf, useLinkLocal, encapIdx);
+      break;
   }
   CHECK(false) << " Unhandled interface type: ";
   return nullptr;
@@ -263,12 +348,14 @@ BaseEcmpSetupHelper<AddrT, NextHopT>::unresolveNextHop(
     const NextHopT& nhop,
     bool useLinkLocal) const {
   auto intfID = portDesc2Interface_.find(nhop.portDesc)->second;
-  auto intf = inputState->getInterfaces()->getInterface(intfID);
+  auto intf = inputState->getInterfaces()->getNode(intfID);
   switch (intf->getType()) {
     case cfg::InterfaceType::VLAN:
       return unresolveVlanRifNextHop(inputState, nhop, intf, useLinkLocal);
     case cfg::InterfaceType::SYSTEM_PORT:
+    case cfg::InterfaceType::PORT:
       return unresolvePortRifNextHop(inputState, nhop, intf, useLinkLocal);
+      break;
   }
   CHECK(false) << " Unhandled interface type: ";
   return nullptr;
@@ -289,8 +376,8 @@ std::optional<InterfaceID> BaseEcmpSetupHelper<AddrT, NextHopT>::getInterface(
     const PortDescriptor& port,
     const std::shared_ptr<SwitchState>& state) const {
   if (auto vlan = getVlan(port, state)) {
-    auto intf = state->getInterfaces()->getInterfaceIf(
-        InterfaceID(static_cast<int>(*vlan)));
+    auto intf =
+        state->getInterfaces()->getNodeIf(InterfaceID(static_cast<int>(*vlan)));
     if (!intf) {
       // No interface config for this vlan
       return std::nullopt;
@@ -298,21 +385,36 @@ std::optional<InterfaceID> BaseEcmpSetupHelper<AddrT, NextHopT>::getInterface(
     CHECK(intf->getType() == cfg::InterfaceType::VLAN);
     CHECK(intf->getVlanID() == *vlan);
     return intf->getID();
-  } else {
-    // Look for port RIF
-    if (!port.isPhysicalPort()) {
-      return std::nullopt;
+  } else if (port.isPhysicalPort()) {
+    auto sysPortRanges =
+        state->getAssociatedSystemPortRangesIf(port.phyPortID());
+    if (!sysPortRanges.systemPortRanges()->empty()) {
+      // Look for port RIF
+      auto sysPortId = getSystemPortID(
+          port.phyPortID(),
+          state,
+          state->getAssociatedSwitchID(port.phyPortID()));
+      if (auto intf = state->getInterfaces()->getNodeIf(
+              InterfaceID(static_cast<int>(sysPortId)))) {
+        return intf->getID();
+      }
     }
-    if (!state->getSwitchSettings()->getSystemPortRange()) {
-      return std::nullopt;
+    for (auto intfs : std::as_const(*state->getInterfaces())) {
+      for (auto intf : std::as_const(*intfs.second)) {
+        if (intf.second->getType() != cfg::InterfaceType::PORT) {
+          continue;
+        }
+        if (intf.second->getPortID() == port.phyPortID()) {
+          return intf.second->getID();
+        }
+      }
     }
-    auto sysPortBase =
-        *state->getSwitchSettings()->getSystemPortRange()->minimum();
-    SystemPortID sysPortId{// static_cast to avoid spurious narrowing conversion
-                           // compiler warning. PortID is just 16 bits
-                           static_cast<int64_t>(port.intID()) + sysPortBase};
-    if (auto intf = state->getInterfaces()->getInterfaceIf(
-            InterfaceID(static_cast<int>(sysPortId)))) {
+  } else if (port.isSystemPort()) {
+    // Find systemPort on both local and remote interfaces
+    if (auto intf = state->getInterfaces()->getNodeIf(port.intID())) {
+      return intf->getID();
+    }
+    if (auto intf = state->getRemoteInterfaces()->getNodeIf(port.intID())) {
       return intf->getID();
     }
   }
@@ -331,8 +433,7 @@ std::optional<VlanID> BaseEcmpSetupHelper<AddrT, NextHopT>::getVlan(
         portId = port.phyPortID();
         break;
       case PortDescriptor::PortType::AGGREGATE: {
-        auto aggPort =
-            state->getAggregatePorts()->getAggregatePort(port.aggPortID());
+        auto aggPort = state->getAggregatePorts()->getNode(port.aggPortID());
         portId = aggPort->sortedSubports().begin()->portID;
       } break;
 
@@ -342,8 +443,11 @@ std::optional<VlanID> BaseEcmpSetupHelper<AddrT, NextHopT>::getVlan(
     return portId;
   };
   if (auto phyPortId = getPhysicalPortId()) {
-    auto phyPort = state->getPorts()->getPort(*phyPortId);
+    auto phyPort = state->getPorts()->getNodeIf(*phyPortId);
     for (const auto& vlanMember : phyPort->getVlans()) {
+      if (vlanMember.first == VlanID(0)) {
+        continue;
+      }
       return vlanMember.first;
     }
   }
@@ -354,17 +458,21 @@ template <typename IPAddrT>
 EcmpSetupTargetedPorts<IPAddrT>::EcmpSetupTargetedPorts(
     const std::shared_ptr<SwitchState>& inputState,
     std::optional<folly::MacAddress> nextHopMac,
-    RouterID routerId)
+    RouterID routerId,
+    bool forProdConfig,
+    const std::set<cfg::PortType>& portTypes)
     : BaseEcmpSetupHelper<IPAddrT, EcmpNextHopT>(), routerId_(routerId) {
-  computeNextHops(inputState, nextHopMac);
+  computeNextHops(inputState, nextHopMac, forProdConfig, portTypes);
 }
 
 template <typename IPAddrT>
 void EcmpSetupTargetedPorts<IPAddrT>::computeNextHops(
     const std::shared_ptr<SwitchState>& inputState,
-    std::optional<folly::MacAddress> nextHopMac) {
+    std::optional<folly::MacAddress> nextHopMac,
+    bool forProdConfig,
+    const std::set<cfg::PortType>& portTypes) {
   BaseEcmpSetupHelperT::portDesc2Interface_ =
-      BaseEcmpSetupHelperT::computePortDesc2Interface(inputState);
+      BaseEcmpSetupHelperT::computePortDesc2Interface(inputState, portTypes);
   auto intf2Subnet =
       computeInterface2Subnet(inputState, BaseEcmpSetupHelperT::kIsV6);
   int offset = 0;
@@ -380,13 +488,21 @@ void EcmpSetupTargetedPorts<IPAddrT>::computeNextHops(
     }
     auto subnetIp = IPAddrT(ipAddrStr);
     auto bytes = subnetIp.toByteArray();
-    // Add a offset to compute next in subnet next hop IP.
-    // Essentially for l3 intf with subnet X, we
-    // would compute next hops by incrementing last octet
-    // of subnet.
-    int lastOctet = (bytes[bytes.size() - 1] + (++offset)) % 255;
-    // Fail if we goto 255 at the last oct
-    CHECK_GT(255, lastOctet);
+    int lastOctet = bytes[bytes.size() - 1];
+    offset++;
+    if (forProdConfig) {
+      // Flip last bit to compute next hop IP because prod configs
+      // can have uplink interfaces with /127 subnets.
+      lastOctet ^= 1;
+    } else {
+      // Add a offset to compute next in subnet next hop IP.
+      // Essentially for l3 intf with subnet X, we
+      // would compute next hops by incrementing last octet
+      // of subnet.
+      lastOctet = (lastOctet + offset) % 255;
+    }
+    // Fail if we go >255 at the last octet
+    CHECK_GE(255, lastOctet);
     bytes[bytes.size() - 1] = static_cast<uint8_t>(lastOctet);
     BaseEcmpSetupHelperT::nhops_.push_back(EcmpNextHopT(
         IPAddrT(bytes),
@@ -411,12 +527,12 @@ EcmpSetupTargetedPorts<IPAddrT>::nhop(PortDescriptor portDesc) const {
 }
 
 template <typename IPAddrT>
-void EcmpSetupTargetedPorts<IPAddrT>::programRoutes(
-    std::unique_ptr<RouteUpdateWrapper> updater,
+void EcmpSetupTargetedPorts<IPAddrT>::addRoutesToUpdater(
+    RouteUpdateWrapper* updater,
     const flat_set<PortDescriptor>& portDescriptors,
     const std::vector<RouteT>& prefixes,
     const std::vector<NextHopWeight>& weights,
-    std::optional<RouteCounterID> counterID) const {
+    const std::optional<RouteCounterID>& counterID) const {
   if (prefixes.empty()) {
     return;
   }
@@ -445,6 +561,38 @@ void EcmpSetupTargetedPorts<IPAddrT>::programRoutes(
         prefix.mask(),
         ClientID::BGPD,
         RouteNextHopEntry(nhops, AdminDistance::EBGP, counterID));
+  }
+}
+
+template <typename IPAddrT>
+void EcmpSetupTargetedPorts<IPAddrT>::programRoutes(
+    RouteUpdateWrapper* updater,
+    const flat_set<PortDescriptor>& portDescriptors,
+    const std::vector<RouteT>& prefixes,
+    const std::vector<NextHopWeight>& weights,
+    std::optional<RouteCounterID> counterID) const {
+  addRoutesToUpdater(updater, portDescriptors, prefixes, weights, counterID);
+  updater->program();
+}
+
+template <typename IPAddrT>
+void EcmpSetupTargetedPorts<IPAddrT>::programRoutes(
+    RouteUpdateWrapper* updater,
+    const std::vector<flat_set<PortDescriptor>>& portDescriptors,
+    const std::vector<RouteT>& prefixes,
+    const std::vector<std::vector<NextHopWeight>>& weights,
+    std::optional<RouteCounterID> counterID) const {
+  std::vector<std::vector<NextHopWeight>> hopWeights = weights;
+  if (!weights.size()) {
+    for (int i = 0; i < portDescriptors.size(); i++) {
+      hopWeights.push_back(std::vector<NextHopWeight>());
+    }
+  }
+  CHECK_EQ(portDescriptors.size(), hopWeights.size());
+  CHECK_EQ(portDescriptors.size(), prefixes.size());
+  for (int i = 0; i < portDescriptors.size(); i++) {
+    addRoutesToUpdater(
+        updater, portDescriptors[i], {prefixes[i]}, hopWeights[i], counterID);
   }
   updater->program();
 }
@@ -551,7 +699,7 @@ void EcmpSetupTargetedPorts<IPAddrT>::programIp2MplsRoutes(
 
 template <typename IPAddrT>
 void EcmpSetupTargetedPorts<IPAddrT>::unprogramRoutes(
-    std::unique_ptr<RouteUpdateWrapper> wrapper,
+    RouteUpdateWrapper* wrapper,
     const std::vector<RouteT>& prefixes) const {
   for (const auto& prefix : prefixes) {
     wrapper->delRoute(
@@ -613,22 +761,21 @@ std::shared_ptr<SwitchState> EcmpSetupAnyNPorts<IPAddrT>::unresolveNextHops(
 
 template <typename IPAddrT>
 void EcmpSetupAnyNPorts<IPAddrT>::programRoutes(
-    std::unique_ptr<RouteUpdateWrapper> updater,
+    RouteUpdateWrapper* updater,
     size_t width,
     const std::vector<RouteT>& prefixes,
     const std::vector<NextHopWeight>& weights) const {
   ecmpSetupTargetedPorts_.programRoutes(
-      std::move(updater), getPortDescs(width), prefixes, weights);
+      updater, getPortDescs(width), prefixes, weights);
 }
 
 template <typename IPAddrT>
 void EcmpSetupAnyNPorts<IPAddrT>::programRoutes(
-    std::unique_ptr<RouteUpdateWrapper> updater,
+    RouteUpdateWrapper* updater,
     const flat_set<PortDescriptor>& portDescs,
     const std::vector<RouteT>& prefixes,
     const std::vector<NextHopWeight>& weights) const {
-  ecmpSetupTargetedPorts_.programRoutes(
-      std::move(updater), portDescs, prefixes, weights);
+  ecmpSetupTargetedPorts_.programRoutes(updater, portDescs, prefixes, weights);
 }
 
 template <typename IPAddrT>
@@ -651,9 +798,9 @@ void EcmpSetupAnyNPorts<IPAddrT>::programIp2MplsRoutes(
 
 template <typename IPAddrT>
 void EcmpSetupAnyNPorts<IPAddrT>::unprogramRoutes(
-    std::unique_ptr<RouteUpdateWrapper> wrapper,
+    RouteUpdateWrapper* wrapper,
     const std::vector<RouteT>& prefixes) const {
-  ecmpSetupTargetedPorts_.unprogramRoutes(std::move(wrapper), prefixes);
+  ecmpSetupTargetedPorts_.unprogramRoutes(wrapper, prefixes);
 }
 
 template <typename IPAddrT>
@@ -702,9 +849,11 @@ void MplsEcmpSetupTargetedPorts<IPAddrT>::setupECMPForwarding(
 template <typename IPAddrT>
 void MplsEcmpSetupTargetedPorts<IPAddrT>::computeNextHops(
     const std::shared_ptr<SwitchState>& inputState,
-    std::optional<folly::MacAddress> nextHopMac) {
+    std::optional<folly::MacAddress> nextHopMac,
+    bool forProdConfig,
+    const std::set<cfg::PortType>& portTypes) {
   BaseEcmpSetupHelperT::portDesc2Interface_ =
-      BaseEcmpSetupHelperT::computePortDesc2Interface(inputState);
+      BaseEcmpSetupHelperT::computePortDesc2Interface(inputState, portTypes);
   auto intf2Subnet =
       computeInterface2Subnet(inputState, BaseEcmpSetupHelperT::kIsV6);
   int offset = 0;
@@ -714,12 +863,20 @@ void MplsEcmpSetupTargetedPorts<IPAddrT>::computeNextHops(
     auto intf = portDescAndInterface.second;
     auto subnetIp = IPAddrT(intf2Subnet[intf].first.str());
     auto bytes = subnetIp.toByteArray();
-    // Add a offset to compute next in subnet next hop IP.
-    // Essentially for l3 intf with subnet X, we
-    // would compute next hops by incrementing last octet
-    // of subnet.
-    int lastOctet = (bytes[bytes.size() - 1] + (++offset)) % 255;
-    // Fail if we goto 255 at the last oct
+    int lastOctet = bytes[bytes.size() - 1];
+    offset++;
+    if (forProdConfig) {
+      // Flip last bit to compute next hop IP because prod configs
+      // can have uplink interfaces with /127 subnets.
+      lastOctet ^= 1;
+    } else {
+      // Add a offset to compute next in subnet next hop IP.
+      // Essentially for l3 intf with subnet X, we
+      // would compute next hops by incrementing last octet
+      // of subnet.
+      lastOctet = (lastOctet + offset) % 255;
+    }
+    // Fail if we go to 255 at the last octet
     CHECK_GT(255, lastOctet);
     bytes[bytes.size() - 1] = static_cast<uint8_t>(lastOctet);
     BaseEcmpSetupHelperT::nhops_.push_back(EcmpMplsNextHop<IPAddrT>(

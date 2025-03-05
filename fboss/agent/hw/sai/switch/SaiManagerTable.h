@@ -9,6 +9,7 @@
  */
 #pragma once
 
+#include "fboss/agent/hw/sai/api/SaiVersion.h"
 #include "fboss/agent/hw/sai/api/Types.h"
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
 
@@ -24,6 +25,8 @@ namespace facebook::fboss {
 struct ConcurrentIndices;
 class SaiAclTableGroupManager;
 class SaiAclTableManager;
+class SaiArsManager;
+class SaiArsProfileManager;
 class SaiBridgeManager;
 class SaiBufferManager;
 class SaiCounterManager;
@@ -50,8 +53,10 @@ class SaiSystemPortManager;
 class SaiSchedulerManager;
 class SaiTamManager;
 class SaiTunnelManager;
+class SaiUdfManager;
 class SaiVirtualRouterManager;
 class SaiVlanManager;
+class SaiVendorSwitchManager;
 class SaiWredManager;
 class SaiStore;
 class UnsupportedFeatureManager;
@@ -71,6 +76,12 @@ class SaiManagerTable {
 
   SaiAclTableManager& aclTableManager();
   const SaiAclTableManager& aclTableManager() const;
+
+  SaiArsManager& arsManager();
+  const SaiArsManager& arsManager() const;
+
+  SaiArsProfileManager& arsProfileManager();
+  const SaiArsProfileManager& arsProfileManager() const;
 
   SaiAclTableGroupManager& aclTableGroupManager();
   const SaiAclTableGroupManager& aclTableGroupManager() const;
@@ -162,11 +173,19 @@ class SaiManagerTable {
   SaiTunnelManager& tunnelManager();
   const SaiTunnelManager& tunnelManager() const;
 
+  SaiUdfManager& udfManager();
+  const SaiUdfManager& udfManager() const;
+
+  SaiVendorSwitchManager& vendorSwitchManager();
+  const SaiVendorSwitchManager& vendorSwitchManager() const;
+
   void reset(bool skipSwitchManager);
 
  private:
   std::unique_ptr<SaiAclTableGroupManager> aclTableGroupManager_;
   std::unique_ptr<SaiAclTableManager> aclTableManager_;
+  std::unique_ptr<SaiArsManager> arsManager_;
+  std::unique_ptr<SaiArsProfileManager> arsProfileManager_;
   std::unique_ptr<SaiBridgeManager> bridgeManager_;
   std::unique_ptr<SaiBufferManager> bufferManager_;
   std::unique_ptr<SaiCounterManager> counterManager_;
@@ -197,6 +216,8 @@ class SaiManagerTable {
   std::unique_ptr<SaiTamManager> tamManager_;
   std::unique_ptr<SaiTunnelManager> tunnelManager_;
   std::unique_ptr<UnsupportedFeatureManager> teFlowEntryManager_;
+  std::unique_ptr<SaiUdfManager> udfManager_;
+  std::unique_ptr<SaiVendorSwitchManager> vendorSwitchManager_;
 };
 
 } // namespace facebook::fboss

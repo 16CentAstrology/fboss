@@ -35,43 +35,51 @@ using PortMapTraits =
 class PortMap : public ThriftMapNode<PortMap, PortMapTraits> {
  public:
   using Base = ThriftMapNode<PortMap, PortMapTraits>;
+  using Traits = PortMapTraits;
+  using Base::modify;
 
   PortMap();
   ~PortMap() override;
 
-  const std::shared_ptr<Port>& getPort(PortID id) const {
-    return getNode(id);
-  }
-  std::shared_ptr<Port> getPortIf(PortID id) const {
-    return getNodeIf(id);
-  }
-  std::shared_ptr<Port> getPort(const std::string& name) const;
-  std::shared_ptr<Port> getPortIf(const std::string& name) const;
-
-  size_t numPorts() const {
-    return size();
-  }
-
-  /*
-   * The following functions modify the static state.
-   * These should only be called on unpublished objects which are only visible
-   * to a single thread.
-   */
-
-  void registerPort(
-      PortID id,
-      const std::string& name,
-      cfg::PortType portType = cfg::PortType::INTERFACE_PORT);
-
-  void addPort(const std::shared_ptr<Port>& port);
-
-  void updatePort(const std::shared_ptr<Port>& port);
-
-  PortMap* modify(std::shared_ptr<SwitchState>* state);
-
  private:
   // Inherit the constructors required for clone()
   using Base::Base;
+  friend class CloneAllocator;
+};
+
+using MultiSwitchPortMapTypeClass = apache::thrift::type_class::
+    map<apache::thrift::type_class::string, PortMapTypeClass>;
+using MultiSwitchPortMapThriftType = std::map<std::string, PortMapThriftType>;
+
+class MultiSwitchPortMap;
+
+using MultiSwitchPortMapTraits = ThriftMultiSwitchMapNodeTraits<
+    MultiSwitchPortMap,
+    MultiSwitchPortMapTypeClass,
+    MultiSwitchPortMapThriftType,
+    PortMap>;
+
+class HwSwitchMatcher;
+
+class MultiSwitchPortMap : public ThriftMultiSwitchMapNode<
+                               MultiSwitchPortMap,
+                               MultiSwitchPortMapTraits> {
+ public:
+  using Traits = MultiSwitchPortMapTraits;
+  using BaseT =
+      ThriftMultiSwitchMapNode<MultiSwitchPortMap, MultiSwitchPortMapTraits>;
+  using BaseT::modify;
+
+  MultiSwitchPortMap* modify(std::shared_ptr<SwitchState>* state);
+  std::shared_ptr<Port> getPort(const std::string& name) const;
+  std::shared_ptr<Port> getPortIf(const std::string& name) const;
+
+  MultiSwitchPortMap() = default;
+  virtual ~MultiSwitchPortMap() = default;
+
+ private:
+  // Inherit the constructors required for clone()
+  using BaseT::BaseT;
   friend class CloneAllocator;
 };
 

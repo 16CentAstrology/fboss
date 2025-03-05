@@ -1,5 +1,6 @@
 // Copyright 2021-present Facebook. All Rights Reserved.
 #pragma once
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 
@@ -22,7 +23,7 @@ class Device {
 
  public:
   explicit Device(const std::string& device) : device_(device) {}
-  virtual ~Device() {}
+  virtual ~Device() = default;
   virtual void open();
   virtual void close();
   virtual void write(const uint8_t* buf, size_t len);

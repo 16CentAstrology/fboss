@@ -23,7 +23,7 @@
 
 namespace facebook::fboss {
 
-class SaiHwPlatform;
+class SaiPlatform;
 class StateUpdate;
 class Port;
 
@@ -32,12 +32,12 @@ class SaiPhyManager : public PhyManager {
   explicit SaiPhyManager(const PlatformMapping* platformMapping);
   ~SaiPhyManager() override;
 
-  SaiHwPlatform* getSaiPlatform(GlobalXphyID xphyID);
-  const SaiHwPlatform* getSaiPlatform(GlobalXphyID xphyID) const {
+  SaiPlatform* getSaiPlatform(GlobalXphyID xphyID);
+  const SaiPlatform* getSaiPlatform(GlobalXphyID xphyID) const {
     return const_cast<SaiPhyManager*>(this)->getSaiPlatform(xphyID);
   }
-  SaiHwPlatform* getSaiPlatform(PortID portID);
-  const SaiHwPlatform* getSaiPlatform(PortID portID) const {
+  SaiPlatform* getSaiPlatform(PortID portID);
+  const SaiPlatform* getSaiPlatform(PortID portID) const {
     return const_cast<SaiPhyManager*>(this)->getSaiPlatform(portID);
   }
   SaiSwitch* getSaiSwitch(GlobalXphyID xphyID);
@@ -75,6 +75,9 @@ class SaiPhyManager : public PhyManager {
   std::map<std::string, MacsecStats> getMacsecPortStats(
       const std::vector<std::string>& portName,
       bool readFromHw) override;
+
+  std::optional<HwPortStats> getHwPortStats(
+      const std::string& /* portName */) const override;
 
   std::string listHwObjects(std::vector<HwObjectType>& hwObjects, bool cached)
       override;
@@ -132,10 +135,12 @@ class SaiPhyManager : public PhyManager {
 
   void gracefulExit() override;
 
+  virtual cfg::AsicType getPhyAsicType() const = 0;
+
  protected:
   void addSaiPlatform(
       GlobalXphyID xphyID,
-      std::unique_ptr<SaiHwPlatform> platform);
+      std::unique_ptr<SaiPlatform> platform);
 
   folly::MacAddress getLocalMac() const {
     return localMac_;
@@ -145,11 +150,11 @@ class SaiPhyManager : public PhyManager {
   std::shared_ptr<SwitchState> portUpdateHelper(
       std::shared_ptr<SwitchState> in,
       PortID port,
-      const SaiHwPlatform* platform,
+      const SaiPlatform* platform,
       const std::function<void(std::shared_ptr<Port>&)>& modify) const;
   class PlatformInfo {
    public:
-    explicit PlatformInfo(std::unique_ptr<SaiHwPlatform> platform);
+    explicit PlatformInfo(std::unique_ptr<SaiPlatform> platform);
     PlatformInfo(PlatformInfo&&) = default;
     PlatformInfo& operator=(PlatformInfo&&) = default;
     ~PlatformInfo();
@@ -158,7 +163,7 @@ class SaiPhyManager : public PhyManager {
         const std::shared_ptr<SwitchState>&)>;
 
     SaiSwitch* getHwSwitch();
-    SaiHwPlatform* getPlatform() {
+    SaiPlatform* getPlatform() {
       return saiPlatform_.get();
     }
     void applyUpdate(folly::StringPiece name, StateUpdateFn fn);
@@ -169,7 +174,7 @@ class SaiPhyManager : public PhyManager {
 
    private:
     void setState(const std::shared_ptr<SwitchState>& newState);
-    std::unique_ptr<SaiHwPlatform> saiPlatform_;
+    std::unique_ptr<SaiPlatform> saiPlatform_;
     // Don't hold locked access to SwitchState for long periods. Instead
     // Just access via set/getState apis, to allow for many readers just
     // accessing the COW SwitchState object w/o holding a lock.
@@ -219,12 +224,12 @@ class SaiPhyManager : public PhyManager {
   std::string getSaiPortInfo(PortID swPort);
 
   // Due to SaiPhyManager usually has more than one phy, and each phy has its
-  // own SaiHwPlatform, which needs a local mac address. As local mac address
+  // own SaiPlatform, which needs a local mac address. As local mac address
   // will be the same mac address for the running system, all these phys and
   // their Platforms will share the same local mac.
   // Therefore, to avoid calling the getLocalMacAddress() too frequently,
   // use a const private member to store the local mac once, and then pass this
-  // mac address when creating each single SaiHwPlatform
+  // mac address when creating each single SaiPlatform
   const folly::MacAddress localMac_;
   std::map<PimID, std::map<GlobalXphyID, std::unique_ptr<PlatformInfo>>>
       saiPlatforms_;
@@ -242,21 +247,26 @@ void SaiPhyManager::initializeSlotPhysImpl(PimID pimID) {
 
       XLOG(DBG2) << "About to initialize phy of global phyId:" << phy.first;
       steady_clock::time_point begin = steady_clock::now();
-      // Create CredoF104 sai switch
-      auto credoF104 = static_cast<xphychipT*>(getExternalPhy(phy.first));
-      // Set CredoF104's customized switch attributes before calling init
-      saiPlatform->setSwitchAttributes(credoF104->getSwitchAttributes());
+      // Create xphy sai switch
+      auto xphy = static_cast<xphychipT*>(getExternalPhy(phy.first));
+      // Set xphy's customized switch attributes before calling init
+      saiPlatform->setSwitchAttributes(xphy->getSwitchAttributes());
       cfg::AgentConfig config;
-      config.sw()->switchSettings()->switchType() = cfg::SwitchType::PHY;
+      cfg::SwitchInfo switchInfo;
+      switchInfo.switchType() = cfg::SwitchType::PHY;
+      switchInfo.asicType() = getPhyAsicType();
+      config.sw()->switchSettings()->switchIdToSwitchInfo() = {
+          std::make_pair(0, switchInfo)};
       saiPlatform->init(
           std::make_unique<AgentConfig>(config, ""),
-          0 /* No switch featured needed */);
+          0 /* No switch featured needed */,
+          0 /* switchIndex */);
 
       // Now call HwSwitch to create the switch object in hardware
       auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
-      saiSwitch->init(credoF104, true /* failHwCallsOnWarmboot */);
-      credoF104->setSwitchId(saiSwitch->getSaiSwitchId());
-      credoF104->dump();
+      saiSwitch->init(xphy, nullptr, true /* failHwCallsOnWarmboot */);
+      xphy->setSwitchId(saiSwitch->getSaiSwitchId());
+      xphy->dump();
       XLOG(DBG2)
           << "Finished initializing phy of global phyId:" << phy.first
           << ", switchId:" << saiSwitch->getSaiSwitchId() << " took "

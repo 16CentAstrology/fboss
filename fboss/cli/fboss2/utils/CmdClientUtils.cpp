@@ -9,11 +9,6 @@
  */
 #include "fboss/cli/fboss2/utils/CmdClientUtils.h"
 
-#include <thrift/lib/cpp2/async/HeaderClientChannel.h>
-#include "fboss/cli/fboss2/CmdGlobalOptions.h"
-
-#include <string>
-
 namespace facebook::fboss::utils {
 
 template <>
@@ -23,9 +18,70 @@ std::unique_ptr<facebook::fboss::FbossCtrlAsyncClient> createClient(
 }
 
 template <>
+std::unique_ptr<facebook::fboss::FbossCtrlAsyncClient> createClient(
+    const HostInfo& hostInfo,
+    const std::chrono::milliseconds& timeout) {
+  return utils::createAgentClient(hostInfo, timeout);
+}
+
+template <>
+std::unique_ptr<apache::thrift::Client<FbossCtrl>> createClient(
+    const HostInfo& hostInfo,
+    int switchIndex) {
+  return utils::createAgentClient(hostInfo, switchIndex);
+}
+
+template <>
+std::unique_ptr<apache::thrift::Client<FbossHwCtrl>> createClient(
+    const HostInfo& hostInfo,
+    int switchIndex) {
+  return utils::createHwAgentClient(hostInfo, switchIndex);
+}
+
+template <>
 std::unique_ptr<facebook::fboss::QsfpServiceAsyncClient> createClient(
     const HostInfo& hostInfo) {
   return utils::createQsfpClient(hostInfo);
 }
 
+template <>
+std::unique_ptr<
+    apache::thrift::Client<facebook::fboss::led_service::LedService>>
+createClient(const HostInfo& hostInfo) {
+  return utils::createLedClient(hostInfo);
+}
+
+int getNumHwSwitches(const HostInfo& hostInfo) {
+  auto client =
+      utils::createClient<apache::thrift::Client<FbossCtrl>>(hostInfo);
+  MultiSwitchRunState runState;
+  client->sync_getMultiSwitchRunState(runState);
+  return runState.hwIndexToRunState()->size();
+}
+
+void runOnAllHwAgents(const HostInfo& hostInfo, RunForHwAgentFn fn) {
+  auto numHwSwitches = getNumHwSwitches(hostInfo);
+  for (int i = 0; i < numHwSwitches; i++) {
+    auto client =
+        utils::createClient<apache::thrift::Client<FbossHwCtrl>>(hostInfo, i);
+    try {
+      fn(*client);
+    } catch (const std::exception&) {
+      // skip switches that cannot be reached
+    }
+  }
+}
+
+void runOnAllHwAgents(const HostInfo& hostInfo, RunForAgentFn fn) {
+  auto numHwSwitches = getNumHwSwitches(hostInfo);
+  for (int i = 0; i < numHwSwitches; i++) {
+    auto client =
+        utils::createClient<apache::thrift::Client<FbossCtrl>>(hostInfo, i);
+    try {
+      fn(*client);
+    } catch (const std::exception&) {
+      // skip switches that cannot be reached
+    }
+  }
+}
 } // namespace facebook::fboss::utils

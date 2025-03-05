@@ -10,6 +10,21 @@ namespace {
 
 using namespace facebook::fboss;
 
+MatchAction getTrapAclAction() {
+  MatchAction matchAction;
+  cfg::QueueMatchAction queueAction = cfg::QueueMatchAction();
+  queueAction.queueId() = 0;
+  matchAction.setSendToQueue(std::make_pair(queueAction, true));
+  matchAction.setToCpuAction(cfg::ToCpuAction::COPY);
+  cfg::SetTcAction setTcAction = cfg::SetTcAction();
+  setTcAction.tcValue() = 0;
+  matchAction.setSetTc(std::make_pair(setTcAction, true));
+  cfg::UserDefinedTrapAction userDefinedTrap = cfg::UserDefinedTrapAction();
+  userDefinedTrap.queueId() = 0;
+  matchAction.setUserDefinedTrap(userDefinedTrap);
+  return matchAction;
+}
+
 std::shared_ptr<AclEntry> getTrapAclEntry(
     bool srcPort,
     std::optional<PortID> port,
@@ -21,11 +36,7 @@ std::shared_ptr<AclEntry> getTrapAclEntry(
   srcPort ? aclEntry->setSrcPort(port.value())
           : aclEntry->setDstIp(dstPrefix.value());
   aclEntry->setActionType(cfg::AclActionType::PERMIT);
-  MatchAction matchAction;
-  cfg::QueueMatchAction queueAction = cfg::QueueMatchAction();
-  queueAction.queueId() = 0;
-  matchAction.setSendToQueue(std::make_pair(queueAction, true));
-  matchAction.setToCpuAction(cfg::ToCpuAction::COPY);
+  auto matchAction = getTrapAclAction();
   if (counter) {
     auto trafficCounter = cfg::TrafficCounter();
     trafficCounter.name() = aclName + "-counter";
@@ -70,22 +81,18 @@ HwTestPacketTrapEntry::HwTestPacketTrapEntry(
     const uint16_t l4DstPort)
     : hwSwitch_(hwSwitch) {
   auto saiSwitch = static_cast<SaiSwitch*>(hwSwitch_);
-  int priority =
-      saiSwitch->managerTable()->aclTableManager().aclEntryCount(kAclTable1);
+  int priority = saiSwitch->managerTable()->aclTableManager().aclEntryCount(
+      cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE());
 
   auto aclEntry = std::make_shared<AclEntry>(
       priority, std::string("AclEntry" + folly::to<std::string>(priority)));
   aclEntry->setL4DstPort(l4DstPort);
   aclEntry->setActionType(cfg::AclActionType::PERMIT);
-  MatchAction matchAction;
-  cfg::QueueMatchAction queueAction = cfg::QueueMatchAction();
-  queueAction.queueId() = 0;
-  matchAction.setSendToQueue(std::make_pair(queueAction, true));
-  matchAction.setToCpuAction(cfg::ToCpuAction::COPY);
+  MatchAction matchAction = getTrapAclAction();
   aclEntry->setAclAction(matchAction);
 
   saiSwitch->managerTable()->aclTableManager().addAclEntry(
-      aclEntry, kAclTable1);
+      aclEntry, cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE());
   aclEntries_.push_back(aclEntry);
 }
 
@@ -94,11 +101,12 @@ HwTestPacketTrapEntry::HwTestPacketTrapEntry(
     const std::set<PortID>& ports)
     : hwSwitch_(hwSwitch) {
   auto saiSwitch = static_cast<SaiSwitch*>(hwSwitch_);
-  int priority = getNextFreePriority(saiSwitch, kAclTable1);
+  int priority = getNextFreePriority(
+      saiSwitch, cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE());
   for (auto port : ports) {
     auto aclEntry = getTrapAclEntry(true, port, std::nullopt, priority++);
     saiSwitch->managerTable()->aclTableManager().addAclEntry(
-        aclEntry, kAclTable1);
+        aclEntry, cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE());
     aclEntries_.push_back(aclEntry);
   }
 }
@@ -108,11 +116,12 @@ HwTestPacketTrapEntry::HwTestPacketTrapEntry(
     const std::set<folly::CIDRNetwork>& dstPrefixes)
     : hwSwitch_(hwSwitch) {
   auto saiSwitch = static_cast<SaiSwitch*>(hwSwitch_);
-  int priority = getNextFreePriority(saiSwitch, kAclTable1);
+  int priority = getNextFreePriority(
+      saiSwitch, cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE());
   for (const auto& dstPrefix : dstPrefixes) {
     auto aclEntry = getTrapAclEntry(false, std::nullopt, dstPrefix, priority++);
     saiSwitch->managerTable()->aclTableManager().addAclEntry(
-        aclEntry, kAclTable1);
+        aclEntry, cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE());
     aclEntries_.push_back(aclEntry);
   }
 }
@@ -121,7 +130,7 @@ HwTestPacketTrapEntry::~HwTestPacketTrapEntry() {
   auto saiSwitch = static_cast<SaiSwitch*>(hwSwitch_);
   for (const auto& aclEntry : aclEntries_) {
     saiSwitch->managerTable()->aclTableManager().removeAclEntry(
-        aclEntry, kAclTable1);
+        aclEntry, cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE());
   }
 }
 

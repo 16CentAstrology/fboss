@@ -17,17 +17,17 @@
 #include <folly/Benchmark.h>
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 
-DECLARE_bool(setup_for_warmboot);
-
 namespace facebook::fboss::utility {
 
-void initandExitBenchmarkHelper(
+void initAndExitBenchmarkHelper(
     cfg::PortSpeed uplinkPortSpeed,
-    cfg::PortSpeed downlinkPortSpeed);
+    cfg::PortSpeed downlinkPortSpeed,
+    cfg::SwitchType switchType);
 
 #define INIT_AND_EXIT_BENCHMARK_HELPER(name, uplinkSpeed, downlinkSpeed) \
   BENCHMARK(name) {                                                      \
-    utility::initandExitBenchmarkHelper(uplinkSpeed, downlinkSpeed);     \
+    utility::initAndExitBenchmarkHelper(                                 \
+        uplinkSpeed, downlinkSpeed, cfg::SwitchType::NPU);               \
   }
 
 } // namespace facebook::fboss::utility

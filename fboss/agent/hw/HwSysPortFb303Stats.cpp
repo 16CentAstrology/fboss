@@ -13,35 +13,66 @@
 #include "fboss/agent/hw/StatsConstants.h"
 
 #include <folly/logging/xlog.h>
+#include <thrift/lib/cpp2/protocol/Serializer.h>
 
 namespace facebook::fboss {
 
-const std::vector<folly::StringPiece>& HwSysPortFb303Stats::kPortStatKeys()
-    const {
+const std::vector<folly::StringPiece>&
+HwSysPortFb303Stats::kPortMonotonicCounterStatKeys() const {
   // No port level stats on sys ports
   static std::vector<folly::StringPiece> kPortKeys{};
   return kPortKeys;
 }
 
-const std::vector<folly::StringPiece>& HwSysPortFb303Stats::kQueueStatKeys()
-    const {
+const std::vector<folly::StringPiece>&
+HwSysPortFb303Stats::kPortFb303CounterStatKeys() const {
+  // No port level stats on sys ports
+  static std::vector<folly::StringPiece> kPortKeys{};
+  return kPortKeys;
+}
+
+const std::vector<folly::StringPiece>&
+HwSysPortFb303Stats::kQueueMonotonicCounterStatKeys() const {
   static std::vector<folly::StringPiece> kQueueKeys{
-      kOutDiscards(), kOutBytes()};
+      kOutDiscards(),
+      kOutBytes(),
+      kWredDroppedPackets(),
+      kCreditWatchdogDeletedPackets()};
   return kQueueKeys;
 }
 
 const std::vector<folly::StringPiece>&
-HwSysPortFb303Stats::kInMacsecPortStatKeys() const {
+HwSysPortFb303Stats::kQueueFb303CounterStatKeys() const {
+  static std::vector<folly::StringPiece> kQueueKeys{kLatencyWatermarkNsec()};
+  return kQueueKeys;
+}
+
+const std::vector<folly::StringPiece>&
+HwSysPortFb303Stats::kInMacsecPortMonotonicCounterStatKeys() const {
   // No macsec stats on sys ports
   static std::vector<folly::StringPiece> kMacsecInKeys{};
   return kMacsecInKeys;
 }
 
 const std::vector<folly::StringPiece>&
-HwSysPortFb303Stats::kOutMacsecPortStatKeys() const {
+HwSysPortFb303Stats::kOutMacsecPortMonotonicCounterStatKeys() const {
   // No macsec stats on sys ports
   static std::vector<folly::StringPiece> kMacsecOutKeys{};
   return kMacsecOutKeys;
+}
+
+const std::vector<folly::StringPiece>&
+HwSysPortFb303Stats::kPfcMonotonicCounterStatKeys() const {
+  // No PFC stats on sys ports
+  static std::vector<folly::StringPiece> kPfcKeys{};
+  return kPfcKeys;
+}
+
+const std::vector<folly::StringPiece>&
+HwSysPortFb303Stats::kPriorityGroupCounterStatKeys() const {
+  // No priority group stats on sys ports
+  static std::vector<folly::StringPiece> kPgKeys{};
+  return kPgKeys;
 }
 
 void HwSysPortFb303Stats::updateStats(
@@ -64,6 +95,31 @@ void HwSysPortFb303Stats::updateStats(
         *curPortStats.queueOutDiscardBytes_());
     updateQueueStat(
         kOutBytes(), queueIdAndName.first, *curPortStats.queueOutBytes_());
+    if (curPortStats.queueWredDroppedPackets_()->size()) {
+      updateQueueStat(
+          kWredDroppedPackets(),
+          queueIdAndName.first,
+          *curPortStats.queueWredDroppedPackets_());
+    }
+    if (curPortStats.queueCreditWatchdogDeletedPackets_()->size()) {
+      updateQueueStat(
+          kCreditWatchdogDeletedPackets(),
+          queueIdAndName.first,
+          *curPortStats.queueCreditWatchdogDeletedPackets_());
+    }
+    if (curPortStats.queueLatencyWatermarkNsec_()->size()) {
+      auto& queueStats = *curPortStats.queueLatencyWatermarkNsec_();
+      auto qitr = queueStats.find(queueIdAndName.first);
+      if (qitr != queueStats.end()) {
+        fb303::fbData->setCounter(
+            statName(
+                kLatencyWatermarkNsec(),
+                portName(),
+                queueIdAndName.first,
+                queueIdAndName.second),
+            qitr->second);
+      }
+    }
   }
   if (curPortStats.queueWatermarkBytes_()->size()) {
     updateQueueWatermarkStats(*curPortStats.queueWatermarkBytes_());

@@ -37,6 +37,7 @@ class SflowCollectorMap
     : public ThriftMapNode<SflowCollectorMap, SflowCollectorMapTraits> {
  public:
   using Base = ThriftMapNode<SflowCollectorMap, SflowCollectorMapTraits>;
+  using Traits = SflowCollectorMapTraits;
   SflowCollectorMap() = default;
   ~SflowCollectorMap() override = default;
 
@@ -46,4 +47,38 @@ class SflowCollectorMap
   friend class CloneAllocator;
 };
 
+using MultiSwitchSflowCollectorMapTypeClass = apache::thrift::type_class::
+    map<apache::thrift::type_class::string, SflowCollectorMapTypeClass>;
+using MultiSwitchSflowCollectorMapThriftType =
+    std::map<std::string, SflowCollectorMapThriftType>;
+
+class MultiSwitchSflowCollectorMap;
+
+using MultiSwitchSflowCollectorMapTraits = ThriftMultiSwitchMapNodeTraits<
+    MultiSwitchSflowCollectorMap,
+    MultiSwitchSflowCollectorMapTypeClass,
+    MultiSwitchSflowCollectorMapThriftType,
+    SflowCollectorMap>;
+
+class HwSwitchMatcher;
+
+class MultiSwitchSflowCollectorMap : public ThriftMultiSwitchMapNode<
+                                         MultiSwitchSflowCollectorMap,
+                                         MultiSwitchSflowCollectorMapTraits> {
+ public:
+  using Traits = MultiSwitchSflowCollectorMapTraits;
+  using BaseT = ThriftMultiSwitchMapNode<
+      MultiSwitchSflowCollectorMap,
+      MultiSwitchSflowCollectorMapTraits>;
+  using BaseT::modify;
+
+  MultiSwitchSflowCollectorMap() = default;
+  virtual ~MultiSwitchSflowCollectorMap() = default;
+  MultiSwitchSflowCollectorMap* modify(std::shared_ptr<SwitchState>* state);
+
+ private:
+  // Inherit the constructors required for clone()
+  using BaseT::BaseT;
+  friend class CloneAllocator;
+};
 } // namespace facebook::fboss

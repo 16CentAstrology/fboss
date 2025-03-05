@@ -40,8 +40,7 @@ class BcmSwitchEnsemble : public HwSwitchEnsemble {
   const BcmSwitch* getHwSwitch() const override {
     return static_cast<const BcmSwitch*>(HwSwitchEnsemble::getHwSwitch());
   }
-  std::vector<PortID> masterLogicalPortIds(
-      const std::set<cfg::PortType>& filter = {}) const override;
+  std::vector<PortID> masterLogicalPortIds() const override;
   std::vector<PortID> getAllPortsInGroup(PortID portID) const override;
   std::vector<FlexPortMode> getSupportedFlexPortModes() const override;
   uint64_t getSdkSwitchId() const override;
@@ -55,7 +54,10 @@ class BcmSwitchEnsemble : public HwSwitchEnsemble {
   std::map<AggregatePortID, HwTrunkStats> getLatestAggregatePortStats(
       const std::vector<AggregatePortID>& aggregatePorts) override;
 
-  void runDiagCommand(const std::string& input, std::string& output) override;
+  void runDiagCommand(
+      const std::string& input,
+      std::string& output,
+      std::optional<SwitchID> switchId = std::nullopt) override;
 
   void init(const HwSwitchEnsemble::HwSwitchEnsembleInitInfo& info) override;
 
@@ -74,9 +76,7 @@ class BcmSwitchEnsemble : public HwSwitchEnsemble {
   std::unique_ptr<std::thread> setupThrift() override {
     return createThriftThread(getHwSwitch());
   }
-  std::unique_ptr<HwLinkStateToggler> createLinkToggler(
-      HwSwitch* hwSwitch,
-      cfg::PortLoopbackMode desiredLoopbackMode);
+  std::unique_ptr<LinkStateToggler> createLinkToggler();
   std::unique_ptr<std::thread> createThriftThread(const BcmSwitch* hwSwitch);
 };
 

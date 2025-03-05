@@ -26,11 +26,15 @@ TransceiverStateMachineState getStateByOrder(int currentStateOrder) {
   } else if (currentStateOrder == 4) {
     return TransceiverStateMachineState::XPHY_PORTS_PROGRAMMED;
   } else if (currentStateOrder == 5) {
-    return TransceiverStateMachineState::TRANSCEIVER_PROGRAMMED;
+    return TransceiverStateMachineState::TRANSCEIVER_READY;
   } else if (currentStateOrder == 6) {
-    return TransceiverStateMachineState::ACTIVE;
+    return TransceiverStateMachineState::TRANSCEIVER_PROGRAMMED;
   } else if (currentStateOrder == 7) {
+    return TransceiverStateMachineState::ACTIVE;
+  } else if (currentStateOrder == 8) {
     return TransceiverStateMachineState::INACTIVE;
+  } else if (currentStateOrder == 9) {
+    return TransceiverStateMachineState::UPGRADING;
   }
   // TODO(joseph5wu) Need to support other states
   throw FbossError(

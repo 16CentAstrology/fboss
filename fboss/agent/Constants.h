@@ -70,4 +70,7 @@ inline constexpr folly::StringPiece kUdfGroupIds{"udfGroupIds"};
 inline constexpr folly::StringPiece kUdfGroupPktMatchers{"udfGroupPktMatchers"};
 inline constexpr folly::StringPiece kUdfPacketMatchers{"udfPacketMatchers"};
 
+inline constexpr int32_t kDefaultVrf{0};
+constexpr auto kSingleStageInbandPortId = 1;
+
 } // namespace facebook::fboss

@@ -7,107 +7,57 @@
  *  of patent rights can be found in the PATENTS file in the same directory.
  *
  */
-#include "fboss/platform/sensor_service/SensorServiceImpl.h"
-#include <folly/FileUtil.h>
-#include <folly/dynamic.h>
-#include <folly/json.h>
-#include <folly/logging/xlog.h>
-#include <thrift/lib/cpp2/protocol/Serializer.h>
+
 #include <filesystem>
-#include "fboss/platform/config_lib/ConfigLib.h"
-#include "fboss/platform/helpers/Utils.h"
-#include "fboss/platform/sensor_service/FsdbSyncer.h"
-#include "fboss/platform/sensor_service/gen-cpp2/sensor_service_stats_types.h"
 
 #include <fb303/ServiceData.h>
+#include <folly/FileUtil.h>
+#include <folly/json/dynamic.h>
+#include <folly/json/json.h>
+#include <folly/logging/xlog.h>
+#include <thrift/lib/cpp2/protocol/Serializer.h>
+
+#include "fboss/platform/config_lib/ConfigLib.h"
+#include "fboss/platform/sensor_service/ConfigValidator.h"
+#include "fboss/platform/sensor_service/FsdbSyncer.h"
+#include "fboss/platform/sensor_service/SensorServiceImpl.h"
+#include "fboss/platform/sensor_service/Utils.h"
+#include "fboss/platform/sensor_service/gen-cpp2/sensor_service_stats_types.h"
 
 DEFINE_int32(
     fsdb_statsStream_interval_seconds,
     5,
     "Interval at which stats subscriptions are served");
 
-DEFINE_string(
-    mock_lmsensor_json_data,
-    "/etc/sensor_service/sensors_output.json",
-    "File to store the mock Lm Sensor JSON data");
-
-namespace {
-
-// The following are keys in sensor conf file
-const std::string kSourceLmsensor = "lmsensor";
-const std::string kSourceSysfs = "sysfs";
-const std::string kSourceMock = "mock";
-const std::string kSensorFieldName = "name";
-
-const std::string kLmsensorCommand = "sensors -j";
-
-auto constexpr kSensorReadFailure = "sensor_read.{}.failure";
-
-} // namespace
 namespace facebook::fboss::platform::sensor_service {
-using namespace facebook::fboss::platform::helpers;
-
-void SensorServiceImpl::init() {
-  std::string sensorConfJson;
-  // Check if conf file name is set, if not, set the default name
-  if (confFileName_.empty()) {
-    XLOG(INFO) << "No config file was provided. Inferring from config_lib";
-    sensorConfJson = config_lib::getSensorServiceConfig();
-  } else {
-    XLOG(INFO) << "Using config file: " << confFileName_;
-    if (!folly::readFile(confFileName_.c_str(), sensorConfJson)) {
-      throw std::runtime_error(
-          "Can not find sensor config file: " + confFileName_);
-    }
+namespace {
+void monitorSensorValue(const SensorData& sensorData) {
+  // Don't monitor if thresholds aren't defined to prevent false data.
+  if (!sensorData.thresholds()->upperCriticalVal() &&
+      !sensorData.thresholds()->lowerCriticalVal()) {
+    return;
   }
-
-  // Clear everything before init
-  sensorNameMap_.clear();
-  sensorTable_.sensorMapList()->clear();
-
-  // folly::dynamic sensorConf;
-
-  apache::thrift::SimpleJSONSerializer::deserialize<SensorConfig>(
-      sensorConfJson, sensorTable_);
-
-  XLOG(INFO) << apache::thrift::SimpleJSONSerializer::serialize<std::string>(
-      sensorTable_);
-
-  if (sensorTable_.source() == kSourceMock) {
-    sensorSource_ = SensorSource::MOCK;
-  } else if (sensorTable_.source() == kSourceLmsensor) {
-    sensorSource_ = SensorSource::LMSENSOR;
-  } else if (sensorTable_.source() == kSourceSysfs) {
-    sensorSource_ = SensorSource::SYSFS;
-  } else {
-    throw std::runtime_error(folly::to<std::string>(
-        "Invalid source in ", confFileName_, " : ", *sensorTable_.source()));
+  // Skip reporting if there's no sensor value.
+  if (!sensorData.value()) {
+    return;
   }
+  // At least one of upperCriticalVal or lowerCriticalVal exist.
+  bool thresholdViolation = *sensorData.value() >
+          sensorData.thresholds()->upperCriticalVal().value_or(INT_MAX) ||
+      *sensorData.value() <
+          sensorData.thresholds()->lowerCriticalVal().value_or(INT_MIN);
+  fb303::fbData->setCounter(
+      fmt::format(
+          SensorServiceImpl::kCriticalThresholdViolation,
+          *sensorData.name(),
+          apache::thrift::util::enumNameSafe(*sensorData.sensorType())),
+      thresholdViolation);
+}
+} // namespace
 
-  liveDataTable_.withWLock([&](auto& table) {
-    for (auto& sensor : *sensorTable_.sensorMapList()) {
-      for (auto& sensorIter : sensor.second) {
-        std::string path = *sensorIter.second.path();
-        if (std::filesystem::exists(std::filesystem::path(path))) {
-          table[sensorIter.first].path = path;
-          sensorNameMap_[path] = sensorIter.first;
-        }
-        table[sensorIter.first].fru = sensor.first;
-        if (sensorIter.second.compute().has_value()) {
-          table[sensorIter.first].compute = *sensorIter.second.compute();
-        }
-        table[sensorIter.first].thresholds = *sensorIter.second.thresholds();
-
-        XLOG(INFO) << sensorIter.first
-                   << "; path = " << table[sensorIter.first].path
-                   << "; compute = " << table[sensorIter.first].compute
-                   << "; fru = " << table[sensorIter.first].fru;
-      }
-    }
-  });
-
+SensorServiceImpl::SensorServiceImpl(const SensorConfig& sensorConfig)
+    : sensorConfig_(sensorConfig) {
   fsdbSyncer_ = std::make_unique<FsdbSyncer>();
-  XLOG(INFO) << "========================================================";
 }
 
 SensorServiceImpl::~SensorServiceImpl() {
@@ -117,163 +67,135 @@ SensorServiceImpl::~SensorServiceImpl() {
   fsdbSyncer_.reset();
 }
 
-std::optional<SensorData> SensorServiceImpl::getSensorData(
-    const std::string& sensorName) {
-  SensorData d;
-  d.name() = "";
-
-  liveDataTable_.withRLock([&](auto& table) {
-    auto it = table.find(sensorName);
-
-    if (it != table.end()) {
-      d.name() = it->first;
-      d.value() = it->second.value;
-      d.timeStamp() = it->second.timeStamp;
-    }
-  });
-
-  return *d.name() == "" ? std::nullopt : std::optional<SensorData>{d};
-}
-
 std::vector<SensorData> SensorServiceImpl::getSensorsData(
     const std::vector<std::string>& sensorNames) {
   std::vector<SensorData> sensorDataVec;
-
-  liveDataTable_.withRLock([&](auto& table) {
-    for (auto& pair : table) {
-      if (std::find(sensorNames.begin(), sensorNames.end(), pair.first) !=
-          sensorNames.end()) {
-        SensorData d;
-        d.name() = pair.first;
-        d.value() = pair.second.value;
-        d.timeStamp() = pair.second.timeStamp;
-        sensorDataVec.push_back(d);
-      }
+  auto allSensorData = getAllSensorData();
+  for (const auto& sensorName : sensorNames) {
+    auto it = allSensorData.find(sensorName);
+    if (it != allSensorData.end()) {
+      sensorDataVec.push_back(it->second);
     }
-  });
+  }
   return sensorDataVec;
 }
 
 std::map<std::string, SensorData> SensorServiceImpl::getAllSensorData() {
-  std::map<std::string, SensorData> sensorDataMap;
-
-  liveDataTable_.withRLock([&](auto& table) {
-    for (auto& pair : table) {
-      SensorData d;
-      d.name() = pair.first;
-      d.value() = pair.second.value;
-      d.timeStamp() = pair.second.timeStamp;
-      sensorDataMap[pair.first] = d;
-    }
-  });
-  return sensorDataMap;
+  return polledData_.copy();
 }
 
 void SensorServiceImpl::fetchSensorData() {
-  SCOPE_EXIT {
-    if (FLAGS_publish_stats_to_fsdb) {
-      auto now = std::chrono::steady_clock::now();
-      if (!publishedStatsToFsdbAt_ ||
-          std::chrono::duration_cast<std::chrono::seconds>(
-              now - *publishedStatsToFsdbAt_)
-                  .count() >= FLAGS_fsdb_statsStream_interval_seconds) {
-        stats::SensorServiceStats sensorServiceStats;
-        sensorServiceStats.sensorData() = getAllSensorData();
-        fsdbSyncer_->statsUpdated(std::move(sensorServiceStats));
-        publishedStatsToFsdbAt_ = now;
-      }
-    }
-  };
-  if (sensorSource_ == SensorSource::LMSENSOR) {
-    int retVal = 0;
-    std::string ret = execCommandUnchecked(kLmsensorCommand, retVal);
-    if (retVal != 0) {
-      throw std::runtime_error("Run " + kLmsensorCommand + " failed!");
-    }
-    parseSensorJsonData(ret);
-  } else if (sensorSource_ == SensorSource::SYSFS) {
-    getSensorDataFromPath();
-  } else if (sensorSource_ == SensorSource::MOCK) {
-    std::string sensorDataJson;
-    if (folly::readFile(
-            FLAGS_mock_lmsensor_json_data.c_str(), sensorDataJson)) {
-      parseSensorJsonData(sensorDataJson);
-    } else {
-      throw std::runtime_error(
-          "Can not find sensor data json file: " +
-          FLAGS_mock_lmsensor_json_data);
-    }
-  } else {
-    throw std::runtime_error(
-        "Unknown Sensor Source selected : " +
-        folly::to<std::string>(static_cast<int>(sensorSource_)));
-  }
-}
-
-void SensorServiceImpl::getSensorDataFromPath() {
-  liveDataTable_.withWLock([&](auto& liveDataTable) {
-    auto now = helpers::nowInSecs();
-    for (auto& [sensorName, sensorLiveData] : liveDataTable) {
-      std::string sensorValue;
-      if (folly::readFile(sensorLiveData.path.c_str(), sensorValue)) {
-        sensorLiveData.value = folly::to<float>(sensorValue);
-        sensorLiveData.timeStamp = now;
-        if (sensorLiveData.compute != "") {
-          sensorLiveData.value =
-              computeExpression(sensorLiveData.compute, sensorLiveData.value);
-        }
-        XLOG(INFO) << fmt::format(
-            "{} ({}) : {}",
-            sensorName,
-            sensorLiveData.path,
-            sensorLiveData.value);
-        fb303::fbData->setCounter(
-            fmt::format(kSensorReadFailure, sensorName), 0);
+  std::map<std::string, SensorData> polledData;
+  uint readFailures{0};
+  XLOG(INFO) << fmt::format(
+      "Reading SensorData for {} PMUnits",
+      sensorConfig_.pmUnitSensorsList()->size());
+  for (const auto& pmUnitSensors : *sensorConfig_.pmUnitSensorsList()) {
+    auto pmSensors = resolveSensors(pmUnitSensors);
+    XLOG(INFO) << fmt::format(
+        "Processing {} PMUnit: {} sensors",
+        *pmUnitSensors.pmUnitName(),
+        pmSensors.size());
+    for (const auto& sensor : pmSensors) {
+      const auto& sensorName = *sensor.name();
+      auto sensorData = fetchSensorDataImpl(
+          sensorName,
+          *sensor.sysfsPath(),
+          *sensor.type(),
+          sensor.thresholds().to_optional(),
+          sensor.compute().to_optional());
+      polledData[sensorName] = sensorData;
+      // We log 0 if there is a read failure.  If we dont log 0 on failure,
+      // fb303 will pick up the last reported (on read success) value and
+      // keep reporting that as the value. For 0 values, it is accurate to
+      // read the value along with the kReadFailure counter. Alternative is
+      // to delete this counter if there is a failure.
+      fb303::fbData->setCounter(
+          fmt::format(kReadValue, sensorName), sensorData.value().value_or(0));
+      if (!sensorData.value()) {
+        fb303::fbData->setCounter(fmt::format(kReadFailure, sensorName), 1);
+        readFailures++;
       } else {
-        XLOG(INFO) << fmt::format(
-            "Could not read data for {} from {}",
-            sensorName,
-            sensorLiveData.path);
-        fb303::fbData->setCounter(
-            fmt::format(kSensorReadFailure, sensorName), 1);
-      }
-    }
-  });
-}
-
-void SensorServiceImpl::parseSensorJsonData(const std::string& strJson) {
-  folly::dynamic sensorJson = folly::parseJson(strJson);
-
-  auto dataTable = liveDataTable_.wlock();
-
-  auto now = helpers::nowInSecs();
-  for (auto& firstPair : sensorJson.items()) {
-    // Key is pair.first, value is pair.second
-    if (firstPair.second.isObject()) {
-      for (auto& secondPair : firstPair.second.items()) {
-        std::string sensorPath = folly::to<std::string>(
-            firstPair.first.asString(), ":", secondPair.first.asString());
-        // Only check sensor data that the name is in the configuration file
-        if (secondPair.second.isObject() &&
-            (sensorNameMap_.count(sensorPath) != 0)) {
-          // Get value only for now
-          for (auto& thirdPair : secondPair.second.items()) {
-            if (thirdPair.first.asString().find("_input") !=
-                std::string::npos) {
-              (*dataTable)[sensorNameMap_[sensorPath]].value =
-                  folly::to<float>(thirdPair.second.asString());
-              (*dataTable)[sensorNameMap_[sensorPath]].timeStamp = now;
-
-              XLOG(INFO) << sensorNameMap_[sensorPath] << " : "
-                         << (*dataTable)[sensorNameMap_[sensorPath]].value
-                         << " >>>> "
-                         << (*dataTable)[sensorNameMap_[sensorPath]].timeStamp;
-            }
-          }
-        }
+        fb303::fbData->setCounter(fmt::format(kReadFailure, sensorName), 0);
       }
     }
   }
+  fb303::fbData->setCounter(kReadTotal, polledData.size());
+  fb303::fbData->setCounter(kTotalReadFailure, readFailures);
+  fb303::fbData->setCounter(kHasReadFailure, readFailures > 0 ? 1 : 0);
+  XLOG(INFO) << fmt::format(
+      "Summary: Processed {} Sensors. {} Failures.",
+      polledData.size(),
+      readFailures);
+  polledData_.swap(polledData);
+
+  if (FLAGS_publish_stats_to_fsdb) {
+    auto now = std::chrono::steady_clock::now();
+    if (!publishedStatsToFsdbAt_ ||
+        std::chrono::duration_cast<std::chrono::seconds>(
+            now - *publishedStatsToFsdbAt_)
+                .count() >= FLAGS_fsdb_statsStream_interval_seconds) {
+      stats::SensorServiceStats sensorServiceStats;
+      sensorServiceStats.sensorData() = getAllSensorData();
+      fsdbSyncer_->statsUpdated(std::move(sensorServiceStats));
+      publishedStatsToFsdbAt_ = now;
+    }
+  }
+}
+
+std::vector<PmSensor> SensorServiceImpl::resolveSensors(
+    const PmUnitSensors& pmUnitSensors) {
+  auto pmSensors = *pmUnitSensors.sensors();
+  if (auto versionedPmSensors = Utils().resolveVersionedSensors(
+          pmUnitInfoFetcher_,
+          *pmUnitSensors.slotPath(),
+          *pmUnitSensors.versionedSensors())) {
+    XLOG(INFO) << fmt::format(
+        "Resolved to versionedPmSensors config with version {}.{}.{} for pmUnit {} at {}",
+        *versionedPmSensors->productProductionState(),
+        *versionedPmSensors->productVersion(),
+        *versionedPmSensors->productSubVersion(),
+        *pmUnitSensors.pmUnitName(),
+        *pmUnitSensors.slotPath());
+    pmSensors.insert(
+        pmSensors.end(),
+        versionedPmSensors->sensors()->begin(),
+        versionedPmSensors->sensors()->end());
+  }
+  return pmSensors;
+}
+
+SensorData SensorServiceImpl::fetchSensorDataImpl(
+    const std::string& sensorName,
+    const std::string& sysfsPath,
+    SensorType sensorType,
+    const std::optional<Thresholds>& thresholds,
+    const std::optional<std::string>& compute) {
+  SensorData sensorData{};
+  sensorData.name() = sensorName;
+  std::string sensorValue;
+  bool sysfsFileExists =
+      std::filesystem::exists(std::filesystem::path(sysfsPath));
+  if (sysfsFileExists && folly::readFile(sysfsPath.c_str(), sensorValue)) {
+    sensorData.value() = folly::to<float>(sensorValue);
+    sensorData.timeStamp() = Utils::nowInSecs();
+    if (compute) {
+      sensorData.value() =
+          Utils::computeExpression(*compute, *sensorData.value());
+    }
+    XLOG(DBG1) << fmt::format(
+        "{} ({}) : {}", sensorName, sysfsPath, *sensorData.value());
+  } else {
+    XLOG(ERR) << fmt::format(
+        "Could not read data for {} from path:{}, error:{}",
+        sensorName,
+        sysfsPath,
+        sysfsFileExists ? folly::errnoStr(errno) : "File does not exist");
+  }
+  sensorData.thresholds() = thresholds ? *thresholds : Thresholds();
+  sensorData.sensorType() = sensorType;
+  monitorSensorValue(sensorData);
+  return sensorData;
 }
 
 } // namespace facebook::fboss::platform::sensor_service

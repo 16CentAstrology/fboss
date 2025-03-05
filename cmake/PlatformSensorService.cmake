@@ -13,6 +13,7 @@ add_fbthrift_cpp_library(
     reflection
   DEPENDS
     fboss_cpp2
+    sensor_config_cpp2
 )
 
 add_fbthrift_cpp_library(
@@ -23,21 +24,56 @@ add_fbthrift_cpp_library(
     reflection
 )
 
+add_library(sensor_service_config_validator
+  fboss/platform/sensor_service/ConfigValidator.cpp
+)
+
+target_link_libraries(sensor_service_config_validator
+  fmt::fmt
+  platform_manager_config_validator
+  platform_manager_utils
+  sensor_config_cpp2
+  Folly::folly
+)
+
+add_library(sensor_service_utils
+  fboss/platform/sensor_service/Utils.cpp
+  fboss/platform/sensor_service/PmUnitInfoFetcher.cpp
+  fboss/platform/sensor_service/oss/PmClientFactory.cpp
+)
+
+target_link_libraries(sensor_service_utils
+  sensor_config_cpp2
+  sensor_service_config_validator
+  platform_config_lib
+  platform_name_lib
+  platform_manager_service_cpp2
+  platform_manager_config_cpp2
+  platform_manager_config_validator
+  ${RE2}
+)
+
 add_library(sensor_service_lib
   fboss/platform/sensor_service/FsdbSyncer.cpp
   fboss/platform/sensor_service/Flags.cpp
+  fboss/platform/sensor_service/Utils.cpp
   fboss/platform/sensor_service/SensorServiceImpl.cpp
   fboss/platform/sensor_service/SensorServiceThriftHandler.cpp
   fboss/platform/sensor_service/oss/FsdbSyncer.cpp
-  fboss/platform/sensor_service/oss/SensorStatsPub.cpp
+  fboss/platform/sensor_service/PmUnitInfoFetcher.cpp
 )
 
 target_link_libraries(sensor_service_lib
   log_thrift_call
   platform_config_lib
+  platform_manager_config_validator
+  platform_name_lib
   platform_utils
+  sensor_service_utils
   sensor_service_cpp2
+  sensor_service_stats_cpp2
   sensor_config_cpp2
+  sensor_service_config_validator
   Folly::folly
   FBThrift::thriftcpp2
   fsdb_stream_client
@@ -54,9 +90,22 @@ target_link_libraries(sensor_service
   fb303::fb303
 )
 
+add_executable(sensor_service_client
+  fboss/platform/sensor_service/SensorServicePlainTextClient.cpp
+)
+
+target_link_libraries(sensor_service_client
+  sensor_service_cpp2
+  platform_utils
+  Folly::folly
+  FBThrift::thriftcpp2
+)
+
+install(TARGETS sensor_service)
+
+# TODO: paulcruz74 for the sake for consistency, this should technically live in `PlatformSensorServiceHwTest.cmake`
 add_executable(sensor_service_hw_test
-  fboss/platform/sensor_service/hw_test/Main.cpp
-  fboss/platform/sensor_service/hw_test/SensorsTest.cpp
+  fboss/platform/sensor_service/hw_test/SensorServiceHwTest.cpp
 )
 
 target_link_libraries(sensor_service_hw_test
@@ -65,14 +114,4 @@ target_link_libraries(sensor_service_hw_test
   ${LIBGMOCK_LIBRARIES}
 )
 
-add_executable(sensor_service_impl_test
-  fboss/platform/sensor_service/test/SensorServiceImplTest.cpp
-  fboss/platform/sensor_service/test/TestUtils.cpp
-)
-
-target_link_libraries(sensor_service_impl_test
-  platform_utils
-  sensor_service_lib
-  ${GTEST}
-  ${LIBGMOCK_LIBRARIES}
-)
+install(TARGETS sensor_service_hw_test)

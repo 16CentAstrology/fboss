@@ -145,20 +145,22 @@ TEST(RegisterStoreTest, DataRetrievalConversions) {
   nlohmann::json j = val;
   EXPECT_TRUE(j.contains("regAddress") && j["regAddress"].is_number_integer());
   EXPECT_TRUE(j.contains("name") && j["name"].is_string());
-  EXPECT_TRUE(j.contains("readings") && j["readings"].is_array());
+  EXPECT_TRUE(j.contains("history") && j["history"].is_array());
   EXPECT_EQ(j["regAddress"], 0);
   EXPECT_EQ(std::string(j["name"]), "HELLO");
-  EXPECT_EQ(j["readings"].size(), 2);
-  EXPECT_TRUE(j["readings"][0].is_object());
-  EXPECT_TRUE(j["readings"][1].is_object());
-  EXPECT_TRUE(j["readings"][0].contains("type"));
-  EXPECT_TRUE(j["readings"][1].contains("type"));
-  EXPECT_TRUE(j["readings"][0].contains("value"));
-  EXPECT_TRUE(j["readings"][1].contains("value"));
-  EXPECT_EQ(std::string(j["readings"][0]["type"]), "string");
-  EXPECT_EQ(std::string(j["readings"][1]["type"]), "string");
-  EXPECT_EQ(std::string(j["readings"][0]["value"]), "0123");
-  EXPECT_EQ(std::string(j["readings"][1]["value"]), "1234");
+  EXPECT_EQ(j["history"].size(), 2);
+  EXPECT_TRUE(j["history"][0].is_object());
+  EXPECT_TRUE(j["history"][1].is_object());
+  EXPECT_TRUE(j["history"][0].contains("type"));
+  EXPECT_TRUE(j["history"][1].contains("type"));
+  EXPECT_TRUE(j["history"][0].contains("value"));
+  EXPECT_TRUE(j["history"][1].contains("value"));
+  EXPECT_TRUE(j["history"][0]["value"].contains("strValue"));
+  EXPECT_TRUE(j["history"][1]["value"].contains("strValue"));
+  EXPECT_EQ(std::string(j["history"][0]["type"]), "STRING");
+  EXPECT_EQ(std::string(j["history"][1]["type"]), "STRING");
+  EXPECT_EQ(std::string(j["history"][0]["value"]["strValue"]), "0123");
+  EXPECT_EQ(std::string(j["history"][1]["value"]["strValue"]), "1234");
 
   nlohmann::json j2 = reg;
   EXPECT_TRUE(j2.contains("begin") && j2["begin"].is_number_integer());
@@ -177,4 +179,48 @@ TEST(RegisterStoreTest, DataRetrievalConversions) {
   EXPECT_EQ(j2["readings"][1]["time"], 0x1234);
   EXPECT_EQ(std::string(j2["readings"][0]["data"]), "30313233");
   EXPECT_EQ(std::string(j2["readings"][1]["data"]), "31323334");
+}
+
+TEST(RegisterStoreTest, setRegisterTest) {
+  RegisterDescriptor desc{
+      0,
+      2,
+      "HELLO",
+      2,
+      false,
+      RegisterEndian::BIG,
+      RegisterValueType::STRING,
+      0};
+  RegisterStore reg(desc);
+  RegisterStoreValue val = reg;
+  EXPECT_EQ(val.history.size(), 0);
+
+  std::vector<uint16_t> vals_exact{0x3031, 0x3233};
+  auto it = reg.setRegister(vals_exact.begin(), vals_exact.end(), 4);
+  EXPECT_EQ(std::distance(vals_exact.begin(), it), 2);
+  val = reg;
+  EXPECT_EQ(val.history.size(), 1);
+  EXPECT_EQ(val.history[0].timestamp, 4);
+  EXPECT_EQ(val.history[0].type, RegisterValueType::STRING);
+  EXPECT_EQ(std::get<std::string>(val.history[0].value), "0123");
+
+  std::vector<uint16_t> vals_excess{0x3132, 0x3334, 0x3436};
+  it = reg.setRegister(vals_excess.begin(), vals_excess.end(), 5);
+  val = reg;
+  EXPECT_EQ(val.history.size(), 2);
+  EXPECT_EQ(val.history[0].timestamp, 4);
+  EXPECT_EQ(val.history[0].type, RegisterValueType::STRING);
+  EXPECT_EQ(std::get<std::string>(val.history[0].value), "0123");
+  EXPECT_EQ(val.history[1].timestamp, 5);
+  EXPECT_EQ(val.history[1].type, RegisterValueType::STRING);
+  EXPECT_EQ(std::get<std::string>(val.history[1].value), "1234");
+
+  std::vector<uint16_t> vals_below{0x3132};
+  EXPECT_THROW(
+      reg.setRegister(vals_below.begin(), vals_below.end(), 6),
+      std::out_of_range);
+  val = reg;
+  EXPECT_EQ(val.history.size(), 2);
+  EXPECT_EQ(val.history[0].timestamp, 4);
+  EXPECT_EQ(val.history[1].timestamp, 5);
 }

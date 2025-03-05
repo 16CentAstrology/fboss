@@ -14,10 +14,6 @@
 #include "fboss/agent/state/RouteNextHopEntry.h"
 #include "fboss/agent/state/StateUtils.h"
 
-namespace {
-constexpr auto kNexthopDelim = "@";
-}
-
 namespace facebook::fboss {
 
 //
@@ -39,7 +35,7 @@ std::vector<ClientAndNextHops> RouteNextHopsMulti::toThriftLegacy() const {
 }
 
 std::string RouteNextHopsMulti::strLegacy() const {
-  std::string ret = "";
+  std::string ret;
   auto mapRef = map();
   for (auto const& row : *mapRef) {
     ClientID clientid = row.first;
@@ -151,7 +147,7 @@ void RouteNextHopsMulti::update(
 ClientID RouteNextHopsMulti::findLowestAdminDistance(
     const state::RouteNextHopsMulti& nexthopsmulti) {
   const auto& map = *nexthopsmulti.client2NextHopEntry();
-  if (map.size() == 0) {
+  if (map.empty()) {
     // We'll set it on the next add
     return ClientID(-1);
   }
@@ -180,16 +176,5 @@ void RouteNextHopsMulti::delEntryForClient(
     nexthopsmulti.lowestAdminDistanceClientId() =
         RouteNextHopsMulti::findLowestAdminDistance(nexthopsmulti);
   }
-}
-
-std::shared_ptr<RouteNextHopsMulti> RouteNextHopsMulti::fromFollyDynamic(
-    const folly::dynamic& json) {
-  auto legacy = LegacyRouteNextHopsMulti::fromFollyDynamic(json);
-  return std::make_shared<RouteNextHopsMulti>(legacy.toThrift());
-}
-
-folly::dynamic RouteNextHopsMulti::toFollyDynamic() const {
-  LegacyRouteNextHopsMulti legacy(this->toThrift());
-  return legacy.toFollyDynamic();
 }
 } // namespace facebook::fboss

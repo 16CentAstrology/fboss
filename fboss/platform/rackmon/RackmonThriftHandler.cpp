@@ -12,11 +12,31 @@
 #include <glog/logging.h>
 #include "fboss/platform/rackmon/RackmonConfig.h"
 
+#include <fb303/ServiceData.h>
+
 namespace rackmonsvc {
 
+auto constexpr kDevCRCErrors = "dev{}.crc_errors";
+auto constexpr kDevTimeouts = "dev{}.timeouts";
+auto constexpr kDevMiscErrors = "dev{}.misc_errors";
+auto constexpr kDevDeviceErrors = "dev{}.device_errors";
+auto constexpr kDevIsActive = "dev{}.is_active";
+auto constexpr kTotalCRCErrors = "rack.crc_errors";
+auto constexpr kTotalTimeouts = "rack.timeouts";
+auto constexpr kTotalMiscErrors = "rack.misc_errors";
+auto constexpr kTotalDeviceErrors = "rack.device_errors";
+auto constexpr kTotalActive = "rack.num_active";
+auto constexpr kTotalDormant = "rack.num_dormant";
+
 ModbusDeviceType typeFromString(const std::string& str) {
-  if (str == "orv2_psu") {
+  if (str == "ORV2_PSU") {
     return ModbusDeviceType::ORV2_PSU;
+  }
+  if (str == "ORV3_PSU") {
+    return ModbusDeviceType::ORV3_PSU;
+  }
+  if (str == "ORV3_BBU") {
+    return ModbusDeviceType::ORV3_BBU;
   }
   throw std::runtime_error("Unknown PSU: " + str);
 }
@@ -24,7 +44,11 @@ ModbusDeviceType typeFromString(const std::string& str) {
 std::string typeToString(ModbusDeviceType type) {
   switch (type) {
     case ModbusDeviceType::ORV2_PSU:
-      return "orv2_psu";
+      return "ORV2_PSU";
+    case ModbusDeviceType::ORV3_PSU:
+      return "ORV3_PSU";
+    case ModbusDeviceType::ORV3_BBU:
+      return "ORV3_BBU";
     default:
       break;
   }
@@ -61,6 +85,10 @@ ModbusRegisterValue ThriftHandler::transformRegisterValue(
     case rackmon::RegisterValueType::INTEGER:
       target.type() = RegisterValueType::INTEGER;
       target.value()->intValue_ref() = std::get<int32_t>(value.value);
+      break;
+    case rackmon::RegisterValueType::LONG:
+      target.type() = RegisterValueType::LONG;
+      target.value()->longValue_ref() = std::get<int64_t>(value.value);
       break;
     case rackmon::RegisterValueType::STRING:
       target.type() = RegisterValueType::STRING;
@@ -161,6 +189,42 @@ RackmonStatusCode ThriftHandler::exceptionToStatusCode(
   return RackmonStatusCode::ERR_IO_FAILURE;
 }
 
+void ThriftHandler::serviceMonitor() {
+  auto devs = rackmond_.listDevices();
+  uint32_t crcErrors = 0;
+  uint32_t timeouts = 0;
+  uint32_t miscErrors = 0;
+  uint32_t devErrors = 0;
+  uint32_t numActive = 0;
+  uint32_t numDormant = 0;
+  for (auto& dev : devs) {
+    uint32_t active = dev.mode == rackmon::ModbusDeviceMode::ACTIVE ? 1 : 0;
+    uint32_t devAddress = +dev.deviceAddress;
+    facebook::fb303::fbData->setCounter(
+        fmt::format(kDevCRCErrors, devAddress), dev.crcErrors);
+    facebook::fb303::fbData->setCounter(
+        fmt::format(kDevTimeouts, devAddress), dev.timeouts);
+    facebook::fb303::fbData->setCounter(
+        fmt::format(kDevMiscErrors, devAddress), dev.miscErrors);
+    facebook::fb303::fbData->setCounter(
+        fmt::format(kDevDeviceErrors, devAddress), dev.deviceErrors);
+    facebook::fb303::fbData->setCounter(
+        fmt::format(kDevIsActive, devAddress), active);
+    crcErrors += dev.crcErrors;
+    timeouts += dev.timeouts;
+    miscErrors += dev.miscErrors;
+    devErrors += dev.deviceErrors;
+    numActive += active;
+    numDormant += active ? 0 : 1;
+  }
+  facebook::fb303::fbData->setCounter(kTotalCRCErrors, crcErrors);
+  facebook::fb303::fbData->setCounter(kTotalMiscErrors, miscErrors);
+  facebook::fb303::fbData->setCounter(kTotalDeviceErrors, devErrors);
+  facebook::fb303::fbData->setCounter(kTotalTimeouts, timeouts);
+  facebook::fb303::fbData->setCounter(kTotalActive, numActive);
+  facebook::fb303::fbData->setCounter(kTotalDormant, numDormant);
+}
+
 ThriftHandler::ThriftHandler() {
   rackmond_.loadInterface(nlohmann::json::parse(getInterfaceConfig()));
   const std::vector<std::string> regMaps = getRegisterMapConfig();
@@ -170,6 +234,10 @@ ThriftHandler::ThriftHandler() {
   rackmond_.start();
 
   plsManager_.loadPlsConfig(nlohmann::json::parse(getRackmonPlsConfig()));
+
+  monThread_ = std::make_shared<rackmon::PollThread<ThriftHandler>>(
+      &ThriftHandler::serviceMonitor, this, rackmon::PollThreadTime(10));
+  monThread_->start();
 }
 
 void ThriftHandler::listModbusDevices(std::vector<ModbusDeviceInfo>& devices) {
@@ -187,15 +255,14 @@ void ThriftHandler::getMonitorData(std::vector<RackmonMonitorData>& data) {
   }
 }
 
-void ThriftHandler::getMonitorDataEx(
-    std::vector<RackmonMonitorData>& data,
-    std::unique_ptr<MonitorDataFilter> filter) {
-  DeviceFilter* reqDevFilter = filter->get_deviceFilter();
-  RegisterFilter* reqRegFilter = filter->get_registerFilter();
-  bool latestOnly = filter->get_latestValueOnly();
-  std::vector<rackmon::ModbusDeviceValueData> indata;
-  rackmon::ModbusDeviceFilter devFilter{};
-  rackmon::ModbusRegisterFilter regFilter{};
+void ThriftHandler::transformMonitorDataFilter(
+    const MonitorDataFilter& filter,
+    rackmon::ModbusDeviceFilter& devFilter,
+    rackmon::ModbusRegisterFilter& regFilter,
+    bool& latestOnly) {
+  const DeviceFilter* reqDevFilter = filter.get_deviceFilter();
+  const RegisterFilter* reqRegFilter = filter.get_registerFilter();
+  latestOnly = filter.get_latestValueOnly();
   if (reqDevFilter) {
     if (reqDevFilter->addressFilter_ref().has_value()) {
       std::set<int16_t> devs = reqDevFilter->get_addressFilter();
@@ -226,10 +293,40 @@ void ThriftHandler::getMonitorDataEx(
       LOG(ERROR) << "Unsupported empty reg filter" << std::endl;
     }
   }
+}
 
+void ThriftHandler::getMonitorDataEx(
+    std::vector<RackmonMonitorData>& data,
+    std::unique_ptr<MonitorDataFilter> filter) {
+  rackmon::ModbusDeviceFilter devFilter{};
+  rackmon::ModbusRegisterFilter regFilter{};
+  bool latestOnly{};
+  transformMonitorDataFilter(*filter, devFilter, regFilter, latestOnly);
+  std::vector<rackmon::ModbusDeviceValueData> indata;
   rackmond_.getValueData(indata, devFilter, regFilter, latestOnly);
   for (auto& dev : indata) {
     data.emplace_back(transformModbusDeviceValueData(dev));
+  }
+}
+
+void ThriftHandler::reload(
+    std::unique_ptr<MonitorDataFilter> filter,
+    bool synchronous) {
+  rackmon::ModbusDeviceFilter devFilter{};
+  rackmon::ModbusRegisterFilter regFilter{};
+  bool latestOnly{};
+  transformMonitorDataFilter(*filter, devFilter, regFilter, latestOnly);
+  if (synchronous) {
+    rackmond_.reload(devFilter, regFilter);
+  } else {
+    auto tid = std::thread([this, devFilter, regFilter]() {
+      try {
+        rackmond_.reload(devFilter, regFilter);
+      } catch (std::exception& e) {
+        LOG(ERROR) << "Async reload failed: " << e.what() << std::endl;
+      }
+    });
+    tid.detach();
   }
 }
 
@@ -356,6 +453,9 @@ RackmonStatusCode ThriftHandler::controlRackmond(
         break;
       case RackmonControlRequest::RESUME_RACKMOND:
         rackmond_.start();
+        break;
+      case RackmonControlRequest::RESCAN:
+        rackmond_.forceScan();
         break;
       default:
         return RackmonStatusCode::ERR_INVALID_ARGS;

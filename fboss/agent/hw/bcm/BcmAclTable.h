@@ -59,6 +59,8 @@ class BcmAclTable {
 
   /* for every map entry which meets given predicate, execute given action */
   void forFilteredEach(Filter predicate, FilterAction action) const;
+  void reprogramAclTable(const int groupId);
+  void clearAclTable(const int groupId);
 
  private:
   using BcmAclEntryMap =

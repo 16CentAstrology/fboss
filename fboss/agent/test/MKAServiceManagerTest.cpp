@@ -26,6 +26,7 @@
 using ::testing::_;
 using ::testing::AtLeast;
 using namespace facebook::fboss;
+using namespace std::chrono;
 
 namespace {
 #if FOLLY_HAS_COROUTINES
@@ -79,7 +80,7 @@ class MKAServiceManagerTest : public testing::Test {
   TPacket createPacket(PortID activePort) {
     TPacket pkt;
     pkt.l2Port() = folly::to<std::string>(activePort);
-    pkt.buf() = createEapol()->moveToFbString().toStdString();
+    pkt.buf() = createEapol()->to<std::string>();
     return pkt;
   }
 
@@ -87,9 +88,11 @@ class MKAServiceManagerTest : public testing::Test {
     handle_ = setupTestHandle(enableMacsec);
     sw_ = handle_->getSw();
     sw_->initialConfigApplied(steady_clock::now());
-    for (const auto& port : std::as_const(*(sw_->getState()->getPorts()))) {
-      activePort_ = port.second->getID();
-      break;
+    for (const auto& portMap : std::as_const(*(sw_->getState()->getPorts()))) {
+      for (const auto& port : std::as_const(*portMap.second)) {
+        activePort_ = port.second->getID();
+        break;
+      }
     }
     if (enableMacsec) {
       MKAServiceManager* manager = sw_->getMKAServiceMgr();
@@ -257,7 +260,8 @@ TEST_F(MKAServiceManagerTest, MkPduLate) {
   sendPktToMka();
   EXPECT_TRUE(baton_->try_wait_for(std::chrono::milliseconds(200)));
 
-  auto portName = sw_->getState()->getPorts()->getPort(activePort_)->getName();
+  auto portName =
+      sw_->getState()->getPorts()->getNodeIf(activePort_)->getName();
   auto counterName = portName + ".mkpdu.interval.ms.p100";
   WITH_RETRIES({
     SCOPED_TRACE(counterName);

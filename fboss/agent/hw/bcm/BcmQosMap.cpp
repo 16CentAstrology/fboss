@@ -13,9 +13,7 @@
 #include "fboss/agent/hw/bcm/BcmError.h"
 #include "fboss/agent/hw/bcm/BcmPortQueueManager.h"
 #include "fboss/agent/hw/bcm/BcmQosMapEntry.h"
-#include "fboss/agent/hw/bcm/BcmQosPolicy.h"
 #include "fboss/agent/hw/bcm/BcmSwitch.h"
-#include "fboss/agent/state/QosPolicy.h"
 
 extern "C" {
 #include <bcm/qos.h>
@@ -23,7 +21,6 @@ extern "C" {
 
 namespace {
 using namespace facebook::fboss;
-constexpr auto kQosMapIngressL3Flags = BCM_QOS_MAP_INGRESS | BCM_QOS_MAP_L3;
 
 BcmQosMap::Type getType(int flags) {
   if ((flags & (BCM_QOS_MAP_INGRESS | BCM_QOS_MAP_L3)) ==

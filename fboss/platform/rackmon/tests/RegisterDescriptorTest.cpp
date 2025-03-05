@@ -52,7 +52,7 @@ TEST(RegisterDescriptorTest, JSONConversionString) {
   nlohmann::json desc = nlohmann::json::parse(R"({
     "begin": 0,
     "length": 8,
-    "format": "string",
+    "format": "STRING",
     "name": "MFG_MODEL"
   })");
   RegisterDescriptor d = desc;
@@ -68,7 +68,7 @@ TEST(RegisterDescriptorTest, JSONConversionDecimalKeep) {
   nlohmann::json desc = nlohmann::json::parse(R"({
     "begin": 156,
     "length": 1,
-    "format": "integer",
+    "format": "INTEGER",
     "keep": 10,
     "name": "Set fan speed"
   })");
@@ -85,7 +85,7 @@ TEST(RegisterDescriptorTest, JSONConversionFixed) {
   nlohmann::json desc = nlohmann::json::parse(R"({
     "begin": 127,
     "length": 1,
-    "format": "float",
+    "format": "FLOAT",
     "precision": 6,
     "name": "Input VAC"
   })");
@@ -97,13 +97,37 @@ TEST(RegisterDescriptorTest, JSONConversionFixed) {
   EXPECT_EQ(d.storeChangesOnly, false);
   EXPECT_EQ(d.format, RegisterValueType::FLOAT);
   EXPECT_EQ(d.precision, 6);
+  EXPECT_NEAR(d.scale, 1.0, 0.1);
+  EXPECT_NEAR(d.shift, 0.0, 0.1);
+}
+
+TEST(RegisterDescriptorTest, JSONConversionFixedScale) {
+  nlohmann::json desc = nlohmann::json::parse(R"({
+    "begin": 127,
+    "length": 1,
+    "format": "FLOAT",
+    "precision": 6,
+    "scale": 0.1,
+    "shift": 4.2,
+    "name": "Input VAC"
+  })");
+  RegisterDescriptor d = desc;
+  EXPECT_EQ(d.begin, 127);
+  EXPECT_EQ(d.length, 1);
+  EXPECT_EQ(d.name, "Input VAC");
+  EXPECT_EQ(d.keep, 1);
+  EXPECT_EQ(d.storeChangesOnly, false);
+  EXPECT_EQ(d.format, RegisterValueType::FLOAT);
+  EXPECT_EQ(d.precision, 6);
+  EXPECT_NEAR(d.scale, 0.1, 0.01);
+  EXPECT_NEAR(d.shift, 4.2, 0.01);
 }
 
 TEST(RegisterDescriptorTest, JSONConversionFixedMissingPrec) {
   nlohmann::json desc = nlohmann::json::parse(R"({
     "begin": 127,
     "length": 1,
-    "format": "float",
+    "format": "FLOAT",
     "name": "Input VAC"
   })");
   RegisterDescriptor d;
@@ -116,7 +140,7 @@ TEST(RegisterDescriptorTest, JSONConversionTableChangesOnly) {
     "length": 1,
     "keep": 10,
     "changes_only": true,
-    "format": "flags",
+    "format": "FLAGS",
     "name": "Battery Status register",
     "flags": [
       [2, "End of Life"],
@@ -144,7 +168,7 @@ TEST(RegisterDescriptorTest, JSONConversionTableMissing) {
     "length": 1,
     "keep": 10,
     "changes_only": true,
-    "format": "flags",
+    "format": "FLAGS",
     "name": "Battery Status register"
   })");
   RegisterDescriptor d;

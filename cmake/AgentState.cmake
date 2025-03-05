@@ -17,9 +17,21 @@ add_library(nodebase
 )
 
 target_link_libraries(nodebase
+  switch_config_cpp2
   fboss_error
   fboss_types
   Folly::folly
+)
+
+add_library(lacp_types
+  fboss/agent/LacpTypes.cpp
+)
+
+target_link_libraries(lacp_types
+  switch_state_cpp2
+  Folly::folly
+  fboss_error
+  ctrl_cpp2
 )
 
 add_library(state
@@ -55,12 +67,16 @@ add_library(state
   fboss/agent/state/MatchAction.cpp
   fboss/agent/state/Mirror.cpp
   fboss/agent/state/MirrorMap.cpp
+  fboss/agent/state/MirrorOnDropReport.cpp
+  fboss/agent/state/MirrorOnDropReportMap.cpp
   fboss/agent/state/NdpEntry.cpp
   fboss/agent/state/NdpResponseEntry.cpp
   fboss/agent/state/NdpResponseTable.cpp
   fboss/agent/state/NdpTable.cpp
   fboss/agent/state/Port.cpp
   fboss/agent/state/PortMap.cpp
+  fboss/agent/state/PortFlowletConfig.cpp
+  fboss/agent/state/PortFlowletConfigMap.cpp
   fboss/agent/state/PortQueue.cpp
   fboss/agent/state/BufferPoolConfig.cpp
   fboss/agent/state/BufferPoolConfigMap.cpp
@@ -75,6 +91,7 @@ add_library(state
   fboss/agent/state/SflowCollector.cpp
   fboss/agent/state/SflowCollectorMap.cpp
   fboss/agent/state/StateDelta.cpp
+  fboss/agent/state/StateDelta-computeOperDelta.cpp
   fboss/agent/state/StateUtils.cpp
   fboss/agent/state/SwitchSettings.cpp
   fboss/agent/state/SystemPort.cpp
@@ -104,13 +121,16 @@ target_link_libraries(state
   switch_state_cpp2
   mka_structs_cpp2
   fboss_cpp2
+  fsdb_helper
   label_forwarding_action
+  hwswitch_matcher
   nodebase
   state_utils
   radix_tree
   phy_cpp2
   thrift_cow_nodes
   Folly::folly
+  lacp_types
 )
 
 set_target_properties(state PROPERTIES COMPILE_FLAGS "-DENABLE_DYNAMIC_APIS")
@@ -122,6 +142,8 @@ add_library(state_utils
 target_link_libraries(state_utils
   error
   fboss_types
+  switch_state_cpp2
+  thrift_cow_serializer
 )
 
 add_library(label_forwarding_action

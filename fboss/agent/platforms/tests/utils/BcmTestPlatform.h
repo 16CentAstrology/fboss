@@ -34,10 +34,11 @@ class BcmTestPlatform : public BcmPlatform {
   ~BcmTestPlatform() override;
 
   HwSwitch* getHwSwitch() const override;
-  void onHwInitialized(SwSwitch* sw) override;
-  void onInitialConfigApplied(SwSwitch* sw) override;
-  void stop() override;
-  std::unique_ptr<ThriftHandler> createHandler(SwSwitch* sw) override;
+  void onHwInitialized(HwSwitchCallback* sw) override;
+  std::shared_ptr<apache::thrift::AsyncProcessorFactory> createHandler()
+      override {
+    return nullptr;
+  }
 
   virtual std::vector<FlexPortMode> getSupportedFlexPortModes() const = 0;
 
@@ -51,7 +52,7 @@ class BcmTestPlatform : public BcmPlatform {
   }
   TransceiverIdxThrift getPortMapping(
       PortID /* unused */,
-      cfg::PortSpeed /* speed */) const override {
+      cfg::PortProfileID /* profileID */) const override {
     return TransceiverIdxThrift();
   }
   bool isBcmShellSupported() const override {
@@ -70,6 +71,8 @@ class BcmTestPlatform : public BcmPlatform {
     return warmBootHelper_.get();
   }
 
+  void stateChanged(const StateDelta& /*delta*/) override {}
+
   PlatformPort* getPlatformPort(PortID portID) const override;
 
   void initLEDs(int unit, folly::ByteRange led0, folly::ByteRange led1);
@@ -82,13 +85,6 @@ class BcmTestPlatform : public BcmPlatform {
 
   virtual bool usesYamlConfig() const {
     return false;
-  }
-  QsfpCache* getQsfpCache() const override {
-    return nullptr;
-  }
-
-  void setOverridePortInterPacketGapBits(uint32_t ipgBits) {
-    overridePortInterPacketGapBits_ = ipgBits;
   }
 
   const std::optional<phy::PortProfileConfig> getPortProfileConfig(
@@ -113,7 +109,6 @@ class BcmTestPlatform : public BcmPlatform {
   std::map<PortID, std::unique_ptr<BcmTestPort>> ports_;
   std::unique_ptr<BcmWarmBootHelper> warmBootHelper_;
   std::unique_ptr<BcmSwitch> bcmSwitch_;
-  std::optional<uint32_t> overridePortInterPacketGapBits_;
 };
 
 } // namespace facebook::fboss

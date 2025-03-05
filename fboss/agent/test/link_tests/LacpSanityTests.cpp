@@ -4,7 +4,6 @@
 #include "fboss/agent/hw/HwSwitchWarmBootHelper.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
 #include "fboss/agent/state/AggregatePort.h"
-#include "fboss/agent/state/Port.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/TrunkUtils.h"
 #include "fboss/agent/test/link_tests/LinkTest.h"
@@ -20,11 +19,17 @@ DECLARE_string(config);
 
 namespace {
 constexpr int kMaxRetries{60};
-constexpr int kMaxPortsPerAggPort{4};
+constexpr int kMaxPortsPerAggPort{2};
 constexpr int kBaseAggId{500};
 } // unnamed namespace
 
 class LacpTest : public LinkTest {
+  std::vector<link_test_production_features::LinkTestProductionFeature>
+  getProductionFeatures() const override {
+    return {
+        link_test_production_features::LinkTestProductionFeature::L2_LINK_TEST};
+  }
+
  private:
   void setCmdLineFlagOverrides() const override {
     FLAGS_enable_lacp = true;
@@ -37,8 +42,9 @@ class LacpTest : public LinkTest {
     if (platform()->getWarmBootHelper()) {
       canWarmBoot = platform()->getWarmBootHelper()->canWarmBoot();
     } else {
-      canWarmBoot =
-          checkFileExists(platform()->getWarmBootDir() + "/can_warm_boot_0");
+      canWarmBoot = checkFileExists(
+          platform()->getDirectoryUtil()->getWarmBootDir() +
+          "/can_warm_boot_0");
     }
     if (canWarmBoot) {
       XLOG(DBG2) << "use previous running agent config for warmboot init";
@@ -77,8 +83,7 @@ class LacpTest : public LinkTest {
 
   std::vector<LegacyAggregatePortFields::Subport> getSubPorts(
       AggregatePortID aggId) {
-    const auto& aggPort =
-        sw()->getState()->getAggregatePorts()->getAggregatePort(aggId);
+    const auto& aggPort = sw()->getState()->getAggregatePorts()->getNode(aggId);
     EXPECT_NE(aggPort, nullptr);
     return aggPort->sortedSubports();
   }
@@ -87,8 +92,8 @@ class LacpTest : public LinkTest {
   void waitForAggPortStatus(AggregatePortID aggId, bool portStatus) const {
     auto aggPortUp = [&](const std::shared_ptr<SwitchState>& state) {
       const auto& aggPorts = state->getAggregatePorts();
-      if (aggPorts && aggPorts->getAggregatePort(aggId) &&
-          aggPorts->getAggregatePort(aggId)->isUp() == portStatus) {
+      if (aggPorts && aggPorts->getNode(aggId) &&
+          aggPorts->getNode(aggId)->isUp() == portStatus) {
         return true;
       }
       return false;
@@ -100,8 +105,7 @@ class LacpTest : public LinkTest {
   void waitForLacpState() const {
     auto lacpStateEnabled = [&](const std::shared_ptr<SwitchState>& state) {
       for (const auto& aggId : getAggPorts()) {
-        const auto& aggPort =
-            state->getAggregatePorts()->getAggregatePort(aggId);
+        const auto& aggPort = state->getAggregatePorts()->getNode(aggId);
         if (aggPort == nullptr ||
             aggPort->forwardingSubportCount() != aggPort->subportsCount()) {
           return false;

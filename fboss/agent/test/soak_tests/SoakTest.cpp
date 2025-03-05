@@ -11,6 +11,8 @@ DEFINE_string(
     "1s",
     "Total time to run soak test, <\\d+>[smhd], s-sec, m-min, h-hour, d-day");
 
+using namespace std::chrono;
+
 namespace facebook::fboss {
 
 uint64_t SoakTest::SoakTimeStrToSeconds(std::string timeStr) {
@@ -18,16 +20,15 @@ uint64_t SoakTest::SoakTimeStrToSeconds(std::string timeStr) {
   uint64_t digits = stoi(timeStr.substr(0, timeStr.length() - 1));
   switch (unit) {
     // no break in the cases, so the executions will fall through from d to s.
-    FMT_FALLTHROUGH;
     case 'd':
       digits *= 24;
-      FMT_FALLTHROUGH;
+      [[fallthrough]];
     case 'h':
       digits *= 60;
-      FMT_FALLTHROUGH;
+      [[fallthrough]];
     case 'm':
       digits *= 60;
-      FMT_FALLTHROUGH;
+      [[fallthrough]];
     case 's':
       return digits;
     default:

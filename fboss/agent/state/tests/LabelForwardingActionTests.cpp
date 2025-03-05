@@ -8,7 +8,7 @@
 #include "fboss/agent/state/RouteNextHop.h"
 #include "folly/IPAddress.h"
 
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 #include <gtest/gtest.h>
 
 using namespace ::testing;
@@ -17,8 +17,6 @@ using facebook::network::toBinaryAddress;
 
 namespace {
 void testFromAndTo(const LabelForwardingAction& action) {
-  EXPECT_EQ(
-      action, LabelForwardingAction::fromFollyDynamic(action.toFollyDynamic()));
   EXPECT_EQ(action, LabelForwardingAction::fromThrift(action.toThrift()));
 }
 
@@ -197,6 +195,6 @@ TEST(LabelForwardingActionTests, MplsNextHopThriftSet) {
       }
     }
     auto nhops = util::toRouteNextHopSet(nhops_vec);
-    EXPECT_TRUE(LabelForwardingInformationBase::isValidNextHopSet(nhops));
+    EXPECT_TRUE(MultiLabelForwardingInformationBase::isValidNextHopSet(nhops));
   }
 }

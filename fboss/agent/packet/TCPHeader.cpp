@@ -13,6 +13,7 @@
 #include <folly/lang/Bits.h>
 #include <sstream>
 
+#include "fboss/agent/FbossError.h"
 #include "fboss/agent/packet/IPv4Hdr.h"
 #include "fboss/agent/packet/IPv6Hdr.h"
 #include "fboss/agent/packet/PktUtil.h"
@@ -76,6 +77,27 @@ uint16_t TCPHeader::computeChecksum(
   return computeChecksumImpl(ipv4Hdr, cursor);
 }
 
+void TCPHeader::parse(Cursor* cursor) {
+  try {
+    srcPort = cursor->readBE<uint16_t>();
+    dstPort = cursor->readBE<uint16_t>();
+    sequenceNumber = cursor->readBE<uint32_t>();
+    ackNumber = cursor->readBE<uint32_t>();
+    dataOffsetAndReserved = cursor->readBE<uint8_t>();
+    flags = cursor->readBE<uint8_t>();
+    windowSize = cursor->readBE<uint16_t>();
+    csum = cursor->readBE<uint16_t>();
+    urgentPointer = cursor->readBE<uint16_t>();
+  } catch (std::out_of_range&) {
+    throw FbossError(
+        "Too small packet. Got ",
+        cursor->length(),
+        " bytes. Minimum ",
+        size(),
+        " bytes");
+  }
+}
+
 void TCPHeader::updateChecksum(const IPv4Hdr& ipv6Hdr, const Cursor& cursor) {
   csum = computeChecksum(ipv6Hdr, cursor);
 }
@@ -94,8 +116,8 @@ string TCPHeader::toString() const {
   stringstream ss;
   ss << " Source port: " << srcPort << " Destination port: " << dstPort
      << " Seq Num: " << sequenceNumber << " Ack Num: " << ackNumber
-     << " Data offset and reserved: " << dataOffsetAndReserved
-     << " flags: " << flags << " Checksum: " << csum
+     << " Data offset and reserved: " << (int)dataOffsetAndReserved
+     << " flags: " << (int)flags << " Checksum: " << csum
      << " Urgent pointer: " << urgentPointer;
   return ss.str();
 }

@@ -21,8 +21,8 @@
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
 #include "fboss/agent/hw/test/HwTestTrunkUtils.h"
 #include "fboss/agent/hw/test/LoadBalancerUtils.h"
-#include "fboss/agent/state/Port.h"
 #include "fboss/agent/state/PortDescriptor.h"
+#include "fboss/agent/state/StateUtils.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/EcmpSetupHelper.h"
 #include "fboss/agent/test/MultiNodeTest.h"
@@ -35,6 +35,7 @@
 #include "folly/MacAddress.h"
 
 using namespace facebook::fboss;
+using namespace std::chrono;
 
 DECLARE_bool(enable_lacp);
 
@@ -68,11 +69,14 @@ class MultiNodeLacpTest : public MultiNodeTest {
   }
 
   cfg::SwitchConfig getConfigWithAggPort(
-      cfg::LacpPortRate rate = cfg::LacpPortRate::SLOW) const {
+      cfg::LacpPortRate rate = cfg::LacpPortRate::SLOW,
+      double minLinkPercentage = 1.0) const {
     auto config = utility::multiplePortsPerIntfConfig(
-        platform()->getHwSwitch(),
+        platform()->getPlatformMapping(),
+        platform()->getAsic(),
         testPorts(),
-        cfg::PortLoopbackMode::NONE,
+        platform()->supportsAddRemovePort(),
+        utility::kDefaultLoopbackMap(),
         true, /* interfaceHasSubnet */
         false, /* setInterfaceMac */
         kBaseVlanId,
@@ -80,10 +84,15 @@ class MultiNodeLacpTest : public MultiNodeTest {
     auto idx = 0;
     auto portList = testPorts();
     for (const auto& aggId : getAggPorts()) {
-      addAggPort(aggId, {portList[idx++], portList[idx++]}, &config, rate);
+      addAggPort(
+          aggId,
+          {portList[idx++], portList[idx++]},
+          &config,
+          rate,
+          minLinkPercentage);
     }
     config.loadBalancers() =
-        utility::getEcmpFullTrunkHalfHashConfig(platform());
+        utility::getEcmpFullTrunkHalfHashConfig({platform()->getAsic()});
 
     config.staticRoutesWithNhops()->clear();
     setupDefaultRoutes(&config, 2);
@@ -145,9 +154,11 @@ class MultiNodeLacpTest : public MultiNodeTest {
   void waitForAggPortStatus(AggregatePortID aggId, bool portStatus) const {
     auto aggPortUp = [&](const std::shared_ptr<SwitchState>& state) {
       const auto& aggPorts = state->getAggregatePorts();
-      if (aggPorts && aggPorts->getAggregatePort(aggId) &&
-          aggPorts->getAggregatePort(aggId)->isUp() == portStatus) {
-        return true;
+      if (aggPorts) {
+        const auto aggPort = aggPorts->getNode(aggId);
+        if (aggPort && aggPort->isUp() == portStatus) {
+          return true;
+        }
       }
       return false;
     };
@@ -155,22 +166,25 @@ class MultiNodeLacpTest : public MultiNodeTest {
         aggPortUp, isDUT() ? kMaxRetries : kRemoteSwitchMaxRetries));
   }
 
-  // Verify that LACP converged on all member ports
-  void verifyLacpState() const {
-    for (const auto& aggId : getAggPorts()) {
-      const auto& aggPort =
-          sw()->getState()->getAggregatePorts()->getAggregatePort(aggId);
-      EXPECT_NE(aggPort, nullptr);
-      EXPECT_EQ(aggPort->forwardingSubportCount(), aggPort->subportsCount());
-      for (const auto& memberAndState : aggPort->subportAndFwdState()) {
-        // Verify that member port is enabled
-        EXPECT_EQ(memberAndState.second, AggregatePort::Forwarding::ENABLED);
-        // Verify that partner has synced
-        EXPECT_TRUE(
-            aggPort->getPartnerState(memberAndState.first).state &
-            LacpState::IN_SYNC);
-      }
+  // Verify that LACP converged on expected number of member ports
+  void verifyLacpState(AggregatePortID aggId, int expectedUpMemberPort) const {
+    const auto& aggPort = sw()->getState()->getAggregatePorts()->getNode(aggId);
+    EXPECT_NE(aggPort, nullptr);
+    CHECK_LE(expectedUpMemberPort, aggPort->subportsCount());
+    EXPECT_EQ(aggPort->forwardingSubportCount(), expectedUpMemberPort);
+    int enabledCount = 0;
+    int syncedPartnerStateCount = 0;
+    for (const auto& memberAndState : aggPort->subportAndFwdState()) {
+      // Verify that member port is enabled
+      enabledCount +=
+          memberAndState.second == AggregatePort::Forwarding::ENABLED;
+      // Verify that partner has synced
+      syncedPartnerStateCount +=
+          (aggPort->getPartnerState(memberAndState.first).state &
+           LacpState::IN_SYNC) > 0;
     }
+    EXPECT_EQ(enabledCount, expectedUpMemberPort);
+    EXPECT_EQ(syncedPartnerStateCount, expectedUpMemberPort);
   }
 
   void verifyReachability(
@@ -238,27 +252,33 @@ class MultiNodeLacpTest : public MultiNodeTest {
   }
 
   void verifyInitialState() {
+    // In a cold boot ports can flap initially. Wait for ports to
+    // stabilize state
+    if (platform()->getHwSwitch()->getBootType() != BootType::WARM_BOOT) {
+      sleep(60);
+    }
+
     // Wait for AggPort
     for (const auto& aggId : getAggPorts()) {
       waitForAggPortStatus(aggId, true);
     }
 
     // verify lacp state information
-    verifyLacpState();
+    for (const auto& aggId : getAggPorts()) {
+      verifyLacpState(aggId, getSubPorts(aggId).size());
+    }
     verifyReachability();
   }
 
   std::vector<LegacyAggregatePortFields::Subport> getSubPorts(
-      AggregatePortID aggId) {
-    const auto& aggPort =
-        sw()->getState()->getAggregatePorts()->getAggregatePort(aggId);
+      AggregatePortID aggId) const {
+    const auto& aggPort = sw()->getState()->getAggregatePorts()->getNode(aggId);
     EXPECT_NE(aggPort, nullptr);
     return aggPort->sortedSubports();
   }
 
   ParticipantInfo::Port getRemotePortID(AggregatePortID aggId, PortID portId) {
-    const auto& aggPort =
-        sw()->getState()->getAggregatePorts()->getAggregatePort(aggId);
+    const auto& aggPort = sw()->getState()->getAggregatePorts()->getNode(aggId);
     EXPECT_NE(aggPort, nullptr);
     return aggPort->getPartnerState(portId).port;
   }
@@ -268,7 +288,8 @@ class MultiNodeLacpTest : public MultiNodeTest {
     disableTTLDecrementsForRoute<folly::IPAddressV4>({folly::IPAddressV4(), 0});
     if (isDUT()) {
       auto state = sw()->getState();
-      auto vlan = state->getVlans()->cbegin()->second->getID();
+      auto vlan =
+          utility::getFirstMap(state->getVlans())->cbegin()->second->getID();
       auto srcMac = state->getInterfaces()->getInterfaceInVlan(vlan)->getMac();
       auto destMac =
           getNeighborEntry(
@@ -277,26 +298,36 @@ class MultiNodeLacpTest : public MultiNodeTest {
               .first;
       for (const auto& sendV6 : {true, false}) {
         utility::pumpTraffic(
-            sendV6, sw()->getHw(), destMac, vlan, std::nullopt, 255, srcMac);
+            sendV6,
+            utility::getAllocatePktFn(sw()),
+            utility::getSendPktFunc(sw()),
+            destMac,
+            vlan,
+            std::nullopt,
+            255,
+            10000,
+            srcMac);
       }
     }
   }
 };
 
 TEST_F(MultiNodeLacpTest, Bringup) {
-  auto verify = [=]() {
+  auto verify = [=, this]() {
     auto period = PeriodicTransmissionMachine::LONG_PERIOD * 3;
     // ensure that lacp session can stay up post timeout
     XLOG(DBG2) << "Waiting for LACP timeout period";
     std::this_thread::sleep_for(period);
-    verifyLacpState();
+    for (const auto& aggId : getAggPorts()) {
+      verifyLacpState(aggId, getSubPorts(aggId).size());
+    }
   };
 
   verifyAcrossWarmBoots(verify);
 }
 
 TEST_F(MultiNodeLacpTest, LinkDown) {
-  auto verify = [=]() {
+  auto verify = [=, this]() {
     const auto aggPort = getAggPorts()[0];
     // Local port flap
     XLOG(DBG2) << "Disable an Agg member port";
@@ -312,7 +343,7 @@ TEST_F(MultiNodeLacpTest, LinkDown) {
     setPortStatus(testPort, true);
 
     waitForAggPortStatus(aggPort, true);
-    verifyLacpState();
+    verifyLacpState(aggPort, getSubPorts(aggPort).size());
 
     // Remote port flap
     XLOG(DBG2) << "Disable an Agg member port on remote switch";
@@ -326,13 +357,13 @@ TEST_F(MultiNodeLacpTest, LinkDown) {
     XLOG(DBG2) << "Enable Agg member port on remote switch";
     client->sync_setPortState(remotePortID, true);
     waitForAggPortStatus(aggPort, true);
-    verifyLacpState();
+    verifyLacpState(aggPort, getSubPorts(aggPort).size());
   };
   verifyAcrossWarmBoots(verify);
 }
 
 TEST_F(MultiNodeLacpTest, LacpSlowFastInterop) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     if (isDUT()) {
       // Change Lacp to fast mode
       sw()->applyConfig(
@@ -341,13 +372,15 @@ TEST_F(MultiNodeLacpTest, LacpSlowFastInterop) {
     }
   };
 
-  auto verify = [=]() {
+  auto verify = [=, this]() {
     const auto aggPort = getAggPorts()[0];
     // Wait for AggPort
     waitForAggPortStatus(aggPort, true);
 
     // verify lacp state information
-    verifyLacpState();
+    for (const auto& aggId : getAggPorts()) {
+      verifyLacpState(aggId, getSubPorts(aggId).size());
+    }
   };
   verifyAcrossWarmBoots(setup, verify);
 }
@@ -371,7 +404,7 @@ TEST_F(MultiNodeLacpTest, LacpWarmBoootIsHitless) {
     auto ecmpSizeInSw = getAggPorts().size();
     EXPECT_EQ(
         utility::getEcmpSizeInHw(
-            sw()->getHw(),
+            platform()->getHwSwitch(),
             {folly::IPAddress("::"), 0},
             RouterID(0),
             ecmpSizeInSw),
@@ -379,10 +412,11 @@ TEST_F(MultiNodeLacpTest, LacpWarmBoootIsHitless) {
     for (const auto& aggId : getAggPorts()) {
       const auto countInSw = sw()->getState()
                                  ->getAggregatePorts()
-                                 ->getAggregatePort(aggId)
+                                 ->getNode(aggId)
                                  ->subportsCount();
       EXPECT_EQ(
-          utility::getTrunkMemberCountInHw(sw()->getHw(), aggId, countInSw),
+          utility::getTrunkMemberCountInHw(
+              platform()->getHwSwitch(), aggId, countInSw),
           countInSw);
     }
   };
@@ -398,7 +432,7 @@ class MultiNodeDisruptiveTest : public MultiNodeLacpTest {
 // Stop sending LACP on one port and verify
 // that remote side times out
 TEST_F(MultiNodeDisruptiveTest, LacpTimeout) {
-  auto verify = [=]() {
+  auto verify = [=, this]() {
     if (isDUT()) {
       const auto aggPortId = getAggPorts()[0];
       // stop LACP on one of the member ports
@@ -406,17 +440,16 @@ TEST_F(MultiNodeDisruptiveTest, LacpTimeout) {
       EXPECT_GE(subPortRange.size(), 2);
       auto lagMgr = sw()->getLagManager();
       lagMgr->stopLacpOnSubPort(subPortRange.back().portID);
-      auto remoteLacpTimeout =
-          [this, &aggPortId](const std::shared_ptr<SwitchState>& state) {
-            const auto& subPorts = getSubPorts(aggPortId);
-            const auto& localPort = subPorts.front().portID;
-            const auto& aggPort =
-                state->getAggregatePorts()->getAggregatePort(aggPortId);
-            const auto& remoteState = aggPort->getPartnerState(localPort).state;
-            const auto flagsToCheck = LacpState::IN_SYNC |
-                LacpState::COLLECTING | LacpState::DISTRIBUTING;
-            return ((remoteState & flagsToCheck) == 0);
-          };
+      auto remoteLacpTimeout = [this, &aggPortId](
+                                   const std::shared_ptr<SwitchState>& state) {
+        const auto& subPorts = getSubPorts(aggPortId);
+        const auto& localPort = subPorts.front().portID;
+        const auto& aggPort = state->getAggregatePorts()->getNode(aggPortId);
+        const auto& remoteState = aggPort->getPartnerState(localPort).state;
+        const auto flagsToCheck = LacpState::IN_SYNC | LacpState::COLLECTING |
+            LacpState::DISTRIBUTING;
+        return ((remoteState & flagsToCheck) == 0);
+      };
       // Remote side LACP should timeout on second member and
       // bring down both members due to minlink violation after 3 timeouts
       EXPECT_TRUE(
@@ -450,7 +483,8 @@ class MultiNodeRoutingLoop : public MultiNodeLacpTest {
     XLOG(INFO) << "creating data plane flood";
     disableTTLDecrementsForRoute<folly::IPAddressV6>(prefix_);
     auto state = sw()->getState();
-    auto vlan = state->getVlans()->cbegin()->second->getID();
+    auto vlan =
+        utility::getFirstMap(state->getVlans())->cbegin()->second->getID();
     auto srcMac = state->getInterfaces()->getInterfaceInVlan(vlan)->getMac();
     auto destMac =
         getNeighborEntry(
@@ -458,7 +492,8 @@ class MultiNodeRoutingLoop : public MultiNodeLacpTest {
             state->getInterfaces()->getInterfaceInVlan(vlan)->getID())
             .first;
     utility::pumpTraffic(
-        sw()->getHw(),
+        utility::getAllocatePktFn(sw()),
+        utility::getSendPktFunc(sw()),
         destMac,
         {folly::IPAddress("200::10")},
         {folly::IPAddress("100::10")},
@@ -477,16 +512,48 @@ class MultiNodeRoutingLoop : public MultiNodeLacpTest {
 };
 
 TEST_F(MultiNodeRoutingLoop, LoopTraffic) {
-  auto setup = [=]() {
+  auto setup = [=, this]() {
     verifyInitialState();
     verifyReachability(prefix_);
     if (!isDUT()) {
       createL3DataplaneFlood();
     }
   };
-  auto verify = [=]() {
+  auto verify = [=, this]() {
     std::this_thread::sleep_for(3s);
     assertNoInDiscards(0);
   };
   verifyAcrossWarmBoots(setup, verify, setup, verify);
+}
+
+class MultiNodeLacpMinLinkTest : public MultiNodeLacpTest {
+ protected:
+  cfg::SwitchConfig initialConfig() const override {
+    auto config = getConfigWithAggPort(
+        cfg::LacpPortRate::SLOW /* rate */, 0.5 /* minLinkPercentage */);
+    // Bring down one port for each agg port
+    for (auto& aggPort : *config.aggregatePorts()) {
+      const auto portId = *aggPort.key();
+      for (auto& port : *config.ports()) {
+        if (*port.logicalID() == portId) {
+          port.state() = cfg::PortState::DISABLED;
+          break;
+        }
+      }
+    }
+    return config;
+  }
+};
+TEST_F(MultiNodeLacpMinLinkTest, Bringup) {
+  auto verify = [=, this]() {
+    auto period = PeriodicTransmissionMachine::LONG_PERIOD * 3;
+    // ensure that lacp session can stay up post timeout
+    XLOG(DBG2) << "Waiting for LACP timeout period";
+    std::this_thread::sleep_for(period);
+    for (const auto& aggId : getAggPorts()) {
+      verifyLacpState(aggId, getSubPorts(aggId).size());
+    }
+  };
+
+  verifyAcrossWarmBoots(verify);
 }

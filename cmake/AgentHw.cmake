@@ -22,8 +22,8 @@ target_link_libraries(diag_cmd_filter
   Folly::folly
 )
 
-add_library(hw_switch_stats
-  fboss/agent/hw/HwSwitchStats.cpp
+add_library(hw_switch_fb303_stats
+  fboss/agent/hw/HwSwitchFb303Stats.cpp
 )
 
 add_library(hw_fb303_stats
@@ -34,7 +34,6 @@ add_library(hw_port_fb303_stats
   fboss/agent/hw/HwBasePortFb303Stats.cpp
   fboss/agent/hw/HwPortFb303Stats.cpp
   fboss/agent/hw/HwSysPortFb303Stats.cpp
-  fboss/agent/hw/oss/HwBasePortFb303Stats.cpp
 )
 
 add_library(hw_cpu_fb303_stats
@@ -57,14 +56,19 @@ add_library(hw_resource_stats_publisher
   fboss/agent/hw/HwResourceStatsPublisher.cpp
 )
 
+add_library(prbs_stats_entry
+  fboss/agent/hw/common/PrbsStatsEntry.h
+)
+
 target_link_libraries(hw_switch_warmboot_helper
   async_logger
   utils
   common_file_utils
   Folly::folly
+  sw_switch_warmboot_helper
 )
 
-target_link_libraries(hw_switch_stats
+target_link_libraries(hw_switch_fb303_stats
   stats
   fb303::fb303
   Folly::folly
@@ -91,6 +95,7 @@ target_link_libraries(hw_cpu_fb303_stats
   hardware_stats_cpp2
   Folly::folly
   switch_config_cpp2
+  hw_fb303_stats
 )
 
 target_link_libraries(hw_trunk_counters
@@ -108,4 +113,8 @@ target_link_libraries(buffer_stats
 target_link_libraries(hw_resource_stats_publisher
   fb303::fb303
   hardware_stats_cpp2
+)
+
+target_link_libraries(prbs_stats_entry
+  ctrl_cpp2
 )

@@ -5,7 +5,24 @@ namespace py neteng.fboss.transceiver
 namespace py3 neteng.fboss
 namespace py.asyncio neteng.fboss.asyncio.transceiver
 
+include "fboss/lib/phy/link.thrift"
 include "fboss/lib/phy/prbs.thrift"
+include "thrift/annotation/cpp.thrift"
+include "thrift/annotation/thrift.thrift"
+
+/*
+ * UNINITIALIZED - when transceiverManager has just been created and init() is not yet called
+ * INITIALIZED - when transceiverManager->init() is complete i.e. systemContainer, pimContainer, phys are initialized
+ * ACTIVE - one run of refreshStateMachines is complete. Transceivers have been detected
+ * EXITING - when transceiverManager is going through a graceful exit
+ */
+enum QsfpServiceRunState {
+  UNINITIALIZED = 0,
+  INITIALIZED = 1,
+  ACTIVE = 2,
+  EXITING = 3,
+  UPGRADING_FIRMWARE = 4,
+}
 
 struct Vendor {
   1: string name;
@@ -89,13 +106,14 @@ enum ResetType {
 }
 
 /*
- * Currently, only support RESET_THEN_CLEAR
+ * Transceiver Reset action. RESET_THEN_CLEAR resets then clears reset,
+ * RESET holds the reset on the transceiver, CLEAR_RESET clears reset.
  */
 enum ResetAction {
   INVALID = 0,
   RESET_THEN_CLEAR = 1,
-// RESET = 2,
-// CLEAR_RESET = 3,
+  RESET = 2,
+  CLEAR_RESET = 3,
 }
 
 enum TransmitterTechnology {
@@ -194,6 +212,13 @@ enum MediaInterfaceCode {
   SR_10G = 8,
   CR4_200G = 9,
   CR8_400G = 10,
+  FR4_2x400G = 11,
+  BASE_T_10G = 12,
+  DR4_2x400G = 13,
+  DR4_400G = 14,
+  FR8_800G = 15,
+  CR_10G = 16,
+  FR4_LITE_2x400G = 17,
 }
 
 // The extended specification compliance code of the transceiver module.
@@ -207,6 +232,7 @@ enum ExtendedSpecComplianceCode {
   FR1_100G = 38,
   // 50GBASE-CR, 100GBASE-CR2, or 200GBASE-CR4
   CR_50G_CHANNELS = 64,
+  BASE_T_10G = 0x1C,
 }
 
 // Transceiver identifier as read from module page 0 reg 0
@@ -218,10 +244,12 @@ enum TransceiverModuleIdentifier {
   QSFP28 = 0x11,
   QSFP_DD = 0x18,
   QSFP_PLUS_CMIS = 0x1E,
+  OSFP = 0x19,
   MINIPHOTON_OBO = 0x91,
 }
 
 enum CmisModuleState {
+  UNKNOWN = 0x0,
   LOW_POWER = 0x1,
   POWERING_UP = 0x2,
   READY = 0x3,
@@ -229,16 +257,29 @@ enum CmisModuleState {
   FAULT = 0x5,
 }
 
+enum TransceiverFeature {
+  NONE = 0,
+  VDM = 0x0001,
+  CDB = 0x0002,
+  PRBS = 0x0004,
+  LOOPBACK = 0x0008,
+  TX_DISABLE = 0x0010,
+}
+
 // TODO(joseph5wu) Will deprecate this enum and start using MediaInterfaceCode
 enum SMFMediaInterfaceCode {
   UNKNOWN = 0x0,
   CWDM4_100G = 0x10,
+  FR1_100G = 0x15,
   FR4_200G = 0x18,
+  DR4_400G = 0x1C,
   FR4_400G = 0x1D,
   LR4_10_400G = 0x1E,
+  FR8_800G = 0xC1,
 }
 
 enum Ethernet10GComplianceCode {
+  CR_10G = 0x01,
   SR_10G = 0x10,
   LR_10G = 0x20,
   LRM_10G = 0x40,
@@ -248,6 +289,7 @@ enum Ethernet10GComplianceCode {
 enum PassiveCuMediaInterfaceCode {
   UNKNOWN = 0x0,
   COPPER = 0x1,
+  COPPER_400G = 0x3,
   LOOPBACK = 0xBF,
 }
 
@@ -334,6 +376,51 @@ struct RxEqualizerSettings {
   3: i32 mainAmplitude;
 }
 
+struct VdmPerfMonitorPortSideStats {
+  1: link.LinkPerfMonitorParamEachSideVal datapathBER;
+  2: link.LinkPerfMonitorParamEachSideVal datapathErroredFrames;
+  3: map<i32, double> laneSNR;
+  4: map<i32, double> lanePam4Level0SD;
+  5: map<i32, double> lanePam4Level1SD;
+  6: map<i32, double> lanePam4Level2SD;
+  7: map<i32, double> lanePam4Level3SD;
+  8: map<i32, double> lanePam4MPI;
+  9: map<i32, double> lanePam4LTP;
+  10: optional i16 fecTailMax;
+  11: optional i16 fecTailCurr;
+  12: optional i16 maxSupportedFecTail;
+}
+
+struct VdmPerfMonitorStats {
+  // Map of SW Port to Media side VDM Performance Monitor diags stats
+  1: map<string, VdmPerfMonitorPortSideStats> mediaPortVdmStats;
+  // Map of SW Port to Host side VDM Performance Monitor diags stats
+  2: map<string, VdmPerfMonitorPortSideStats> hostPortVdmStats;
+  3: i64 statsCollectionTme;
+  4: i64 intervalStartTime;
+}
+
+struct VdmPerfMonitorPortSideStatsForOds {
+  1: double datapathBERMax;
+  2: double datapathErroredFramesMax;
+  3: double laneSNRMin;
+  4: double lanePam4Level0SDMax;
+  5: double lanePam4Level1SDMax;
+  6: double lanePam4Level2SDMax;
+  7: double lanePam4Level3SDMax;
+  8: double lanePam4MPIMax;
+  9: double lanePam4LTPMax;
+  10: optional i16 fecTailMax;
+}
+
+struct VdmPerfMonitorStatsForOds {
+  // Map of SW Port to Media side VDM Performance Monitor diags stats
+  1: map<string, VdmPerfMonitorPortSideStatsForOds> mediaPortVdmStats;
+  // Map of SW Port to Host side VDM Performance Monitor diags stats
+  2: map<string, VdmPerfMonitorPortSideStatsForOds> hostPortVdmStats;
+  3: i64 statsCollectionTme;
+}
+
 struct VdmDiagsStats {
   1: double preFecBerMediaMin;
   2: double preFecBerMediaMax;
@@ -353,6 +440,27 @@ struct VdmDiagsStats {
   16: double errFrameHostMax;
   17: double errFrameHostAvg;
   18: double errFrameHostCur;
+  19: map<i32, double> pam4Level0SDLine;
+  20: map<i32, double> pam4Level1SDLine;
+  21: map<i32, double> pam4Level2SDLine;
+  22: map<i32, double> pam4Level3SDLine;
+  23: map<i32, double> pam4MPILine;
+  24: map<i32, double> pam4LtpMediaChannel;
+  25: optional i16 fecTailMediaMax;
+  26: optional i16 fecTailMediaCurr;
+  27: optional i16 fecTailHostMax;
+  28: optional i16 fecTailHostCurr;
+}
+
+struct SymErrHistogramBin {
+  1: double nbitSymbolErrorMax;
+  2: double nbitSymbolErrorAvg;
+  3: double nbitSymbolErrorCur;
+}
+
+struct CdbDatapathSymErrHistogram {
+  1: map<i32, SymErrHistogramBin> media;
+  2: map<i32, SymErrHistogramBin> host;
 }
 
 struct TransceiverSettings {
@@ -406,9 +514,16 @@ struct TcvrState {
   14: optional ModuleStatus status;
   15: optional list<MediaLaneSignals> mediaLaneSignals;
   16: optional list<HostLaneSignals> hostLaneSignals;
-  18: optional bool eepromCsumValid;
+  18: bool eepromCsumValid;
   19: optional MediaInterfaceCode moduleMediaInterface;
   20: optional TransceiverStateMachineState stateMachineState;
+  21: map<string, list<i32>> portNameToHostLanes;
+  22: map<string, list<i32>> portNameToMediaLanes;
+  23: i64 timeCollected;
+  24: DiagsCapability diagCapability;
+  25: bool fwUpgradeInProgress;
+  26: set<string> interfaces;
+  27: string tcvrName;
 }
 
 struct TcvrStats {
@@ -418,53 +533,116 @@ struct TcvrStats {
   4: optional i64 remediationCounter;
   5: optional VdmDiagsStats vdmDiagsStats;
   6: optional VdmDiagsStats vdmDiagsStatsForOds;
+  7: map<string, list<i32>> portNameToHostLanes;
+  8: map<string, list<i32>> portNameToMediaLanes;
+  9: i64 timeCollected;
+  10: i64 lastFwUpgradeStartTime;
+  11: i64 lastFwUpgradeEndTime;
+  12: optional VdmPerfMonitorStats vdmPerfMonitorStats;
+  13: optional VdmPerfMonitorStatsForOds vdmPerfMonitorStatsForOds;
+  14: map<string, CdbDatapathSymErrHistogram> cdbDatapathSymErrHistogram;
+  15: map<string, i64> lastDatapathResetTime;
+  16: set<string> interfaces;
+  17: string tcvrName;
 }
 
 struct TransceiverInfo {
-  1: bool present (deprecated = "Moved to state/stats");
-  2: TransceiverType transceiver (deprecated = "Moved to state/stats");
-  3: i32 port (deprecated = "Moved to state/stats"); // physical port number
-  4: optional GlobalSensors sensor (deprecated = "Moved to state/stats");
-  5: optional AlarmThreshold thresholds (deprecated = "Moved to state/stats");
-  9: optional Vendor vendor (deprecated = "Moved to state/stats");
-  10: optional Cable cable (deprecated = "Moved to state/stats");
-  12: list<Channel> channels (deprecated = "Moved to state/stats");
-  13: optional TransceiverSettings settings (
-    deprecated = "Moved to state/stats",
-  );
-  14: optional TransceiverStats stats (deprecated = "Moved to state/stats");
-  15: optional SignalFlags signalFlag (deprecated = "Moved to state/stats");
-  16: optional ExtendedSpecComplianceCode extendedSpecificationComplianceCode (
-    deprecated = "Moved to state/stats",
-  );
-  17: optional TransceiverManagementInterface transceiverManagementInterface (
-    deprecated = "Moved to state/stats",
-  );
-  18: optional TransceiverModuleIdentifier identifier (
-    deprecated = "Moved to state/stats",
-  );
-  19: optional ModuleStatus status (deprecated = "Moved to state/stats");
-  20: optional list<MediaLaneSignals> mediaLaneSignals (
-    deprecated = "Moved to state/stats",
-  );
-  21: optional list<HostLaneSignals> hostLaneSignals (
-    deprecated = "Moved to state/stats",
-  );
-  22: optional i64 timeCollected (deprecated = "Moved to state/stats");
-  23: optional i64 remediationCounter (deprecated = "Moved to state/stats");
-  24: optional VdmDiagsStats vdmDiagsStats (
-    deprecated = "Moved to state/stats",
-  );
-  25: optional bool eepromCsumValid (deprecated = "Moved to state/stats");
-  26: optional MediaInterfaceCode moduleMediaInterface (
-    deprecated = "Moved to state/stats",
-  );
-  27: optional TransceiverStateMachineState stateMachineState (
-    deprecated = "Moved to state/stats",
-  );
-  28: optional VdmDiagsStats vdmDiagsStatsForOds (
-    deprecated = "Moved to state/stats",
-  );
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  1: optional bool present;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  2: optional TransceiverType transceiver;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  3: optional i32 port; // physical port number
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  4: optional GlobalSensors sensor;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  5: optional AlarmThreshold thresholds;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  9: optional Vendor vendor;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  10: optional Cable cable;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  12: optional list<Channel> channels;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  13: optional TransceiverSettings settings;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  14: optional TransceiverStats stats;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  15: optional SignalFlags signalFlag;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  16: optional ExtendedSpecComplianceCode extendedSpecificationComplianceCode;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  17: optional TransceiverManagementInterface transceiverManagementInterface;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  18: optional TransceiverModuleIdentifier identifier;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  19: optional ModuleStatus status;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  20: optional list<MediaLaneSignals> mediaLaneSignals;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  21: optional list<HostLaneSignals> hostLaneSignals;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  22: optional i64 timeCollected;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  23: optional i64 remediationCounter;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  24: optional VdmDiagsStats vdmDiagsStats;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  25: bool eepromCsumValid;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  26: optional MediaInterfaceCode moduleMediaInterface;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  27: optional TransceiverStateMachineState stateMachineState;
+  @thrift.DeprecatedUnvalidatedAnnotations{
+    items = {"deprecated": "Moved to state/stats"},
+  }
+  28: optional VdmDiagsStats vdmDiagsStatsForOds;
   // During the transition, the new state and states will be optional.
   // Both new and old fields will be filled in by QSFP service. Users
   // should checked the new fields and use it if available but fall back
@@ -476,7 +654,8 @@ struct TransceiverInfo {
   30: TcvrStats tcvrStats;
 }
 
-typedef binary (cpp2.type = "folly::IOBuf") IOBuf
+@cpp.Type{name = "folly::IOBuf"}
+typedef binary IOBuf
 
 struct RawDOMData {
   // The SFF DOM exposes at most 256 bytes at a time and is divided in
@@ -532,12 +711,14 @@ struct CmisData {
   12: optional IOBuf page21;
   13: optional IOBuf page24;
   14: optional IOBuf page25;
+  15: optional IOBuf page22;
+  16: optional IOBuf page26;
 }
 
 struct TransceiverIOParameters {
   1: i32 offset; // should range from 0 - 255
   2: optional i32 page; // can be used to access bytes 128-255 from a different page than page0
-  3: optional i32 length; // Number of bytes to read. Not applicable for a write
+  3: optional i32 length; // Number of bytes to read. Also can represent number of bytes to write for multi-byte writes.
 }
 
 struct ReadRequest {
@@ -554,6 +735,7 @@ struct WriteRequest {
   1: list<i32> ids;
   2: TransceiverIOParameters parameter;
   3: byte data; // The data to write for a write request
+  4: optional list<byte> bytes; // The data to write for multi-byte write requests (preferred)
 }
 
 struct WriteResponse {
@@ -570,6 +752,17 @@ struct DiagsCapability {
   7: bool loopbackSystem = false;
   8: list<prbs.PrbsPolynomial> prbsSystemCapabilities = [];
   9: list<prbs.PrbsPolynomial> prbsLineCapabilities = [];
+  10: bool txOutputControl = false;
+  11: bool rxOutputControl = false;
+  12: bool snrLine = false;
+  13: bool snrSystem = false;
+  14: bool cdbFirmwareUpgrade = false;
+  15: bool cdbFirmwareReadback = false;
+  16: bool cdbEplMemorySupported = false;
+  17: bool cdbSymbolErrorHistogramLine = false;
+  18: bool cdbSymbolErrorHistogramSystem = false;
+  19: bool cdbRxErrorHistogramLine = false;
+  20: bool cdbRxErrorHistogramSystem = false;
 }
 
 enum TransceiverStateMachineState {
@@ -582,27 +775,27 @@ enum TransceiverStateMachineState {
   ACTIVE = 6,
   INACTIVE = 7,
   UPGRADING = 8,
+  TRANSCEIVER_READY = 9,
 }
 
-enum TransceiverStateMachineEvent {
-  DETECT_TRANSCEIVER = 0,
-  RESET_TRANSCEIVER = 1,
-  REMOVE_TRANSCEIVER = 2,
-  READ_EEPROM = 3,
-  ALL_PORTS_DOWN = 4,
-  PORT_UP = 5,
-  // NOTE: Such event is never invoked in our code yet
-  TRIGGER_UPGRADE = 6,
-  // NOTE: Such event is never invoked in our code yet
-  FORCED_UPGRADE = 7,
-  AGENT_SYNC_TIMEOUT = 8,
-  BRINGUP_DONE = 9,
-  REMEDIATE_DONE = 10,
-  // The following events are only used in the new state machine
-  PROGRAM_IPHY = 11,
-  PROGRAM_XPHY = 12,
-  PROGRAM_TRANSCEIVER = 13,
-  RESET_TO_DISCOVERED = 14,
-  RESET_TO_NOT_PRESENT = 15,
-  REMEDIATE_TRANSCEIVER = 16,
+struct SwitchDeploymentInfo {
+  1: string dataCenter;
+  2: string hostnameScheme;
+}
+struct TransceiverThermalData {
+  1: string moduleMediaInterface;
+  2: i32 temperature;
+}
+
+struct QsfpToBmcSyncData {
+  1: string syncDataStructVersion;
+  2: i64 timestamp;
+  3: SwitchDeploymentInfo switchDeploymentInfo;
+  4: map<string, TransceiverThermalData> transceiverThermalData;
+}
+
+struct FirmwareUpgradeData {
+  1: string partNumber;
+  2: string currentFirmwareVersion;
+  3: string desiredFirmwareVersion;
 }

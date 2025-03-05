@@ -61,6 +61,10 @@ using ::testing::_;
 namespace {
 const uint8_t kNCStrictPriorityQueue = 7;
 
+HwSwitchMatcher scope() {
+  return HwSwitchMatcher{std::unordered_set<SwitchID>{SwitchID(0)}};
+}
+
 unique_ptr<HwTestHandle> setupTestHandle(
     std::chrono::seconds arpTimeout = std::chrono::seconds(0),
     uint32_t maxProbes = 1,
@@ -91,14 +95,22 @@ unique_ptr<HwTestHandle> setupTestHandle(
   updater.program();
 
   handle->getSw()->initialConfigApplied(std::chrono::steady_clock::now());
+  auto scopeResolver = handle->getSw()->getScopeResolver();
   handle->getSw()->updateState(
-      " set timers", [arpTimeout, maxProbes, staleTimeout](auto inState) {
+      " set timers",
+      [arpTimeout, maxProbes, staleTimeout, &scopeResolver](auto inState) {
         inState = inState->clone();
+        auto switchSettings = make_shared<SwitchSettings>();
         if (arpTimeout.count() > 0) {
-          inState->setArpTimeout(arpTimeout);
+          switchSettings->setArpTimeout(arpTimeout);
+          switchSettings->setStaleEntryInterval(staleTimeout);
         }
-        inState->setMaxNeighborProbes(maxProbes);
-        inState->setStaleEntryInterval(staleTimeout);
+        switchSettings->setMaxNeighborProbes(maxProbes);
+        auto multiSwitchSwitchSettings = make_shared<MultiSwitchSettings>();
+        multiSwitchSwitchSettings->addNode(
+            scope().matcherString(), switchSettings);
+
+        inState->resetSwitchSettings(multiSwitchSwitchSettings);
         inState->publish();
         return inState;
       });
@@ -222,7 +234,7 @@ const std::shared_ptr<ArpEntry>
 getArpEntry(SwSwitch* sw, IPAddressV4 ip, VlanID vlanID = VlanID(1)) {
   return sw->getState()
       ->getVlans()
-      ->getVlanIf(vlanID)
+      ->getNodeIf(vlanID)
       ->getArpTable()
       ->getEntryIf(ip);
 }
@@ -235,7 +247,7 @@ void testSendArpRequest(
     IPAddressV4 senderIP,
     IPAddressV4 targetIP) {
   auto state = sw->getState();
-  auto vlan = state->getVlans()->getVlanIf(vlanID);
+  auto vlan = state->getVlans()->getNodeIf(vlanID);
   EXPECT_NE(vlan, nullptr);
   auto intf = state->getInterfaces()->getInterfaceIf(RouterID(0), senderIP);
   EXPECT_NE(intf, nullptr);
@@ -274,7 +286,47 @@ void testSendArpRequest(
 
 } // unnamed namespace
 
-TEST(ArpTest, BasicSendRequest) {
+template <bool enableIntfNbrTable>
+struct EnableIntfNbrTable {
+  static constexpr auto intfNbrTable = enableIntfNbrTable;
+};
+
+using NbrTableTypes =
+    ::testing::Types<EnableIntfNbrTable<false>, EnableIntfNbrTable<true>>;
+
+template <typename EnableIntfNbrTableT>
+class ArpTest : public ::testing::Test {
+  static auto constexpr intfNbrTable = EnableIntfNbrTableT::intfNbrTable;
+
+ public:
+  bool isIntfNbrTable() const {
+    return intfNbrTable == true;
+  }
+
+  void SetUp() override {
+    FLAGS_intf_nbr_tables = isIntfNbrTable();
+  }
+
+  std::shared_ptr<ArpTable>
+  getArpTable(const SwSwitch* sw, VlanID vlanID, InterfaceID intfID) {
+    return isIntfNbrTable()
+        ? sw->getState()->getInterfaces()->getNode(intfID)->getArpTable()
+        : sw->getState()->getVlans()->getNode(vlanID)->getArpTable();
+  }
+};
+
+TYPED_TEST_SUITE(ArpTest, NbrTableTypes);
+
+TYPED_TEST(ArpTest, BasicSendRequest) {
+  // Keep test disabled for intf nbr tables because pending neighbor entries are
+  // currently not stored in intfs.
+  // TODO(jeffkim8482) Remove test once intf nbr migration is complete
+  if (this->isIntfNbrTable()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
+  }
+
   auto handle = setupTestHandle();
   auto sw = handle->getSw();
   VlanID vlanID(1);
@@ -286,13 +338,13 @@ TEST(ArpTest, BasicSendRequest) {
   CounterCache counters(sw);
 
   auto state = sw->getState();
-  auto vlan = state->getVlans()->getVlanIf(vlanID);
+  auto vlan = state->getVlans()->getNodeIf(vlanID);
   EXPECT_NE(vlan, nullptr);
   auto intf = state->getInterfaces()->getInterfaceIf(RouterID(0), senderIP);
   EXPECT_NE(intf, nullptr);
 
   // Sending an ARP request will trigger state update for setting pending entry
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(2);
+  EXPECT_STATE_UPDATE_TIMES(sw, 2);
   EXPECT_SWITCHED_PKT(
       sw,
       "ARP request",
@@ -314,10 +366,11 @@ TEST(ArpTest, BasicSendRequest) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "arp.reply.rx.sum", 0);
 }
 
-TEST(ArpTest, TableUpdates) {
+TYPED_TEST(ArpTest, TableUpdates) {
   auto handle = setupTestHandle();
   auto sw = handle->getSw();
   VlanID vlanID(1);
+  InterfaceID intfID(1);
 
   // Create an ARP request for 10.0.0.1 from an unreachable source
   auto buf = make_unique<IOBuf>(PktUtil::parseHexData(
@@ -343,7 +396,7 @@ TEST(ArpTest, TableUpdates) {
 
   // Sending the ARP request to the switch should not trigger an update to the
   // ArpTable for VLAN 1, but will send a reply packet
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
+  EXPECT_STATE_UPDATE_TIMES(sw, 0);
   EXPECT_OUT_OF_PORT_PKT(
       sw,
       "ARP reply",
@@ -357,11 +410,11 @@ TEST(ArpTest, TableUpdates) {
       std::optional<uint8_t>(kNCStrictPriorityQueue));
 
   // Inform the SwSwitch of the ARP request
-  handle->rxPacket(std::move(buf), PortID(1), vlanID);
+  handle->rxPacket(std::move(buf), PortDescriptor(PortID(1)), vlanID);
   sw->getNeighborUpdater()->waitForPendingUpdates();
 
   // Check the new ArpTable does not have any entry
-  auto arpTable = sw->getState()->getVlans()->getVlan(vlanID)->getArpTable();
+  std::shared_ptr<ArpTable> arpTable = this->getArpTable(sw, vlanID, intfID);
   EXPECT_EQ(0, arpTable->size());
 
   // Create an ARP request for 10.0.0.1
@@ -388,7 +441,7 @@ TEST(ArpTest, TableUpdates) {
 
   // Sending the ARP request to the switch should trigger an update to the
   // ArpTable for VLAN 1, and will then send a reply packet
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(2);
+  EXPECT_STATE_UPDATE_TIMES(sw, 2);
   EXPECT_OUT_OF_PORT_PKT(
       sw,
       "ARP reply",
@@ -402,14 +455,14 @@ TEST(ArpTest, TableUpdates) {
       std::optional<uint8_t>(kNCStrictPriorityQueue));
 
   // Inform the SwSwitch of the ARP request
-  handle->rxPacket(make_unique<IOBuf>(hex), PortID(1), vlanID);
+  handle->rxPacket(make_unique<IOBuf>(hex), PortDescriptor(PortID(1)), vlanID);
   sw->getNeighborUpdater()->waitForPendingUpdates();
 
   // Wait for any updates triggered by the packet to complete.
   waitForStateUpdates(sw);
 
   // Check the new ArpTable contents
-  arpTable = sw->getState()->getVlans()->getVlan(vlanID)->getArpTable();
+  arpTable = this->getArpTable(sw, vlanID, intfID);
   EXPECT_EQ(1, arpTable->size());
   auto entry = arpTable->getEntry(IPAddressV4("10.0.0.15"));
   EXPECT_EQ(MacAddress("00:02:00:01:02:03"), entry->getMac());
@@ -429,7 +482,7 @@ TEST(ArpTest, TableUpdates) {
 
   // Sending the same packet again should generate another response,
   // but not another table update.
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
+  EXPECT_STATE_UPDATE_TIMES(sw, 0);
   EXPECT_OUT_OF_PORT_PKT(
       sw,
       "ARP reply",
@@ -441,7 +494,7 @@ TEST(ArpTest, TableUpdates) {
           vlanID),
       PortID(1),
       std::optional<uint8_t>(kNCStrictPriorityQueue));
-  handle->rxPacket(make_unique<IOBuf>(hex), PortID(1), vlanID);
+  handle->rxPacket(make_unique<IOBuf>(hex), PortDescriptor(PortID(1)), vlanID);
   sw->getNeighborUpdater()->waitForPendingUpdates();
 
   // Check the counters again
@@ -475,9 +528,9 @@ TEST(ArpTest, TableUpdates) {
       // Target IP: 10.0.0.50
       "0a 00 00 32"));
 
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
+  EXPECT_STATE_UPDATE_TIMES(sw, 0);
   EXPECT_HW_CALL(sw, sendPacketSwitchedAsync_(_)).Times(0);
-  handle->rxPacket(std::move(buf), PortID(1), vlanID);
+  handle->rxPacket(std::move(buf), PortDescriptor(PortID(1)), vlanID);
   sw->getNeighborUpdater()->waitForPendingUpdates();
 
   counters.update();
@@ -514,9 +567,9 @@ TEST(ArpTest, TableUpdates) {
 
   // Expect 2+ updates, one for the arp entry update (MAC changed)
   // And then 1 (or 2 depends on coalescing) for Static mac updates
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(testing::AtLeast(2));
+  EXPECT_STATE_UPDATE_TIMES_ATLEAST(sw, 2);
   EXPECT_HW_CALL(sw, sendPacketSwitchedAsync_(_)).Times(0);
-  handle->rxPacket(std::move(buf), PortID(2), vlanID);
+  handle->rxPacket(std::move(buf), PortDescriptor(PortID(2)), vlanID);
   sw->getNeighborUpdater()->waitForPendingUpdates();
   waitForStateUpdates(sw);
 
@@ -531,7 +584,7 @@ TEST(ArpTest, TableUpdates) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.drops.sum", 1);
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.error.sum", 0);
 
-  arpTable = sw->getState()->getVlans()->getVlan(vlanID)->getArpTable();
+  arpTable = this->getArpTable(sw, vlanID, intfID);
   EXPECT_EQ(1, arpTable->size());
   entry = arpTable->getEntry(IPAddressV4("10.0.0.15"));
   EXPECT_EQ(MacAddress("00:02:00:01:02:08"), entry->getMac());
@@ -560,7 +613,7 @@ TEST(ArpTest, TableUpdates) {
 
   // Arp resolution also triggers a static
   // MAC entry creation update
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(2);
+  EXPECT_STATE_UPDATE_TIMES(sw, 2);
   EXPECT_OUT_OF_PORT_PKT(
       sw,
       "ARP reply",
@@ -572,7 +625,7 @@ TEST(ArpTest, TableUpdates) {
           vlanID),
       PortID(1),
       std::optional<uint8_t>(kNCStrictPriorityQueue));
-  handle->rxPacket(std::move(buf), PortID(1), vlanID);
+  handle->rxPacket(std::move(buf), PortDescriptor(PortID(1)), vlanID);
   sw->getNeighborUpdater()->waitForPendingUpdates();
   waitForStateUpdates(sw);
 
@@ -586,7 +639,7 @@ TEST(ArpTest, TableUpdates) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.drops.sum", 0);
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.error.sum", 0);
 
-  arpTable = sw->getState()->getVlans()->getVlan(vlanID)->getArpTable();
+  arpTable = this->getArpTable(sw, vlanID, intfID);
   EXPECT_EQ(2, arpTable->size());
   entry = arpTable->getEntry(IPAddressV4("10.0.0.15"));
   EXPECT_EQ(MacAddress("00:02:00:01:02:08"), entry->getMac());
@@ -619,7 +672,7 @@ TEST(ArpTest, TableUpdates) {
 
   // Arp resolution also triggers a static
   // MAC entry creation update
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(2);
+  EXPECT_STATE_UPDATE_TIMES(sw, 2);
   EXPECT_OUT_OF_PORT_PKT(
       sw,
       "ARP reply",
@@ -631,7 +684,7 @@ TEST(ArpTest, TableUpdates) {
           vlanID),
       PortID(5),
       std::optional<uint8_t>(kNCStrictPriorityQueue));
-  handle->rxPacket(std::move(buf), PortID(5), vlanID);
+  handle->rxPacket(std::move(buf), PortDescriptor(PortID(5)), vlanID);
   sw->getNeighborUpdater()->waitForPendingUpdates();
   waitForStateUpdates(sw);
 
@@ -645,7 +698,7 @@ TEST(ArpTest, TableUpdates) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.drops.sum", 0);
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.error.sum", 0);
 
-  arpTable = sw->getState()->getVlans()->getVlan(vlanID)->getArpTable();
+  arpTable = this->getArpTable(sw, vlanID, intfID);
   EXPECT_EQ(3, arpTable->size());
   entry = arpTable->getEntry(IPAddressV4("10.0.0.15"));
   EXPECT_EQ(MacAddress("00:02:00:01:02:08"), entry->getMac());
@@ -661,7 +714,7 @@ TEST(ArpTest, TableUpdates) {
   EXPECT_EQ(InterfaceID(1), entry->getIntfID());
 }
 
-TEST(ArpTest, NotMine) {
+TYPED_TEST(ArpTest, NotMine) {
   auto handle = setupTestHandle();
   auto sw = handle->getSw();
 
@@ -688,7 +741,7 @@ TEST(ArpTest, NotMine) {
   CounterCache counters(sw);
 
   // Inform the SwSwitch of the ARP request
-  handle->rxPacket(std::move(buf), PortID(1), VlanID(1));
+  handle->rxPacket(std::move(buf), PortDescriptor(PortID(1)), VlanID(1));
   sw->getNeighborUpdater()->waitForPendingUpdates();
 
   // Check the new stats
@@ -700,7 +753,7 @@ TEST(ArpTest, NotMine) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.error.sum", 0);
 }
 
-TEST(ArpTest, BadHlen) {
+TYPED_TEST(ArpTest, BadHlen) {
   auto handle = setupTestHandle();
   auto sw = handle->getSw();
 
@@ -727,7 +780,7 @@ TEST(ArpTest, BadHlen) {
   CounterCache counters(sw);
 
   // Inform the SwSwitch of the ARP request
-  handle->rxPacket(std::move(buf), PortID(1), VlanID(1));
+  handle->rxPacket(std::move(buf), PortDescriptor(PortID(1)), VlanID(1));
   sw->getNeighborUpdater()->waitForPendingUpdates();
 
   // Check the new stats
@@ -772,16 +825,16 @@ void sendArpReply(
   cursor.write<uint32_t>(dstIP.toLong()); // target IP
 
   // Inform the SwSwitch of the ARP request
-  handle->rxPacket(std::move(buf), PortID(port), VlanID(1));
+  handle->rxPacket(std::move(buf), PortDescriptor(PortID(port)), VlanID(1));
   handle->getSw()->getNeighborUpdater()->waitForPendingUpdates();
 }
 
-TEST(ArpTest, FlushEntry) {
+TYPED_TEST(ArpTest, FlushEntry) {
   auto handle = setupTestHandle();
   auto sw = handle->getSw();
 
   // Send ARP replies from several nodes to populate the table
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(testing::AtLeast(1));
+  EXPECT_STATE_UPDATE_TIMES_ATLEAST(sw, 1);
   sendArpReply(handle.get(), "10.0.0.11", "02:10:20:30:40:11", 2);
   sendArpReply(handle.get(), "10.0.0.15", "02:10:20:30:40:15", 3);
   sendArpReply(handle.get(), "10.0.0.7", "02:10:20:30:40:07", 1);
@@ -819,7 +872,7 @@ TEST(ArpTest, FlushEntry) {
 
   // Via the thrift API, flush the ARP entry for 10.0.0.11
   // This in turn will trigger static MAC entry pruning update
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(testing::AtLeast(2));
+  EXPECT_STATE_UPDATE_TIMES_ATLEAST(sw, 2);
   auto binAddr = toBinaryAddress(IPAddressV4("10.0.0.11"));
   auto numFlushed =
       thriftHandler.flushNeighborEntry(make_unique<BinaryAddress>(binAddr), 1);
@@ -843,7 +896,7 @@ TEST(ArpTest, FlushEntry) {
 
   // Calling flushNeighborEntry() with an IP that isn't present in the table
   // should do nothing and return 0
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
+  EXPECT_STATE_UPDATE_TIMES(sw, 0);
   binAddr = toBinaryAddress(IPAddressV4("10.0.0.254"));
   numFlushed =
       thriftHandler.flushNeighborEntry(make_unique<BinaryAddress>(binAddr), 1);
@@ -860,7 +913,16 @@ TEST(ArpTest, FlushEntry) {
       thriftHandler.flushNeighborEntry(std::move(binAddrPtr), 123), FbossError);
 }
 
-TEST(ArpTest, PendingArp) {
+TYPED_TEST(ArpTest, PendingArp) {
+  // Keep test disabled for intf nbr tables because pending neighbor entries are
+  // currently not stored in intfs.
+  // TODO(jeffkim8482) Remove test once intf nbr migration is complete
+  if (this->isIntfNbrTable()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
+  }
+
   auto handle = setupTestHandle();
   auto sw = handle->getSw();
 
@@ -900,7 +962,7 @@ TEST(ArpTest, PendingArp) {
           IPAddressV4("10.0.0.10"),
           vlanID));
 
-  handle->rxPacket(make_unique<IOBuf>(hex), PortID(1), vlanID);
+  handle->rxPacket(make_unique<IOBuf>(hex), PortDescriptor(PortID(1)), vlanID);
   sw->getNeighborUpdater()->waitForPendingUpdates();
 
   // Should see a pending entry now
@@ -924,7 +986,7 @@ TEST(ArpTest, PendingArp) {
 
   // Receiving this duplicate packet should NOT trigger an ARP request out,
 
-  handle->rxPacket(make_unique<IOBuf>(hex), PortID(1), vlanID);
+  handle->rxPacket(make_unique<IOBuf>(hex), PortDescriptor(PortID(1)), vlanID);
   sw->getNeighborUpdater()->waitForPendingUpdates();
 
   // Should still see a pending entry now
@@ -958,7 +1020,7 @@ TEST(ArpTest, PendingArp) {
   // Verify that we don't ever overwrite a valid entry with a pending one.
   // Receive the same packet again, entry should still be valid
 
-  handle->rxPacket(make_unique<IOBuf>(hex), PortID(1), vlanID);
+  handle->rxPacket(make_unique<IOBuf>(hex), PortDescriptor(PortID(1)), vlanID);
   sw->getNeighborUpdater()->waitForPendingUpdates();
   waitForStateUpdates(sw);
   entry = getArpEntry(sw, IPAddressV4("10.0.0.10"), vlanID);
@@ -966,7 +1028,16 @@ TEST(ArpTest, PendingArp) {
   EXPECT_EQ(entry->isPending(), false);
 };
 
-TEST(ArpTest, PendingArpCleanup) {
+TYPED_TEST(ArpTest, PendingArpCleanup) {
+  // Keep test disabled for intf nbr tables because pending neighbor entries are
+  // currently not stored in intfs.
+  // TODO(jeffkim8482) Remove test once intf nbr migration is complete
+  if (this->isIntfNbrTable()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
+  }
+
   auto handle = setupTestHandle(std::chrono::seconds(1));
   auto sw = handle->getSw();
 
@@ -992,7 +1063,7 @@ TEST(ArpTest, PendingArpCleanup) {
 
   std::promise<bool> done;
   auto* evb = sw->getBackgroundEvb();
-  evb->runInEventBaseThread(
+  evb->runInFbossEventBaseThread(
       [&]() { evb->tryRunAfterDelay([&]() { done.set_value(true); }, 1010); });
   done.get_future().wait(); // Entries should be removed
 
@@ -1001,7 +1072,16 @@ TEST(ArpTest, PendingArpCleanup) {
   }
 }
 
-TEST(ArpTest, ArpTableSerialization) {
+TYPED_TEST(ArpTest, ArpTableSerialization) {
+  // Keep test disabled for intf nbr tables because pending neighbor entries are
+  // currently not stored in intfs.
+  // TODO(jeffkim8482) Remove test once intf nbr migration is complete
+  if (this->isIntfNbrTable()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
+  }
+
   auto handle = setupTestHandle();
   auto sw = handle->getSw();
 
@@ -1009,7 +1089,7 @@ TEST(ArpTest, ArpTableSerialization) {
   IPAddressV4 senderIP = IPAddressV4("10.0.0.1");
   IPAddressV4 targetIP = IPAddressV4("10.0.0.2");
 
-  auto vlan = sw->getState()->getVlans()->getVlanIf(vlanID);
+  auto vlan = sw->getState()->getVlans()->getNodeIf(vlanID);
   EXPECT_NE(vlan, nullptr);
   auto arpTable = vlan->getArpTable();
   EXPECT_NE(arpTable, nullptr);
@@ -1018,8 +1098,8 @@ TEST(ArpTest, ArpTableSerialization) {
 
   testSendArpRequest(sw, vlanID, senderIP, targetIP);
 
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
-  vlan = sw->getState()->getVlans()->getVlanIf(vlanID);
+  EXPECT_STATE_UPDATE_TIMES(sw, 0);
+  vlan = sw->getState()->getVlans()->getNodeIf(vlanID);
   EXPECT_NE(vlan, nullptr);
   arpTable = vlan->getArpTable();
   EXPECT_NE(arpTable, nullptr);
@@ -1034,51 +1114,33 @@ TEST(ArpTest, ArpTableSerialization) {
   EXPECT_NE(sw, nullptr);
 }
 
-TEST(ArpTest, ArpExpiration) {
+TYPED_TEST(ArpTest, ArpExpiration) {
+  // Keep test disabled for intf nbr tables because pending neighbor entries are
+  // currently not stored in intfs.
+  // TODO(jeffkim8482) Remove test once intf nbr migration is complete
+  if (this->isIntfNbrTable()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
+  }
+
   auto handle = setupTestHandle(std::chrono::seconds(1));
   auto sw = handle->getSw();
 
   VlanID vlanID(1);
   IPAddressV4 senderIP = IPAddressV4("10.0.0.1");
-  std::array<IPAddressV4, 2> targetIP = {
-      IPAddressV4("10.0.0.2"), IPAddressV4("10.0.0.3")};
-  std::array<MacAddress, 2> targetMAC = {
-      MacAddress("02:10:20:30:40:22"), MacAddress("02:10:20:30:40:23")};
+  IPAddressV4 targetIP = IPAddressV4("10.0.0.2");
+  MacAddress targetMAC = MacAddress("02:10:20:30:40:22");
 
-  for (auto ip : targetIP) {
-    testSendArpRequest(sw, vlanID, senderIP, ip);
-  }
-
-  std::array<std::unique_ptr<WaitForArpEntryReachable>, 2> arpReachables;
-
-  std::transform(
-      targetIP.begin(),
-      targetIP.end(),
-      arpReachables.begin(),
-      [&](const IPAddressV4& ip) {
-        return make_unique<WaitForArpEntryReachable>(sw, ip);
-      });
+  testSendArpRequest(sw, vlanID, senderIP, targetIP);
+  auto arpReachable = std::make_unique<WaitForArpEntryReachable>(sw, targetIP);
 
   // Receive arp replies for our pending entries
-  for (auto tuple : boost::combine(targetIP, targetMAC)) {
-    auto ip = tuple.get<0>();
-    auto mac = tuple.get<1>();
-    sendArpReply(handle.get(), ip.str(), mac.toString(), 1);
-  }
-
-  // Have getAndClearNeighborHit return false for the first entry,
-  // but true for the second. This should result in expiration
-  // for the second entry kicking off first.
-  EXPECT_HW_CALL(sw, getAndClearNeighborHit(_, testing::Eq(targetIP[0])))
-      .WillRepeatedly(testing::Return(false));
-  EXPECT_HW_CALL(sw, getAndClearNeighborHit(_, testing::Eq(targetIP[1])))
-      .WillRepeatedly(testing::Return(true));
+  sendArpReply(handle.get(), targetIP.str(), targetMAC.toString(), 1);
 
   // The entries should now be valid instead of pending
   waitForStateUpdates(sw);
-  for (auto& arpReachable : arpReachables) {
-    EXPECT_TRUE(arpReachable->wait());
-  }
+  EXPECT_TRUE(arpReachable->wait());
 
   // Expect one more probe to be sent out before targetIP[1] is expired
   auto intfs = sw->getState()->getInterfaces();
@@ -1086,65 +1148,31 @@ TEST(ArpTest, ArpExpiration) {
   EXPECT_SWITCHED_PKT(
       sw,
       "ARP request",
-      checkArpRequest(senderIP, intf->getMac(), targetIP[1], vlanID));
+      checkArpRequest(senderIP, intf->getMac(), targetIP, vlanID));
 
   // Wait for the second entry to expire.
   // We wait 2.5 seconds(plus change):
   // Up to 1.5 seconds for lifetime.
   // 1 more second for probe
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(testing::AtLeast(1));
-  std::array<unique_ptr<WaitForArpEntryExpiration>, 2> arpExpirations;
-
-  std::transform(
-      targetIP.begin(),
-      targetIP.end(),
-      arpExpirations.begin(),
-      [&](const IPAddressV4& ip) {
-        return make_unique<WaitForArpEntryExpiration>(sw, ip);
-      });
-
+  auto arpExpiration = make_unique<WaitForArpEntryExpiration>(sw, targetIP);
   std::promise<bool> done;
 
   auto* evb = sw->getBackgroundEvb();
-  evb->runInEventBaseThread(
+  evb->runInFbossEventBaseThread(
       [&]() { evb->tryRunAfterDelay([&]() { done.set_value(true); }, 2550); });
   done.get_future().wait();
 
-  // The first entry should not be expired, but the second should be
-  EXPECT_TRUE(getArpEntry(sw, targetIP[0]) != nullptr);
-  EXPECT_TRUE(arpExpirations[1]->wait());
-
-  auto entry = getArpEntry(sw, targetIP[0], vlanID);
-  EXPECT_NE(entry, nullptr);
-
-  // Now return true for the getAndClearNeighborHit calls on the second entry
-  EXPECT_HW_CALL(sw, getAndClearNeighborHit(_, testing::Eq(targetIP[0])))
-      .WillRepeatedly(testing::Return(true));
-
-  // Expect one more probe to be sent out before targetIP is expired
-  EXPECT_SWITCHED_PKT(
-      sw,
-      "ARP request",
-      checkArpRequest(senderIP, intf->getMac(), targetIP[0], vlanID));
-
-  // Wait for the first entry to expire
-  std::promise<bool> done2;
-  evb->runInEventBaseThread(
-      [&]() { evb->tryRunAfterDelay([&]() { done2.set_value(true); }, 2050); });
-  done2.get_future().wait();
-
-  // First entry should now be expired
-  EXPECT_TRUE(arpExpirations[0]->wait());
+  EXPECT_TRUE(arpExpiration->wait());
 }
 
-TEST(ArpTest, FlushEntryWithConcurrentUpdate) {
+TYPED_TEST(ArpTest, FlushEntryWithConcurrentUpdate) {
   auto handle = setupTestHandle();
   auto sw = handle->getSw();
   ThriftHandler thriftHandler(sw);
 
   PortID portID(1);
   // ensure port is up
-  sw->linkStateChanged(portID, true);
+  sw->linkStateChanged(portID, true, cfg::PortType::INTERFACE_PORT);
 
   VlanID vlanID(1);
   std::vector<IPAddressV4> targetIPs;
@@ -1155,13 +1183,24 @@ TEST(ArpTest, FlushEntryWithConcurrentUpdate) {
   // populate arp entries first before flush
   {
     std::array<std::unique_ptr<WaitForArpEntryReachable>, 255> arpReachables;
-    std::transform(
-        targetIPs.begin(),
-        targetIPs.end(),
-        arpReachables.begin(),
-        [&](const IPAddressV4& ip) {
-          return make_unique<WaitForArpEntryReachable>(sw, ip);
-        });
+    if (this->isIntfNbrTable()) {
+      auto intf = sw->getState()->getInterfaceIDForPort(PortDescriptor(portID));
+      std::transform(
+          targetIPs.begin(),
+          targetIPs.end(),
+          arpReachables.begin(),
+          [&](const IPAddressV4& ip) {
+            return make_unique<WaitForArpEntryReachable>(sw, ip, intf);
+          });
+    } else {
+      std::transform(
+          targetIPs.begin(),
+          targetIPs.end(),
+          arpReachables.begin(),
+          [&](const IPAddressV4& ip) {
+            return make_unique<WaitForArpEntryReachable>(sw, ip);
+          });
+    }
     for (auto& ip : targetIPs) {
       sendArpReply(handle.get(), ip.str(), "02:10:20:30:40:22", portID);
     }
@@ -1177,7 +1216,7 @@ TEST(ArpTest, FlushEntryWithConcurrentUpdate) {
       sendArpReply(
           handle.get(), targetIPs[index].str(), "02:10:20:30:40:22", portID);
       index = (index + 1) % targetIPs.size();
-      usleep(1000);
+      waitForStateUpdates(handle->getSw());
     }
   });
 
@@ -1195,12 +1234,21 @@ TEST(ArpTest, FlushEntryWithConcurrentUpdate) {
   arpReplies.join();
 }
 
-TEST(ArpTest, PortFlapRecover) {
+TYPED_TEST(ArpTest, PortFlapRecover) {
+  // Keep test disabled for intf nbr tables because pending neighbor entries are
+  // currently not stored in intfs.
+  // TODO(jeffkim8482) Remove test once intf nbr migration is complete
+  if (this->isIntfNbrTable()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
+  }
+
   auto handle = setupTestHandle();
   auto sw = handle->getSw();
 
   // ensure port is up
-  sw->linkStateChanged(PortID(1), true);
+  sw->linkStateChanged(PortID(1), true, cfg::PortType::INTERFACE_PORT);
 
   VlanID vlanID(1);
   IPAddressV4 senderIP = IPAddressV4("10.0.0.1");
@@ -1254,8 +1302,8 @@ TEST(ArpTest, PortFlapRecover) {
       });
 
   // send a port down event to the switch for port 1
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(testing::AtLeast(1));
-  sw->linkStateChanged(PortID(1), false);
+  EXPECT_STATE_UPDATE_TIMES_ATLEAST(sw, 1);
+  sw->linkStateChanged(PortID(1), false, cfg::PortType::INTERFACE_PORT);
 
   // purging neighbor entries occurs on the background EVB via NeighorUpdater as
   // a StateObserver.
@@ -1277,8 +1325,8 @@ TEST(ArpTest, PortFlapRecover) {
   EXPECT_EQ(unaffectedEntry->isPending(), false);
 
   // send a port up event to the switch for port 1
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(testing::AtLeast(1));
-  sw->linkStateChanged(PortID(1), true);
+  EXPECT_STATE_UPDATE_TIMES_ATLEAST(sw, 1);
+  sw->linkStateChanged(PortID(1), true, cfg::PortType::INTERFACE_PORT);
   waitForStateUpdates(sw);
 
   // Receive arp replies for entries on flapped port, port 1
@@ -1297,7 +1345,16 @@ TEST(ArpTest, PortFlapRecover) {
   EXPECT_EQ(unaffectedEntry->isPending(), false);
 }
 
-TEST(ArpTest, receivedPacketWithDirectlyConnectedDestination) {
+TYPED_TEST(ArpTest, receivedPacketWithDirectlyConnectedDestination) {
+  // Keep test disabled for intf nbr tables because pending neighbor entries are
+  // currently not stored in intfs.
+  // TODO(jeffkim8482) Remove test once intf nbr migration is complete
+  if (this->isIntfNbrTable()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
+  }
+
   auto handle = setupTestHandle();
   auto sw = handle->getSw();
   VlanID vlanID(1);
@@ -1336,9 +1393,9 @@ TEST(ArpTest, receivedPacketWithDirectlyConnectedDestination) {
           senderIP, MacAddress("00:02:00:00:00:01"), targetIP, vlanID));
   // The state will be updated twice: once to create a pending ARP entry and
   // once to expire the ARP entry
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(2);
+  EXPECT_STATE_UPDATE_TIMES(sw, 2);
 
-  handle->rxPacket(std::move(buf), PortID(1), vlanID);
+  handle->rxPacket(std::move(buf), PortDescriptor(PortID(1)), vlanID);
   sw->getNeighborUpdater()->waitForPendingUpdates();
 
   waitForStateUpdates(sw);
@@ -1358,7 +1415,7 @@ TEST(ArpTest, receivedPacketWithDirectlyConnectedDestination) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "ipv4.no_arp.sum", 0);
 }
 
-TEST(ArpTest, receivedPacketWithNoRouteToDestination) {
+TYPED_TEST(ArpTest, receivedPacketWithNoRouteToDestination) {
   auto handle = setupTestHandle();
   auto sw = handle->getSw();
   VlanID vlanID(1);
@@ -1387,10 +1444,10 @@ TEST(ArpTest, receivedPacketWithNoRouteToDestination) {
 
   // Receiving this packet should not trigger a ARP request out,
   // because no interface is able to reach that subnet
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(0);
+  EXPECT_STATE_UPDATE_TIMES(sw, 0);
   EXPECT_HW_CALL(sw, sendPacketSwitchedAsync_(_)).Times(0);
 
-  handle->rxPacket(std::move(buf), PortID(1), vlanID);
+  handle->rxPacket(std::move(buf), PortDescriptor(PortID(1)), vlanID);
   sw->getNeighborUpdater()->waitForPendingUpdates();
 
   waitForStateUpdates(sw);
@@ -1409,7 +1466,16 @@ TEST(ArpTest, receivedPacketWithNoRouteToDestination) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "ipv4.no_arp.sum", 1);
 }
 
-TEST(ArpTest, receivedPacketWithRouteToDestination) {
+TYPED_TEST(ArpTest, receivedPacketWithRouteToDestination) {
+  // Keep test disabled for intf nbr tables because pending neighbor entries are
+  // currently not stored in intfs.
+  // TODO(jeffkim8482) Remove test once intf nbr migration is complete
+  if (this->isIntfNbrTable()) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
+  }
+
   auto handle = setupTestHandle();
   auto sw = handle->getSw();
   VlanID vlanID(1);
@@ -1451,7 +1517,7 @@ TEST(ArpTest, receivedPacketWithRouteToDestination) {
 
   // Receiving this packet should trigger an ARP request to 10.0.0.22 and
   // 10.0.0.23, which causes pending arp entries to be added to the state.
-  EXPECT_HW_CALL(sw, stateChanged(_)).Times(testing::AtLeast(2));
+  EXPECT_STATE_UPDATE_TIMES_ATLEAST(sw, 2);
   for (auto nexthop : nextHops) {
     EXPECT_SWITCHED_PKT(
         sw,
@@ -1460,7 +1526,7 @@ TEST(ArpTest, receivedPacketWithRouteToDestination) {
             senderIP, MacAddress("00:02:00:00:00:01"), nexthop, vlanID));
   }
 
-  handle->rxPacket(std::move(buf), PortID(1), vlanID);
+  handle->rxPacket(std::move(buf), PortDescriptor(PortID(1)), vlanID);
   sw->getNeighborUpdater()->waitForPendingUpdates();
 
   waitForStateUpdates(sw);

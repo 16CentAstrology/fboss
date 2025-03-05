@@ -1,7 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "fboss/lib/bsp/BspTransceiverContainer.h"
-#include "fboss/lib/bsp/BspPlatformMapping.h"
 #include "fboss/lib/bsp/gen-cpp2/bsp_platform_mapping_types.h"
 
 namespace facebook {
@@ -15,11 +14,15 @@ BspTransceiverContainer::BspTransceiverContainer(
   tcvrAccess_ = std::make_unique<BspTransceiverAccess>(tcvrID_, tcvrMapping);
 }
 
-void BspTransceiverContainer::clearTransceiverReset() const {
-  tcvrAccess_->init(false);
+void BspTransceiverContainer::releaseTransceiverReset() const {
+  tcvrAccess_->releaseReset();
 }
 
-void BspTransceiverContainer::triggerTcvrHardReset() const {
+void BspTransceiverContainer::holdTransceiverReset() const {
+  tcvrAccess_->holdReset();
+}
+
+void BspTransceiverContainer::initTcvr() const {
   tcvrAccess_->init(true);
 }
 
@@ -42,6 +45,19 @@ void BspTransceiverContainer::tcvrWrite(
 const I2cControllerStats BspTransceiverContainer::getI2cControllerStats()
     const {
   return tcvrIO_->getI2cControllerPlatformStats();
+}
+
+void BspTransceiverContainer::i2cTimeProfilingStart() const {
+  tcvrIO_->i2cTimeProfilingStart();
+}
+
+void BspTransceiverContainer::i2cTimeProfilingEnd() const {
+  tcvrIO_->i2cTimeProfilingEnd();
+}
+
+std::pair<uint64_t, uint64_t> BspTransceiverContainer::getI2cTimeProfileMsec()
+    const {
+  return tcvrIO_->getI2cTimeProfileMsec();
 }
 
 } // namespace fboss

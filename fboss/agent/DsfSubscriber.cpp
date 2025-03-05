@@ -1,245 +1,194 @@
 // Copyright 2004-present Facebook. All Rights Reserved.
 
 #include "fboss/agent/DsfSubscriber.h"
+#include "fboss/agent/AgentFeatures.h"
 #include "fboss/agent/SwSwitch.h"
+#include "fboss/agent/SwitchIdScopeResolver.h"
 #include "fboss/agent/Utils.h"
 #include "fboss/agent/state/DsfNode.h"
+#include "fboss/agent/state/InterfaceMap.h"
 #include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SwitchState.h"
-#include "fboss/fsdb/client/FsdbPubSubManager.h"
-#include "fboss/fsdb/common/Flags.h"
-#include "fboss/thrift_cow/nodes/Serializer.h"
+#include "fboss/agent/state/SystemPortMap.h"
 
-#include <memory>
+DEFINE_int64(
+    dsf_subscription_heartbeat_interval_s,
+    2,
+    "Frequency of FSDB server heartbeats");
 
-DEFINE_bool(dsf_subscriber_skip_hw_writes, false, "Skip writing to HW");
-DEFINE_bool(
-    dsf_subscriber_cache_updated_state,
-    false,
-    "Cache switch state after update by dsf subsriber");
+using namespace facebook::fboss;
+namespace {
+
+std::map<folly::IPAddress, folly::IPAddress> getDsfSessionIps(
+    const std::set<folly::CIDRNetwork>& localIpsSorted,
+    const std::set<folly::CIDRNetwork>& loopbackIpsSorted) {
+  auto maxElems = std::min(
+      FLAGS_dsf_num_parallel_sessions_per_remote_interface_node,
+      static_cast<uint32_t>(
+          std::min(localIpsSorted.size(), loopbackIpsSorted.size())));
+
+  // Copy first n elements of loopbackIps
+  std::map<folly::IPAddress, folly::IPAddress> dsfSessionIps;
+  auto sitr = localIpsSorted.begin();
+  auto ditr = loopbackIpsSorted.begin();
+  for (auto i = 0; i < maxElems; ++i) {
+    dsfSessionIps.insert({sitr->first, ditr->first});
+    sitr++;
+    ditr++;
+  }
+  return dsfSessionIps;
+}
+
+std::string makeRemoteEndpoint(
+    const std::string& remoteNode,
+    const folly::IPAddress& remoteIP) {
+  return DsfSubscription::makeRemoteEndpoint(remoteNode, remoteIP);
+}
+} // anonymous namespace
 
 namespace facebook::fboss {
 
 using ThriftMapTypeClass = apache::thrift::type_class::map<
     apache::thrift::type_class::integral,
     apache::thrift::type_class::structure>;
-using SysPortMapThriftType = std::map<int64_t, state::SystemPortFields>;
-using InterfaceMapThriftType = std::map<int32_t, state::InterfaceFields>;
 
-DsfSubscriber::DsfSubscriber(SwSwitch* sw) : sw_(sw) {
-  sw_->registerStateObserver(this, "DSFSubscriber");
+DsfSubscriber::DsfSubscriber(SwSwitch* sw)
+    : sw_(sw),
+      localNodeName_(getLocalHostnameUqdn()),
+      streamConnectPool_(std::make_unique<folly::IOThreadPoolExecutor>(
+          FLAGS_dsf_num_fsdb_connect_threads,
+          std::make_shared<folly::NamedThreadFactory>(
+              "DsfSubscriberStreamConnect"))),
+      streamServePool_(std::make_unique<folly::IOThreadPoolExecutor>(
+          FLAGS_dsf_num_fsdb_stream_threads,
+          std::make_shared<folly::NamedThreadFactory>(
+              "DsfSubscriberStreamServe"))),
+      hwUpdatePool_(std::make_unique<folly::IOThreadPoolExecutor>(
+          1,
+          std::make_shared<folly::NamedThreadFactory>("DsfHwUpdate"))) {
+  // TODO(aeckert): add dedicated config field for localNodeName
+  sw_->registerStateObserver(this, "DsfSubscriber");
+  // Since we want to schedule destruction of DSFSubscription
+  // on the same hwUpdateThreadEvb as was passed to it, kepp
+  // this hwUpdatePool_ size as 1. This should be fine as
+  // hwUpdates are anyways scheduled on a single SwSwitch::update
+  // thread. If we ever need to increase this, then we must take
+  // care to schedule DsfSubscription destruction on the same
+  // evb as was passed to that DSFSubscription object on
+  // construction
+  CHECK_EQ(hwUpdatePool_->numThreads(), 1);
 }
 
 DsfSubscriber::~DsfSubscriber() {
   stop();
 }
 
-void DsfSubscriber::scheduleUpdate(
-    const std::shared_ptr<SystemPortMap>& newSysPorts,
-    const std::shared_ptr<InterfaceMap>& newRifs,
-    const std::string& nodeName,
-    SwitchID nodeSwitchId) {
-  XLOG(DBG2) << " For , switchId: " << static_cast<int64_t>(nodeSwitchId)
-             << " got,"
-             << " updated # of sys ports: "
-             << (newSysPorts ? newSysPorts->size() : 0)
-             << " updated # of rifs: " << (newRifs ? newRifs->size() : 0);
-  sw_->updateState(
-      folly::sformat("Update state for node: {}", nodeName),
-      [this, newSysPorts, newRifs, nodeSwitchId, nodeName](
-          const std::shared_ptr<SwitchState>& in) {
-        if (nodeSwitchId == SwitchID(*in->getSwitchSettings()->getSwitchId())) {
-          throw FbossError(
-              " Got updates for my switch ID, from: ",
-              nodeName,
-              " id: ",
-              nodeSwitchId);
-        }
-        bool changed{false};
-        auto out = in->clone();
-
-        auto makeRemoteSysPort = [&](const auto& node) { return node; };
-        auto makeRemoteRif = [&](const auto& node) {
-          auto clonedNode = node->clone();
-
-          if (node->isPublished()) {
-            clonedNode->setArpTable(node->getArpTable()->toThrift());
-            clonedNode->setNdpTable(node->getNdpTable()->toThrift());
-          }
-
-          // Local neighbor entry on one DSF node is remote neighbor entry on
-          // every other DSF node. Thus, for neighbor entry received from other
-          // DSF nodes, set isLocal = False before programming it.
-          for (const auto& arpEntry : *clonedNode->getArpTable()) {
-            arpEntry.second->setIsLocal(false);
-          }
-          for (const auto& ndpEntry : *clonedNode->getNdpTable()) {
-            ndpEntry.second->setIsLocal(false);
-          }
-
-          return clonedNode;
-        };
-
-        auto processDelta =
-            [&](auto& delta, auto& mapToUpdate, auto& makeRemote) {
-              DeltaFunctions::forEachChanged(
-                  delta,
-                  [&](const auto& oldNode, const auto& newNode) {
-                    if (*oldNode != *newNode) {
-                      // Compare contents as we reconstructed
-                      // map from deserialized FSDB
-                      // subscriptions. So can't just rely on
-                      // pointer comparison here.
-                      auto clonedNode = makeRemote(newNode);
-                      mapToUpdate->updateNode(clonedNode);
-                      changed = true;
-                    }
-                  },
-                  [&](const auto& newNode) {
-                    auto clonedNode = makeRemote(newNode);
-                    mapToUpdate->addNode(clonedNode);
-                    changed = true;
-                  },
-                  [&](const auto& rmNode) {
-                    mapToUpdate->removeNode(rmNode);
-                    changed = true;
-                  });
-            };
-
-        if (newSysPorts) {
-          auto origSysPorts = out->getSystemPorts(nodeSwitchId);
-          thrift_cow::ThriftMapDelta<SystemPortMap> delta(
-              origSysPorts.get(), newSysPorts.get());
-          auto remoteSysPorts = out->getRemoteSystemPorts()->modify(&out);
-          processDelta(delta, remoteSysPorts, makeRemoteSysPort);
-        }
-        if (newRifs) {
-          auto origRifs = out->getInterfaces(nodeSwitchId);
-          InterfaceMapDelta delta(origRifs.get(), newRifs.get());
-          auto remoteRifs = out->getRemoteInterfaces()->modify(&out);
-          processDelta(delta, remoteRifs, makeRemoteRif);
-        }
-        if (FLAGS_dsf_subscriber_cache_updated_state) {
-          cachedState_ = out;
-        }
-        if (changed && !FLAGS_dsf_subscriber_skip_hw_writes) {
-          return out;
-        }
-        return std::shared_ptr<SwitchState>{};
-      });
+bool DsfSubscriber::isLocal(SwitchID nodeSwitchId) const {
+  auto localSwitchIds = sw_->getSwitchInfoTable().getSwitchIDs();
+  return localSwitchIds.find(nodeSwitchId) != localSwitchIds.end();
 }
 
 void DsfSubscriber::stateUpdated(const StateDelta& stateDelta) {
-  const auto& oldSwitchSettings = stateDelta.oldState()->getSwitchSettings();
-  const auto& newSwitchSettings = stateDelta.newState()->getSwitchSettings();
-  if (newSwitchSettings->getSwitchType() == cfg::SwitchType::VOQ) {
-    if (!fsdbPubSubMgr_) {
-      fsdbPubSubMgr_ = std::make_unique<fsdb::FsdbPubSubManager>(
-          folly::sformat("{}:agent", getLocalHostname()));
-    }
-  } else {
-    fsdbPubSubMgr_.reset();
-    if (oldSwitchSettings->getSwitchType() == cfg::SwitchType::VOQ) {
-      XLOG(FATAL)
-          << " Transition from VOQ to non-VOQ swtich type is not supported";
-    }
+  if (!FLAGS_dsf_subscribe) {
+    return;
+  }
+
+  // Setup Fsdb subscriber if we have switch ids of type VOQ
+  auto voqSwitchIds =
+      sw_->getSwitchInfoTable().getSwitchIdsOfType(cfg::SwitchType::VOQ);
+  if (!voqSwitchIds.size()) {
     // No processing needed on non VOQ switches
     return;
   }
-  auto mySwitchId = newSwitchSettings->getSwitchId();
-
-  auto isLocal = [mySwitchId](const std::shared_ptr<DsfNode>& node) {
-    CHECK(mySwitchId) << " Dsf node config requires local switch ID to be set";
-    return SwitchID(*mySwitchId) == node->getSwitchId();
-  };
+  // Should never get here if we don't have voq switch Ids
+  CHECK(voqSwitchIds.size());
   auto isInterfaceNode = [](const std::shared_ptr<DsfNode>& node) {
     return node->getType() == cfg::DsfNodeType::INTERFACE_NODE;
   };
-  auto getLoopbackIp = [](const std::shared_ptr<DsfNode>& node) {
-    auto network = folly::IPAddress::createNetwork(
-        (*node->getLoopbackIps()->cbegin())->toThrift(),
-        -1 /*default CIDR*/,
-        false /*apply mask*/);
-    return network.first.str();
-  };
-
-  auto getServerOptions = [mySwitchId, getLoopbackIp](
-                              const std::shared_ptr<DsfNode>& node,
-                              const auto& state) {
-    auto selfDsfNode = state->getDsfNodes()->getNodeIf(*mySwitchId);
-    CHECK(selfDsfNode);
-    CHECK(selfDsfNode->getLoopbackIpsSorted().size() != 0);
-
-    // Subscribe to FSDB of DSF node in the cluster with:
-    //  dstIP = inband IP of that DSF node
-    //  dstPort = FSDB port
-    //  srcIP = self inband IP
-    auto serverOptions = fsdb::FsdbStreamClient::ServerOptions(
-        getLoopbackIp(node),
-        FLAGS_fsdbPort,
-        (*selfDsfNode->getLoopbackIpsSorted().begin()).first.str());
-
-    return serverOptions;
-  };
-
+  auto getLocalIps =
+      [&voqSwitchIds](const std::shared_ptr<SwitchState>& state) {
+        for (const auto& switchId : voqSwitchIds) {
+          auto localDsfNode = state->getDsfNodes()->getNodeIf(switchId);
+          CHECK(localDsfNode);
+          if (localDsfNode->getLoopbackIpsSorted().size()) {
+            return localDsfNode->getLoopbackIpsSorted();
+          }
+        }
+        throw FbossError("Could not find loopback IP for any local VOQ switch");
+      };
   auto addDsfNode = [&](const std::shared_ptr<DsfNode>& node) {
     // No need to setup subscriptions to (local) yourself
     // Only IN nodes have control plane, so ignore non IN DSF nodes
-    if (isLocal(node) || !isInterfaceNode(node)) {
+    if (isLocal(node->getSwitchId()) || !isInterfaceNode(node)) {
       return;
     }
     auto nodeName = node->getName();
     auto nodeSwitchId = node->getSwitchId();
-    XLOG(DBG2) << " Setting up DSF subscriptions to : " << nodeName;
-    fsdbPubSubMgr_->addStatePathSubscription(
-        {getSystemPortsPath(), getInterfacesPath()},
-        [nodeName](auto /*oldState*/, auto newState) {
-          XLOG(DBG2) << (newState == fsdb::FsdbStreamClient::State::CONNECTED
-                             ? "Connected to:"
-                             : "Disconnected from: ")
-                     << nodeName;
-        },
-        [this, nodeName, nodeSwitchId](fsdb::OperSubPathUnit&& operStateUnit) {
-          std::shared_ptr<SystemPortMap> newSysPorts;
-          std::shared_ptr<InterfaceMap> newRifs;
-          for (const auto& change : *operStateUnit.changes()) {
-            if (change.path()->path() == getSystemPortsPath()) {
-              XLOG(DBG2) << " Got sys port update from : " << nodeName;
-              newSysPorts = std::make_shared<SystemPortMap>();
-              newSysPorts->fromThrift(
-                  thrift_cow::
-                      deserialize<ThriftMapTypeClass, SysPortMapThriftType>(
-                          fsdb::OperProtocol::BINARY,
-                          *change.state()->contents()));
-            } else if (change.path()->path() == getInterfacesPath()) {
-              XLOG(DBG2) << " Got rif update from : " << nodeName;
-              newRifs = std::make_shared<InterfaceMap>();
-              newRifs->fromThrift(
-                  thrift_cow::
-                      deserialize<ThriftMapTypeClass, InterfaceMapThriftType>(
-                          fsdb::OperProtocol::BINARY,
-                          *change.state()->contents()));
-            } else {
-              throw FbossError(
-                  " Got unexpected state update for : ",
-                  folly::join("/", *change.path()->path()),
-                  " from node: ",
-                  nodeName);
-            }
-          }
-          scheduleUpdate(newSysPorts, newRifs, nodeName, nodeSwitchId);
-        },
-        getServerOptions(node, stateDelta.newState()));
+
+    auto localIps = getLocalIps(stateDelta.newState());
+    for (const auto& [srcIPAddr, dstIPAddr] :
+         getDsfSessionIps(localIps, node->getLoopbackIpsSorted())) {
+      auto dstIP = dstIPAddr.str();
+      auto srcIP = srcIPAddr.str();
+      XLOG(DBG2) << "Setting up DSF subscriptions to:: " << nodeName
+                 << " dstIP: " << dstIP << " from: " << localNodeName_
+                 << " srcIP: " << srcIP;
+
+      auto remoteEndpoint = makeRemoteEndpoint(nodeName, dstIPAddr);
+
+      fsdb::SubscriptionOptions opts{
+          folly::sformat("{}_{}:agent", localNodeName_, dstIPAddr.str()),
+          false /* subscribeStats */,
+          FLAGS_dsf_gr_hold_time,
+          true /* requireInitialSyncToMarkConnect */,
+          true /* forceSubscribe */,
+          FLAGS_dsf_subscription_heartbeat_interval_s /* heartbeatInterval */};
+      auto subscriptionsWlock = subscriptions_.wlock();
+      if (subscriptionsWlock->find(remoteEndpoint) !=
+          subscriptionsWlock->end()) {
+        // Session already exists. This maybe a node with multiple
+        // VOQ switch ASICs (e.g. MTIA)
+        continue;
+      }
+      subscriptionsWlock->emplace(
+          remoteEndpoint,
+          std::make_unique<DsfSubscription>(
+              std::move(opts),
+              streamConnectPool_->getEventBase(),
+              streamServePool_->getEventBase(),
+              hwUpdatePool_->getEventBase(),
+              localNodeName_,
+              nodeName,
+              getAllSwitchIDsForSwitch(
+                  sw_->getState()->getDsfNodes(), nodeSwitchId),
+              srcIPAddr,
+              dstIPAddr,
+              sw_));
+    }
   };
   auto rmDsfNode = [&](const std::shared_ptr<DsfNode>& node) {
     // No need to setup subscriptions to (local) yourself
     // Only IN nodes have control plane, so ignore non IN DSF nodes
-    if (isLocal(node) || !isInterfaceNode(node)) {
+    if (isLocal(node->getSwitchId()) || !isInterfaceNode(node)) {
       return;
     }
-    XLOG(DBG2) << " Removing DSF subscriptions to : " << node->getName();
-    fsdbPubSubMgr_->removeStatePathSubscription(
-        {getSystemPortsPath(), getInterfacesPath()}, getLoopbackIp(node));
+    auto nodeName = node->getName();
+
+    auto localIps = getLocalIps(stateDelta.oldState());
+    for (const auto& [srcIPAddr, dstIPAddr] :
+         getDsfSessionIps(localIps, node->getLoopbackIpsSorted())) {
+      auto dstIP = dstIPAddr.str();
+      XLOG(DBG2) << "Removing DSF subscriptions to:: " << nodeName
+                 << " dstIP: " << dstIP;
+
+      auto subscriptionsWlock = subscriptions_.wlock();
+      auto itr =
+          subscriptionsWlock->find(makeRemoteEndpoint(nodeName, dstIPAddr));
+      if (itr != subscriptionsWlock->end()) {
+        destroySubscription(std::move(itr->second));
+        subscriptionsWlock->erase(itr);
+      }
+    }
   };
   DeltaFunctions::forEachChanged(
       stateDelta.getDsfNodesDelta(),
@@ -251,9 +200,48 @@ void DsfSubscriber::stateUpdated(const StateDelta& stateDelta) {
       rmDsfNode);
 }
 
+void DsfSubscriber::destroySubscription(
+    std::unique_ptr<DsfSubscription> subscription) {
+  subscription->stop();
+  // Since DSFSubscription schedules updates on hwUpdateEvb
+  // ensure that we always destroy it on that thread. Otherwise
+  // any already scheduled updates could have dangling references.
+  // Note that we don't make this synchronous (runInEventBaseThreadAndWaitWait)
+  // as that can lead to a deadlock.
+  // DsfSubscription schedules update on hwUpdateEvb, which in turn waits
+  // on SwSwitch::updateThread (for transactional updates).
+  // SwSwitch::updateThread gets a state update (say due to config change)
+  // where we remove a subscription. A synchronous wait here would then cause
+  // SwSwitch::updataThread to wait on hwUpdateEvb. Which would result in
+  // a deadlock.
+  hwUpdatePool_->getEventBase()->runInEventBaseThread(
+      [subscription = std::move(subscription)]() mutable {
+        subscription.reset();
+      });
+}
+
 void DsfSubscriber::stop() {
+  if (stopped_) {
+    return;
+  }
   sw_->unregisterStateObserver(this);
-  fsdbPubSubMgr_.reset();
+  // make sure all subscribers are stopped before thread cleanup
+  auto subscriptionsWlock = subscriptions_.wlock();
+  for (auto& [_, subscription] : *subscriptionsWlock) {
+    destroySubscription(std::move(subscription));
+  }
+  subscriptionsWlock->clear();
+  stopped_ = true;
+}
+
+std::vector<DsfSessionThrift> DsfSubscriber::getDsfSessionsThrift() const {
+  auto lockedSubscriptions = subscriptions_.rlock();
+  std::vector<DsfSessionThrift> thriftSessions;
+  thriftSessions.reserve(lockedSubscriptions->size());
+  for (const auto& [_, subscription] : *lockedSubscriptions) {
+    thriftSessions.emplace_back(subscription->dsfSessionThrift());
+  }
+  return thriftSessions;
 }
 
 } // namespace facebook::fboss

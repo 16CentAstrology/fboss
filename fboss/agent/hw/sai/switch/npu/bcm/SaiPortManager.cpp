@@ -85,8 +85,35 @@ bool SaiPortManager::checkPortSerdesAttributes(
           fromStore)) &&
       (!iDriver.has_value() ||
        iDriver ==
-           std::get<std::optional<std::decay_t<decltype(
-               SaiPortSerdesTraits::Attributes::IDriver{})>>>(fromStore)));
+           std::get<std::optional<std::decay_t<
+               decltype(SaiPortSerdesTraits::Attributes::IDriver{})>>>(
+               fromStore)));
+}
+
+std::shared_ptr<SaiPort> SaiPortManager::createPortWithBasicAttributes(
+    const std::shared_ptr<Port>& swPort) {
+  // Only below 7 basic port attributes from create_port() will always be
+  // honored during flexport per CS00012328771. Other attributes might be reset
+  // when the next new flexed port associated with the same PM core is created.
+  // FBOSS need to re-program all non-basic attributes after flexport is done.
+  // SAI_PORT_ATTR_TYPE
+  // SAI_PORT_ATTR_HW_LANE_LIST
+  // SAI_PORT_ATTR_SPEED
+  // SAI_PORT_ATTR_ADMIN_STATE
+  // SAI_PORT_ATTR_FEC_MODE
+  // SAI_PORT_ATTR_LOOPBACK_MODE
+  // SAI_PORT_ATTR_LINK_TRAINING_ENABLE
+  auto portId = swPort->getID();
+  XLOG(DBG2) << "add new port " << portId << " with basic attribtues only";
+  SaiPortTraits::CreateAttributes attributes =
+      attributesFromSwPort(swPort, false, true);
+  SaiPortTraits::AdapterHostKey portKey{
+#if defined(BRCM_SAI_SDK_DNX)
+      GET_ATTR(Port, Type, attributes),
+#endif
+      GET_ATTR(Port, HwLaneList, attributes)};
+  auto& portStore = saiStore_->get<SaiPortTraits>();
+  return portStore.setObject(portKey, attributes, portId);
 }
 
 void SaiPortManager::changePortByRecreate(
@@ -100,11 +127,6 @@ void SaiPortManager::changePortByRecreate(
           *(newPort->getProfileConfig().fec()))) {
     // To change to a different VCO, we need to remove all the ports in the
     // Port Macro and re-create the removed ports with the new speed.
-    auto portHandle = getPortHandle(newPort->getID());
-    // disable port
-    SaiPortTraits::Attributes::AdminState adminDisable{false};
-    SaiApiTable::getInstance()->portApi().setAttribute(
-        portHandle->port->adapterKey(), adminDisable);
     removePort(oldPort);
     pendingNewPorts_[newPort->getID()] = newPort;
     bool allPortsInGroupRemoved = true;
@@ -128,9 +150,22 @@ void SaiPortManager::changePortByRecreate(
       }
       XLOG(DBG2)
           << "All old ports in the same group removed, add new ports back";
+      std::map<PortID, std::shared_ptr<SaiPort>> portsWithBasicAttributes;
       for (auto portId : ports) {
         if (pendingNewPorts_.find(portId) != pendingNewPorts_.end()) {
-          XLOG(DBG2) << "add new port " << portId;
+          portsWithBasicAttributes[portId] =
+              createPortWithBasicAttributes(pendingNewPorts_[portId]);
+        }
+      }
+      for (auto portId : ports) {
+        if (pendingNewPorts_.find(portId) != pendingNewPorts_.end()) {
+          if (portsWithBasicAttributes.find(portId) ==
+              portsWithBasicAttributes.end()) {
+            throw FbossError(
+                "sai port object with basic attribtues not created yet for port",
+                portId);
+          }
+          XLOG(DBG2) << "update new port " << portId << " with all attributes";
           addPort(pendingNewPorts_[portId]);
           pendingNewPorts_.erase(portId);
           // port should already be enabled

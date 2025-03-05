@@ -14,6 +14,8 @@ class Tomahawk5Asic : public BroadcomXgsAsic {
   cfg::AsicType getAsicType() const override {
     return cfg::AsicType::ASIC_TYPE_TOMAHAWK5;
   }
+  const std::map<cfg::PortType, cfg::PortLoopbackMode>& desiredLoopbackModes()
+      const override;
   phy::DataPlanePhyChipType getDataPlanePhyChipType() const override {
     return phy::DataPlanePhyChipType::IPHY;
   }
@@ -26,23 +28,29 @@ class Tomahawk5Asic : public BroadcomXgsAsic {
   cfg::PortSpeed getMaxPortSpeed() const override {
     return cfg::PortSpeed::EIGHTHUNDREDG;
   }
-  int getDefaultNumPortQueues(cfg::StreamType streamType, bool cpu)
-      const override;
+  int getDefaultNumPortQueues(
+      cfg::StreamType streamType,
+      cfg::PortType portType) const override;
   uint32_t getMaxLabelStackDepth() const override {
     return 9;
   }
   uint64_t getMMUSizeBytes() const override {
     return 2 * 341080 * 254;
   }
+  uint64_t getSramSizeBytes() const override {
+    // No HBM!
+    return getMMUSizeBytes();
+  }
   uint32_t getMMUCellSize() const {
     return 254;
   }
-  uint64_t getDefaultReservedBytes(cfg::StreamType /*streamType*/, bool cpu)
-      const override {
+  std::optional<uint64_t> getDefaultReservedBytes(
+      cfg::StreamType /*streamType*/,
+      cfg::PortType portType) const override {
     /* TODO: Mimicking TH3 size here*/
-    return cpu ? 1778 : 0;
+    return portType == cfg::PortType::CPU_PORT ? 1778 : 0;
   }
-  cfg::MMUScalingFactor getDefaultScalingFactor(
+  std::optional<cfg::MMUScalingFactor> getDefaultScalingFactor(
       cfg::StreamType /*streamType*/,
       bool /*cpu*/) const override {
     /* TODO: Mimicking TH3 size here*/
@@ -53,8 +61,7 @@ class Tomahawk5Asic : public BroadcomXgsAsic {
     return 341;
   }
   uint16_t getMirrorTruncateSize() const override {
-    // TODO: update numbers if necessary
-    return 254;
+    return 204;
   }
 
   uint32_t getMaxWideEcmpSize() const override {
@@ -80,6 +87,17 @@ class Tomahawk5Asic : public BroadcomXgsAsic {
   uint32_t getMaxEcmpSize() const override {
     // TODO: update numbers if necessary
     return 4096;
+  }
+  std::optional<uint32_t> getMaxEcmpGroups() const override {
+    return 4096;
+  }
+  std::optional<uint32_t> getMaxEcmpMembers() const override {
+    // CS00012330051
+    return 32000;
+  }
+  std::optional<uint32_t> getMaxDlbEcmpGroups() const override {
+    // TODO: old TH4 number, update if necessary
+    return 128;
   }
   uint32_t getStaticQueueLimitBytes() const override {
     // TODO: update numbers if necessary

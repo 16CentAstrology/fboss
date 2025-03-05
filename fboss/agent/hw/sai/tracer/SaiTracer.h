@@ -27,6 +27,23 @@
 
 extern "C" {
 #include <sai.h>
+
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+#include <saiextensions.h>
+#ifndef IS_OSS_BRCM_SAI
+#include <experimental/saiexperimentaltameventaginggroup.h>
+#else
+#include <saiexperimentaltameventaginggroup.h>
+#endif
+#endif
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+#include <saiextensions.h>
+#ifndef IS_OSS_BRCM_SAI
+#include <experimental/saiexperimentalvendorswitch.h>
+#else
+#include <saiexperimentalvendorswitch.h>
+#endif
+#endif
 }
 
 DECLARE_bool(enable_replayer);
@@ -37,8 +54,12 @@ DECLARE_bool(enable_get_attr_log);
 using PrimitiveFunction = std::string (*)(const sai_attribute_t*, int);
 using AttributeFunction =
     void (*)(const sai_attribute_t*, int, std::vector<std::string>&);
-using ListFunction =
-    void (*)(const sai_attribute_t*, int, uint32_t, std::vector<std::string>&);
+using ListFunction = void (*)(
+    const sai_attribute_t*,
+    int,
+    uint32_t,
+    std::vector<std::string>&,
+    bool);
 
 #define TYPE_INDEX(type) std::type_index(typeid(type)).hash_code()
 
@@ -134,12 +155,18 @@ class SaiTracer {
       const sai_attribute_t* attr,
       sai_status_t rv);
 
+  void logAttrPreGet(
+      uint32_t attr_count,
+      const sai_attribute_t* attr,
+      sai_object_type_t object_type);
+
   void logGetAttrFn(
       const std::string& fn_name,
       sai_object_id_t get_object_id,
       uint32_t attr_count,
       const sai_attribute_t* attr,
-      sai_object_type_t object_type);
+      sai_object_type_t object_type,
+      sai_status_t rv);
 
   void logSetAttrFn(
       const std::string& fn_name,
@@ -199,6 +226,10 @@ class SaiTracer {
       std::optional<std::string> varName = std::nullopt);
 
   sai_acl_api_t* aclApi_;
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+  sai_ars_api_t* arsApi_;
+  sai_ars_profile_api_t* arsProfileApi_;
+#endif
   sai_bridge_api_t* bridgeApi_;
   sai_buffer_api_t* bufferApi_;
   sai_counter_api_t* counterApi_;
@@ -223,7 +254,14 @@ class SaiTracer {
   sai_switch_api_t* switchApi_;
   sai_system_port_api_t* systemPortApi_;
   sai_tam_api_t* tamApi_;
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+  sai_tam_event_aging_group_api_t* tamEventAgingGroupApi_;
+#endif
   sai_tunnel_api_t* tunnelApi_;
+  sai_udf_api_t* udfApi_;
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+  sai_vendor_switch_api_t* vendorSwitchApi_;
+#endif
   sai_virtual_router_api_t* virtualRouterApi_;
   sai_vlan_api_t* vlanApi_;
   sai_wred_api_t* wredApi_;
@@ -242,42 +280,51 @@ class SaiTracer {
       {TYPE_INDEX(sai_uint64_t), &u64Attr},
   };
 
-  std::unordered_map<std::size_t, AttributeFunction> attributeFuncMap_ {
-    {TYPE_INDEX(sai_u32_range_t), &u32RangeAttr},
-        {TYPE_INDEX(sai_s32_range_t), &s32RangeAttr},
-        {TYPE_INDEX(folly::MacAddress), &macAddressAttr},
-        {TYPE_INDEX(folly::IPAddress), &ipAttr},
-        /* Acl Entry attributes */
-        {TYPE_INDEX(AclEntryFieldSaiObjectIdT), &aclEntryFieldSaiObjectIdAttr},
-        {TYPE_INDEX(AclEntryFieldIpV6), &aclEntryFieldIpV6Attr},
-        {TYPE_INDEX(AclEntryFieldIpV4), &aclEntryFieldIpV4Attr},
-        {TYPE_INDEX(AclEntryActionSaiObjectIdT),
-         &aclEntryActionSaiObjectIdAttr},
-        {TYPE_INDEX(AclEntryFieldU32), &aclEntryFieldU32Attr},
-        {TYPE_INDEX(AclEntryActionU32), &aclEntryActionU32Attr},
-        {TYPE_INDEX(AclEntryFieldU16), &aclEntryFieldU16Attr},
-        {TYPE_INDEX(AclEntryFieldU8), &aclEntryFieldU8Attr},
-        {TYPE_INDEX(AclEntryActionU8), &aclEntryActionU8Attr},
-        {TYPE_INDEX(AclEntryFieldMac), &aclEntryFieldMacAttr},
-        // System port
-        {TYPE_INDEX(sai_system_port_config_t), &systemPortConfigAttr},
+  std::unordered_map<std::size_t, AttributeFunction> attributeFuncMap_{
+      {TYPE_INDEX(sai_u32_range_t), &u32RangeAttr},
+      {TYPE_INDEX(sai_s32_range_t), &s32RangeAttr},
+      {TYPE_INDEX(folly::MacAddress), &macAddressAttr},
+      {TYPE_INDEX(folly::IPAddress), &ipAttr},
+      /* Acl Entry attributes */
+      {TYPE_INDEX(AclEntryFieldSaiObjectIdT), &aclEntryFieldSaiObjectIdAttr},
+      {TYPE_INDEX(AclEntryFieldIpV6), &aclEntryFieldIpV6Attr},
+      {TYPE_INDEX(AclEntryFieldIpV4), &aclEntryFieldIpV4Attr},
+      {TYPE_INDEX(AclEntryActionSaiObjectIdT), &aclEntryActionSaiObjectIdAttr},
+      {TYPE_INDEX(AclEntryFieldU32), &aclEntryFieldU32Attr},
+      {TYPE_INDEX(AclEntryActionU32), &aclEntryActionU32Attr},
+      {TYPE_INDEX(AclEntryFieldU16), &aclEntryFieldU16Attr},
+      {TYPE_INDEX(AclEntryFieldU8), &aclEntryFieldU8Attr},
+      {TYPE_INDEX(AclEntryActionU8), &aclEntryActionU8Attr},
+      {TYPE_INDEX(AclEntryFieldMac), &aclEntryFieldMacAttr},
+      // System port
+      {TYPE_INDEX(sai_system_port_config_t), &systemPortConfigAttr},
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
-        {TYPE_INDEX(sai_latch_status_t), &latchStatusAttr},
+      {TYPE_INDEX(sai_latch_status_t), &latchStatusAttr},
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 8, 1)
+      {TYPE_INDEX(sai_prbs_rx_state_t), &prbsRxStateAttr},
 #endif
   };
 
-  std::unordered_map<std::size_t, ListFunction> listFuncMap_ {
-    {TYPE_INDEX(std::vector<sai_object_id_t>), &oidListAttr},
-        {TYPE_INDEX(std::vector<sai_uint32_t>), &u32ListAttr},
-        {TYPE_INDEX(std::vector<sai_int32_t>), &s32ListAttr},
-        {TYPE_INDEX(std::vector<sai_qos_map_t>), &qosMapListAttr},
-        {TYPE_INDEX(AclEntryActionSaiObjectIdList),
-         &aclEntryActionSaiObjectIdListAttr},
-        {TYPE_INDEX(std::vector<sai_system_port_config_t>),
-         &systemPortConfigListAttr},
+  std::unordered_map<std::size_t, ListFunction> listFuncMap_{
+      {TYPE_INDEX(std::vector<sai_object_id_t>), &oidListAttr},
+      {TYPE_INDEX(std::vector<sai_uint32_t>), &u32ListAttr},
+      {TYPE_INDEX(std::vector<sai_int32_t>), &s32ListAttr},
+      {TYPE_INDEX(std::vector<sai_qos_map_t>), &qosMapListAttr},
+      {TYPE_INDEX(std::vector<sai_map_t>), &mapListAttr},
+      {TYPE_INDEX(AclEntryActionSaiObjectIdList),
+       &aclEntryActionSaiObjectIdListAttr},
+      {TYPE_INDEX(std::vector<sai_system_port_config_t>),
+       &systemPortConfigListAttr},
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
-        {TYPE_INDEX(std::vector<sai_port_lane_latch_status_t>),
-         &portLaneLatchStatusListAttr},
+      {TYPE_INDEX(std::vector<sai_port_lane_latch_status_t>),
+       &portLaneLatchStatusListAttr},
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 13, 0)
+      {TYPE_INDEX(std::vector<sai_port_frequency_offset_ppm_values_t>),
+       &portFrequencyOffsetPpmListAttr},
+      {TYPE_INDEX(std::vector<sai_port_snr_values_t>), &portSnrListAttr},
+      {TYPE_INDEX(AclEntryFieldU8List), &aclEntryFieldU8ListAttr},
 #endif
   };
 
@@ -286,7 +333,8 @@ class SaiTracer {
   std::vector<std::string> setAttrList(
       const sai_attribute_t* attr_list,
       uint32_t attr_count,
-      sai_object_type_t object_type);
+      sai_object_type_t object_type,
+      sai_status_t rv = 0);
 
   std::string createFnCall(
       const std::string& fn_name,
@@ -338,12 +386,17 @@ class SaiTracer {
   // variables_ map from object id to its variable name
   std::map<sai_object_id_t, std::string> variables_;
 
+  // clang-format off
   std::map<sai_object_type_t, std::string> varNames_{
       {SAI_OBJECT_TYPE_ACL_COUNTER, "aclCounter_"},
       {SAI_OBJECT_TYPE_ACL_ENTRY, "aclEntry_"},
       {SAI_OBJECT_TYPE_ACL_TABLE, "aclTable_"},
       {SAI_OBJECT_TYPE_ACL_TABLE_GROUP, "aclTableGroup_"},
       {SAI_OBJECT_TYPE_ACL_TABLE_GROUP_MEMBER, "aclTableGroupMember_"},
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+      {SAI_OBJECT_TYPE_ARS, "ars_"},
+      {SAI_OBJECT_TYPE_ARS_PROFILE, "arsProfile_"},
+#endif
       {SAI_OBJECT_TYPE_BRIDGE, "bridge_"},
       {SAI_OBJECT_TYPE_BRIDGE_PORT, "bridgePort_"},
       {SAI_OBJECT_TYPE_BUFFER_POOL, "bufferPool_"},
@@ -353,6 +406,7 @@ class SaiTracer {
       {SAI_OBJECT_TYPE_HASH, "hash_"},
       {SAI_OBJECT_TYPE_HOSTIF, "hostif_"},
       {SAI_OBJECT_TYPE_HOSTIF_TRAP, "hostifTrap_"},
+      {SAI_OBJECT_TYPE_HOSTIF_USER_DEFINED_TRAP, "hostifUserDefinedTrap_"},
       {SAI_OBJECT_TYPE_HOSTIF_TRAP_GROUP, "hostifTrapGroup_"},
       {SAI_OBJECT_TYPE_INGRESS_PRIORITY_GROUP, "ingressPriorityGroup_"},
       {SAI_OBJECT_TYPE_LAG, "lag_"},
@@ -378,13 +432,24 @@ class SaiTracer {
       {SAI_OBJECT_TYPE_SCHEDULER_GROUP, "schedulerGroup_"},
       {SAI_OBJECT_TYPE_SWITCH, "switch_"},
       {SAI_OBJECT_TYPE_SYSTEM_PORT, "systemPort_"},
+      {SAI_OBJECT_TYPE_TAM_COLLECTOR, "tamCollector_"},
+      {SAI_OBJECT_TYPE_TAM_TRANSPORT, "tamTransport_"},
       {SAI_OBJECT_TYPE_TAM_REPORT, "tamReport_"},
       {SAI_OBJECT_TYPE_TAM_EVENT_ACTION, "tamEventAction_"},
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+      {static_cast<sai_object_type_t>(SAI_OBJECT_TYPE_TAM_EVENT_AGING_GROUP),
+          "tamEventAgingGroup_"},
+#endif
       {SAI_OBJECT_TYPE_TAM_EVENT, "tamEvent_"},
       {SAI_OBJECT_TYPE_TAM, "tam_"},
       {SAI_OBJECT_TYPE_TUNNEL, "tunnel_"},
       {SAI_OBJECT_TYPE_TUNNEL_TERM_TABLE_ENTRY, "tunnelTerm_"},
+      {SAI_OBJECT_TYPE_UDF, "udf_"},
+      {SAI_OBJECT_TYPE_UDF_MATCH, "udfMatch_"},
       {SAI_OBJECT_TYPE_UDF_GROUP, "udfGroup_"},
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+      {static_cast<sai_object_type_t>(SAI_OBJECT_TYPE_VENDOR_SWITCH), "vendorSwitch_"},
+#endif
       {SAI_OBJECT_TYPE_VIRTUAL_ROUTER, "virtualRouter_"},
       {SAI_OBJECT_TYPE_VLAN, "vlan_"},
       {SAI_OBJECT_TYPE_VLAN_MEMBER, "vlanMember_"},
@@ -397,6 +462,10 @@ class SaiTracer {
       {SAI_OBJECT_TYPE_ACL_TABLE, "acl_api->"},
       {SAI_OBJECT_TYPE_ACL_TABLE_GROUP, "acl_api->"},
       {SAI_OBJECT_TYPE_ACL_TABLE_GROUP_MEMBER, "acl_api->"},
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+      {SAI_OBJECT_TYPE_ARS, "ars_api->"},
+      {SAI_OBJECT_TYPE_ARS_PROFILE, "ars_profile_api->"},
+#endif
       {SAI_OBJECT_TYPE_BRIDGE, "bridge_api->"},
       {SAI_OBJECT_TYPE_BRIDGE_PORT, "bridge_api->"},
       {SAI_OBJECT_TYPE_BUFFER_POOL, "buffer_api->"},
@@ -407,6 +476,7 @@ class SaiTracer {
       {SAI_OBJECT_TYPE_HASH, "hash_api->"},
       {SAI_OBJECT_TYPE_HOSTIF, "hostif_api->"},
       {SAI_OBJECT_TYPE_HOSTIF_TRAP, "hostif_api->"},
+      {SAI_OBJECT_TYPE_HOSTIF_USER_DEFINED_TRAP, "hostif_api->"},
       {SAI_OBJECT_TYPE_HOSTIF_TRAP_GROUP, "hostif_api->"},
       {SAI_OBJECT_TYPE_INGRESS_PRIORITY_GROUP, "buffer_api->"},
       {SAI_OBJECT_TYPE_LAG, "lag_api->"},
@@ -434,16 +504,30 @@ class SaiTracer {
       {SAI_OBJECT_TYPE_SCHEDULER_GROUP, "scheduler_group_api->"},
       {SAI_OBJECT_TYPE_SWITCH, "switch_api->"},
       {SAI_OBJECT_TYPE_SYSTEM_PORT, "system_port_api->"},
+      {SAI_OBJECT_TYPE_TAM_COLLECTOR, "tam_api->"},
+      {SAI_OBJECT_TYPE_TAM_TRANSPORT, "tam_api->"},
       {SAI_OBJECT_TYPE_TAM_REPORT, "tam_api->"},
       {SAI_OBJECT_TYPE_TAM_EVENT_ACTION, "tam_api->"},
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+      {static_cast<sai_object_type_t>(SAI_OBJECT_TYPE_TAM_EVENT_AGING_GROUP),
+          "tam_event_aging_group_api->"},
+#endif
       {SAI_OBJECT_TYPE_TAM_EVENT, "tam_api->"},
       {SAI_OBJECT_TYPE_TAM, "tam_api->"},
       {SAI_OBJECT_TYPE_TUNNEL, "tunnel_api->"},
       {SAI_OBJECT_TYPE_TUNNEL_TERM_TABLE_ENTRY, "tunnel_api->"},
+      {SAI_OBJECT_TYPE_UDF, "udf_api->"},
+      {SAI_OBJECT_TYPE_UDF_MATCH, "udf_api->"},
+      {SAI_OBJECT_TYPE_UDF_GROUP, "udf_api->"},
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+      {static_cast<sai_object_type_t>(SAI_OBJECT_TYPE_VENDOR_SWITCH),
+          "vendor_switch_api->"},
+#endif
       {SAI_OBJECT_TYPE_VIRTUAL_ROUTER, "virtual_router_api->"},
       {SAI_OBJECT_TYPE_VLAN, "vlan_api->"},
       {SAI_OBJECT_TYPE_VLAN_MEMBER, "vlan_api->"},
       {SAI_OBJECT_TYPE_WRED, "wred_api->"}};
+  // clang-format on
 
   const char* cpp_header_ =
       "/*\n"
@@ -505,6 +589,10 @@ class SaiTracer {
       "  else if (rv != 0) printf(\"Non 0 rv at %d with status %d\\n\", count, rv);\n"
       "}\n"
       "\n"
+      "inline void attrCheck(sai_attribute_t *expected, sai_attribute_t *actual, int count) {\n"
+      "  if (memcmp((void*)expected, (void*)actual, ATTR_SIZE * 1024)) printf(\"Diff in GET attribute %d\\n\", count);\n"
+      "}\n"
+      "\n"
       "sai_object_id_t assignObject(sai_object_key_t* object_list, int object_count, int i, sai_object_id_t default_id) {\n"
       "  if (i < object_count) {\n"
       "    return object_list[i].key.object_id;\n"
@@ -523,7 +611,8 @@ class SaiTracer {
   void set##obj_type##Attributes(                \
       const sai_attribute_t* attr_list,          \
       uint32_t attr_count,                       \
-      std::vector<std::string>& attrLines);
+      std::vector<std::string>& attrLines,       \
+      sai_status_t rv);
 
 #define WRAP_CREATE_FUNC(obj_type, sai_obj_type, api_type)                 \
   sai_status_t wrap_create_##obj_type(                                     \
@@ -583,7 +672,9 @@ class SaiTracer {
       sai_object_id_t obj_type##_id,                                         \
       uint32_t attr_count,                                                   \
       sai_attribute_t* attr_list) {                                          \
-    if (FLAGS_enable_get_attr_log) {                                         \
+    if (FLAGS_enable_replayer && FLAGS_enable_get_attr_log) {                \
+      SaiTracer::getInstance()->logAttrPreGet(                               \
+          attr_count, attr_list, sai_obj_type);                              \
       auto begin = FLAGS_enable_elapsed_time_log                             \
           ? std::chrono::system_clock::now()                                 \
           : std::chrono::system_clock::time_point::min();                    \
@@ -595,13 +686,34 @@ class SaiTracer {
           obj_type##_id,                                                     \
           attr_count,                                                        \
           attr_list,                                                         \
-          sai_obj_type);                                                     \
+          sai_obj_type,                                                      \
+          rv);                                                               \
       SaiTracer::getInstance()->logPostInvocation(rv, obj_type##_id, begin); \
       return rv;                                                             \
     }                                                                        \
     return SaiTracer::getInstance()                                          \
         ->api_type##Api_->get_##obj_type##_attribute(                        \
             obj_type##_id, attr_count, attr_list);                           \
+  }
+
+#define WRAP_BULK_GET_ATTR_FUNC(obj_type, sai_obj_type, api_type)              \
+  sai_status_t wrap_get_##obj_type##s_attribute(                               \
+      uint32_t object_count,                                                   \
+      const sai_object_id_t* object_id,                                        \
+      const uint32_t* attr_count,                                              \
+      sai_attribute_t** attr_list,                                             \
+      sai_bulk_op_error_mode_t mode,                                           \
+      sai_status_t* object_statuses) {                                         \
+    auto rv =                                                                  \
+        SaiTracer::getInstance()->api_type##Api_->get_##obj_type##s_attribute( \
+            object_count,                                                      \
+            object_id,                                                         \
+            attr_count,                                                        \
+            attr_list,                                                         \
+            mode,                                                              \
+            object_statuses);                                                  \
+    /* TODO add logBulkGetAttrFn */                                            \
+    return rv;                                                                 \
   }
 
 #define WRAP_BULK_SET_ATTR_FUNC(obj_type, sai_obj_type, api_type)              \
@@ -627,48 +739,69 @@ class SaiTracer {
     return rv;                                                                 \
   }
 
-#define WRAP_GET_STATS_FUNC(obj_type, sai_obj_type, api_type)             \
-  sai_status_t wrap_get_##obj_type##_stats(                               \
-      sai_object_id_t obj_type##_id,                                      \
-      uint32_t num_of_counters,                                           \
-      const sai_stat_id_t* counter_ids,                                   \
-      uint64_t* counters) {                                               \
-    auto rv =                                                             \
-        SaiTracer::getInstance()->api_type##Api_->get_##obj_type##_stats( \
-            obj_type##_id, num_of_counters, counter_ids, counters);       \
-                                                                          \
-    SaiTracer::getInstance()->logGetStatsFn(                              \
-        "get_" #obj_type "_stats",                                        \
-        obj_type##_id,                                                    \
-        num_of_counters,                                                  \
-        counter_ids,                                                      \
-        counters,                                                         \
-        sai_obj_type,                                                     \
-        rv);                                                              \
-    return rv;                                                            \
+#define WRAP_GET_STATS_FUNC(obj_type, sai_obj_type, api_type)                \
+  sai_status_t wrap_get_##obj_type##_stats(                                  \
+      sai_object_id_t obj_type##_id,                                         \
+      uint32_t num_of_counters,                                              \
+      const sai_stat_id_t* counter_ids,                                      \
+      uint64_t* counters) {                                                  \
+    if (FLAGS_enable_replayer && FLAGS_enable_get_attr_log) {                \
+      auto begin = FLAGS_enable_elapsed_time_log                             \
+          ? std::chrono::system_clock::now()                                 \
+          : std::chrono::system_clock::time_point::min();                    \
+      auto rv =                                                              \
+          SaiTracer::getInstance()->api_type##Api_->get_##obj_type##_stats(  \
+              obj_type##_id, num_of_counters, counter_ids, counters);        \
+                                                                             \
+      SaiTracer::getInstance()->logGetStatsFn(                               \
+          "get_" #obj_type "_stats",                                         \
+          obj_type##_id,                                                     \
+          num_of_counters,                                                   \
+          counter_ids,                                                       \
+          counters,                                                          \
+          sai_obj_type,                                                      \
+          rv);                                                               \
+      SaiTracer::getInstance()->logPostInvocation(rv, obj_type##_id, begin); \
+      return rv;                                                             \
+    }                                                                        \
+    return SaiTracer::getInstance()->api_type##Api_->get_##obj_type##_stats( \
+        obj_type##_id, num_of_counters, counter_ids, counters);              \
   }
 
-#define WRAP_GET_STATS_EXT_FUNC(obj_type, sai_obj_type, api_type)             \
-  sai_status_t wrap_get_##obj_type##_stats_ext(                               \
-      sai_object_id_t obj_type##_id,                                          \
-      uint32_t num_of_counters,                                               \
-      const sai_stat_id_t* counter_ids,                                       \
-      sai_stats_mode_t mode,                                                  \
-      uint64_t* counters) {                                                   \
-    auto rv =                                                                 \
-        SaiTracer::getInstance()->api_type##Api_->get_##obj_type##_stats_ext( \
-            obj_type##_id, num_of_counters, counter_ids, mode, counters);     \
-                                                                              \
-    SaiTracer::getInstance()->logGetStatsFn(                                  \
-        "get_" #obj_type "_stats_ext",                                        \
-        obj_type##_id,                                                        \
-        num_of_counters,                                                      \
-        counter_ids,                                                          \
-        counters,                                                             \
-        sai_obj_type,                                                         \
-        rv,                                                                   \
-        mode);                                                                \
-    return rv;                                                                \
+#define WRAP_GET_STATS_EXT_FUNC(obj_type, sai_obj_type, api_type)            \
+  sai_status_t wrap_get_##obj_type##_stats_ext(                              \
+      sai_object_id_t obj_type##_id,                                         \
+      uint32_t num_of_counters,                                              \
+      const sai_stat_id_t* counter_ids,                                      \
+      sai_stats_mode_t mode,                                                 \
+      uint64_t* counters) {                                                  \
+    if (FLAGS_enable_replayer && FLAGS_enable_get_attr_log) {                \
+      auto begin = FLAGS_enable_elapsed_time_log                             \
+          ? std::chrono::system_clock::now()                                 \
+          : std::chrono::system_clock::time_point::min();                    \
+      auto rv = SaiTracer::getInstance()                                     \
+                    ->api_type##Api_->get_##obj_type##_stats_ext(            \
+                        obj_type##_id,                                       \
+                        num_of_counters,                                     \
+                        counter_ids,                                         \
+                        mode,                                                \
+                        counters);                                           \
+                                                                             \
+      SaiTracer::getInstance()->logGetStatsFn(                               \
+          "get_" #obj_type "_stats_ext",                                     \
+          obj_type##_id,                                                     \
+          num_of_counters,                                                   \
+          counter_ids,                                                       \
+          counters,                                                          \
+          sai_obj_type,                                                      \
+          rv,                                                                \
+          mode);                                                             \
+      SaiTracer::getInstance()->logPostInvocation(rv, obj_type##_id, begin); \
+      return rv;                                                             \
+    }                                                                        \
+    return SaiTracer::getInstance()                                          \
+        ->api_type##Api_->get_##obj_type##_stats_ext(                        \
+            obj_type##_id, num_of_counters, counter_ids, mode, counters);    \
   }
 
 #define WRAP_CLEAR_STATS_FUNC(obj_type, sai_obj_type, api_type)             \
@@ -712,11 +845,25 @@ class SaiTracer {
                            attr_name::ExtractSelectionType));               \
   }
 
+#define SAI_EXT_ATTR_MAP_2(obj_type, obj_sub_type, attr_name)                 \
+  if (facebook::fboss::Sai##obj_sub_type##Traits::Attributes::attr_name::     \
+          AttributeId()()                                                     \
+              .has_value()) {                                                 \
+    _##obj_type##Map[facebook::fboss::Sai##obj_sub_type##Traits::Attributes:: \
+                         attr_name::AttributeId()()                           \
+                             .value()] =                                      \
+        std::make_pair(                                                       \
+            #attr_name,                                                       \
+            TYPE_INDEX(facebook::fboss::Sai##obj_sub_type##Traits::           \
+                           Attributes::attr_name::ExtractSelectionType));     \
+  }
+
 #define SET_SAI_REGULAR_ATTRIBUTES(obj_type)                                 \
   void set##obj_type##Attributes(                                            \
       const sai_attribute_t* attr_list,                                      \
       uint32_t attr_count,                                                   \
-      std::vector<std::string>& attrLines) {                                 \
+      std::vector<std::string>& attrLines,                                   \
+      sai_status_t rv) {                                                     \
     uint32_t listCount = 0;                                                  \
                                                                              \
     for (int i = 0; i < attr_count; ++i) {                                   \
@@ -742,7 +889,13 @@ class SaiTracer {
         auto listFuncMatch =                                                 \
             SaiTracer::getInstance()->listFuncMap_.find(typeIndex);          \
         if (listFuncMatch != SaiTracer::getInstance()->listFuncMap_.end()) { \
-          (*listFuncMatch->second)(attr_list, i, listCount++, attrLines);    \
+          (*listFuncMatch->second)(                                          \
+              attr_list, i, listCount, attrLines, rv == 0);                  \
+          if (typeIndex == TYPE_INDEX(AclEntryFieldU8List)) {                \
+            listCount += 2;                                                  \
+          } else {                                                           \
+            listCount++;                                                     \
+          }                                                                  \
           continue;                                                          \
         }                                                                    \
       }
@@ -782,6 +935,7 @@ class SaiTracer {
           i,                                                                 \
           attrLines,                                                         \
           "macsecsalt");                                                     \
+      break;                                                                 \
     default:                                                                 \
       XLOG(WARN) << "Unsupported object type " << #obj_type << " attribute " \
                  << attr_list[i].id << " in Sai Replayer";                   \
@@ -822,6 +976,7 @@ class SaiTracer {
           i,                                                                 \
           attrLines,                                                         \
           "macsecsalt");                                                     \
+      break;                                                                 \
     default:                                                                 \
       XLOG(WARN) << "Unsupported object type " << #obj_type << " attribute " \
                  << attr_list[i].id << " in Sai Replayer";                   \

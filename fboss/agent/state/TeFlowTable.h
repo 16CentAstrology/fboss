@@ -4,6 +4,7 @@
 
 #include <string>
 
+#include "fboss/agent/HwSwitchMatcher.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/NodeMap.h"
 #include "fboss/agent/state/TeFlowEntry.h"
@@ -37,6 +38,9 @@ using TeFlowTableThriftTraits = ThriftMapNodeTraits<
 class TeFlowTable : public ThriftMapNode<TeFlowTable, TeFlowTableThriftTraits> {
  public:
   using Base = ThriftMapNode<TeFlowTable, TeFlowTableThriftTraits>;
+  using Traits = TeFlowTableThriftTraits;
+  using Base::modify;
+
   TeFlowTable();
   ~TeFlowTable() override;
 
@@ -48,20 +52,73 @@ class TeFlowTable : public ThriftMapNode<TeFlowTable, TeFlowTableThriftTraits> {
     return getNodeIf(getTeFlowStr(id));
   }
 
-  TeFlowTable* addTeFlowEntry(
-      std::shared_ptr<SwitchState>* state,
-      const FlowEntry& entry);
-  TeFlowTable* removeTeFlowEntry(
-      std::shared_ptr<SwitchState>* state,
-      const TeFlow& id);
-  TeFlowTable* modify(std::shared_ptr<SwitchState>* state);
-  static bool isNexthopResolved(
-      NextHopThrift nexthop,
-      std::shared_ptr<SwitchState> state);
+  void addTeFlowEntry(const std::shared_ptr<TeFlowEntry>& teFlowEntry);
+  void changeTeFlowEntry(const std::shared_ptr<TeFlowEntry>& teFlowEntry);
+  void removeTeFlowEntry(const TeFlow& id);
 
  private:
   // Inherit the constructors required for clone()
   using Base::Base;
   friend class CloneAllocator;
 };
+
+class TeFlowSyncer {
+ public:
+  std::shared_ptr<SwitchState> programFlowEntries(
+      const HwSwitchMatcher& matcher,
+      const std::shared_ptr<SwitchState>& state,
+      const std::vector<FlowEntry>& addTeFlows,
+      const std::vector<TeFlow>& delTeFlows,
+      bool isSync);
+
+ private:
+  int getDstIpPrefixLength(const std::shared_ptr<SwitchState>& state);
+  void validateFlowEntry(
+      const FlowEntry& flowEntry,
+      const int& dstIpPrefixLength);
+  std::shared_ptr<SwitchState> addDelTeFlows(
+      const HwSwitchMatcher& matcher,
+      const std::shared_ptr<SwitchState>& state,
+      const std::vector<FlowEntry>& entriesToAdd,
+      const std::vector<TeFlow>& entriesToDel);
+  std::shared_ptr<SwitchState> syncTeFlows(
+      const HwSwitchMatcher& matcher,
+      const std::shared_ptr<SwitchState>& state,
+      const std::vector<FlowEntry>& flowEntries);
+};
+
+using MultiTeFlowTableTypeClass = apache::thrift::type_class::
+    map<apache::thrift::type_class::string, TeFlowTableTypeClass>;
+using MultiTeFlowTableThriftType = std::map<std::string, TeFlowTableThriftType>;
+
+class MultiTeFlowTable;
+
+using MultiTeFlowTableTraits = ThriftMultiSwitchMapNodeTraits<
+    MultiTeFlowTable,
+    MultiTeFlowTableTypeClass,
+    MultiTeFlowTableThriftType,
+    TeFlowTable>;
+
+class HwSwitchMatcher;
+
+class MultiTeFlowTable : public ThriftMultiSwitchMapNode<
+                             MultiTeFlowTable,
+                             MultiTeFlowTableTraits> {
+ public:
+  using Traits = MultiTeFlowTableTraits;
+  using BaseT =
+      ThriftMultiSwitchMapNode<MultiTeFlowTable, MultiTeFlowTableTraits>;
+  using BaseT::modify;
+
+  MultiTeFlowTable() = default;
+  virtual ~MultiTeFlowTable() = default;
+
+  MultiTeFlowTable* modify(std::shared_ptr<SwitchState>* state);
+
+ private:
+  // Inherit the constructors required for clone()
+  using BaseT::BaseT;
+  friend class CloneAllocator;
+};
+
 } // namespace facebook::fboss

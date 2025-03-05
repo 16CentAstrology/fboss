@@ -16,9 +16,9 @@
 
 #include "common/fb303/cpp/FacebookBase2.h"
 #include "fboss/agent/FbossError.h"
+#include "fboss/agent/FbossEventBase.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/if/gen-cpp2/FbossCtrl.h"
-#include "fboss/agent/if/gen-cpp2/NeighborListenerClient.h"
 #include "fboss/agent/types.h"
 #include "fboss/lib/phy/gen-cpp2/phy_types.h"
 #include "fboss/lib/phy/gen-cpp2/prbs_types.h"
@@ -29,8 +29,6 @@
 #include <thrift/lib/cpp2/async/DuplexChannel.h>
 #include <thrift/lib/cpp2/server/ThriftServer.h>
 
-DECLARE_bool(disable_duplex);
-
 namespace facebook::fboss {
 
 class AggregatePort;
@@ -39,19 +37,18 @@ class SwSwitch;
 class Vlan;
 class SwitchState;
 class AclEntry;
-struct LinkNeighbor;
+class LinkNeighbor;
 
 class ThriftHandler : virtual public FbossCtrlSvIf,
-                      public fb303::FacebookBase2,
-                      public apache::thrift::server::TServerEventHandler {
+                      public fb303::FacebookBase2 {
  public:
   template <typename T>
-  using ThriftCallback = std::unique_ptr<apache::thrift::HandlerCallback<T>>;
+  using ThriftCallback = apache::thrift::HandlerCallbackPtr<T>;
   using TConnectionContext = apache::thrift::server::TConnectionContext;
 
   typedef network::thrift::Address Address;
   typedef network::thrift::BinaryAddress BinaryAddress;
-  typedef folly::EventBase EventBase;
+  typedef FbossEventBase EventBase;
   typedef std::vector<Address> Addresses;
   typedef std::vector<BinaryAddress> BinaryAddresses;
 
@@ -133,18 +130,14 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
     return sw_;
   }
 
-  void sendPkt(
-      int32_t port,
-      int32_t vlan,
-      std::unique_ptr<folly::fbstring> data) override;
-  void sendPktHex(
-      int32_t port,
-      int32_t vlan,
-      std::unique_ptr<folly::fbstring> hex) override;
+  void sendPkt(int32_t port, int32_t vlan, std::unique_ptr<fbstring> data)
+      override;
+  void sendPktHex(int32_t port, int32_t vlan, std::unique_ptr<fbstring> hex)
+      override;
 
-  void txPkt(int32_t port, std::unique_ptr<folly::fbstring> data) override;
-  void txPktL2(std::unique_ptr<folly::fbstring> data) override;
-  void txPktL3(std::unique_ptr<folly::fbstring> payload) override;
+  void txPkt(int32_t port, std::unique_ptr<fbstring> data) override;
+  void txPktL2(std::unique_ptr<fbstring> data) override;
+  void txPktL3(std::unique_ptr<fbstring> payload) override;
 
   int32_t flushNeighborEntry(std::unique_ptr<BinaryAddress> ip, int32_t vlan)
       override;
@@ -180,6 +173,7 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
       std::map<int32_t, PortStatus>& status,
       std::unique_ptr<std::vector<int32_t>> ports) override;
   void setPortState(int32_t portId, bool enable) override;
+  void setPortDrainState(int32_t portId, bool drain) override;
   void setPortLoopbackMode(int32_t portId, PortLoopbackMode mode) override;
   void getAllPortLoopbackMode(
       std::map<int32_t, PortLoopbackMode>& port2LbMode) override;
@@ -219,6 +213,10 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
   void clearInterfacePrbsStats(
       std::unique_ptr<std::string> portName,
       phy::PortComponent component) override;
+  void setInterfaceTxRx(
+      std::vector<phy::TxRxEnableResponse>& txRxEnableResponse,
+      std::unique_ptr<std::vector<phy::TxRxEnableRequest>> txRxEnableRequests)
+      override;
   void getInterfaceDetail(
       InterfaceDetail& interfaceDetails,
       int32_t interfaceId) override;
@@ -232,6 +230,7 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
   void getArpTable(std::vector<ArpEntryThrift>& arpTable) override;
   void getL2Table(std::vector<L2EntryThrift>& l2Table) override;
   void getAclTable(std::vector<AclEntryThrift>& AclTable) override;
+  void getAclTableGroup(AclTableThrift& aclTableEntry) override;
   void getAggregatePort(
       AggregatePortThrift& aggregatePortThrift,
       int32_t aggregatePortIDThrift) override;
@@ -280,20 +279,32 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
       std::map<std::string, std::int64_t>& routeCounters) override;
 
   void getTeFlowTableDetails(std::vector<TeFlowDetails>& flowTable) override;
+  void getFabricConnectivity(
+      std::map<std::string, FabricEndpoint>& connectivity) override;
   void getFabricReachability(
       std::map<std::string, FabricEndpoint>& reachability) override;
+  void getSwitchReachability(
+      std::map<std::string, std::vector<std::string>>& reachabilityMatrix,
+      std::unique_ptr<std::vector<std::string>> switchNames) override;
   void getDsfNodes(std::map<int64_t, cfg::DsfNode>& dsfNodes) override;
+  void getDsfSubscriptions(
+      std::vector<FsdbSubscriptionThrift>& subscriptions) override;
+  void getDsfSubscriptionClientId(std::string& ret) override;
+  void getDsfSessions(std::vector<DsfSessionThrift>& dsfSessions) override;
   void getSystemPorts(std::map<int64_t, SystemPortThrift>& sysPorts) override;
-  /*
-   * Event handler for when a connection is destroyed.  When there is an ongoing
-   * duplex connection, there may be other threads that depend on the connection
-   * state.
-   *
-   * @param[in]   ctx   A pointer to the connection context that is being
-   *                    destroyed.
-   */
-  void connectionDestroyed(
-      apache::thrift::server::TConnectionContext* ctx) override;
+  void getSysPortStats(
+      std::map<std::string, HwSysPortStats>& hwSysPortStats) override;
+  void getCpuPortStats(CpuPortStats& hwCpuPortStats) override;
+  void getAllCpuPortStats(std::map<int, CpuPortStats>& hwCpuPortStats) override;
+  void getHwPortStats(std::map<std::string, HwPortStats>& hwPortStats) override;
+  void getFabricReachabilityStats(
+      FabricReachabilityStats& fabricReachabilityStats) override;
+  void getAllEcmpDetails(std::vector<EcmpDetails>& ecmpDetails) override;
+  void getHwAgentConnectionStatus(
+      std::map<int16_t, HwAgentEventSyncStatus>& hwAgentSyncStatusMap) override;
+  void getSwitchIndicesForInterfaces(
+      std::map<int16_t, std::vector<std::string>>& switchIndicesForInterfaces,
+      std::unique_ptr<std::vector<std::string>> interfaces) override;
 
   /*
    * Thrift handler for keepalive messages.  It's a no-op, but prevents the
@@ -355,13 +366,20 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
   void getCurrentStateJSON(std::string& ret, std::unique_ptr<std::string> path)
       override;
 
-  /**
-   * Patch live running switch state at path pointed by jsonPointer using the
-   * JSON merge patch supplied in jsonPatch
+  /*
+   * Get live serialized switch state for provided paths
    */
-  void patchCurrentStateJSON(
-      std::unique_ptr<std::string> jsonPointer,
-      std::unique_ptr<std::string> jsonPatch) override;
+  void getCurrentStateJSONForPaths(
+      std::map<std::string, std::string>& pathToState,
+      std::unique_ptr<std::vector<std::string>> paths) override;
+
+  /*
+   * Apply every json Patch to specified path.
+   * json Patch must be a valid JSON object string.
+   */
+  void patchCurrentStateJSONForPaths(
+      std::unique_ptr<std::map<std::string, std::string>> pathToJsonPatch)
+      override;
 
   SwitchRunState getSwitchRunState() override;
 
@@ -398,6 +416,12 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
   void getInterfacePhyInfo(
       std::map<std::string, phy::PhyInfo>& phyInfos,
       std::unique_ptr<std::vector<std::string>> portNames) override;
+  void getAllInterfacePhyInfo(
+      std::map<std::string, phy::PhyInfo>& phyInfos) override;
+  bool isSwitchDrained() override;
+  void getActualSwitchDrainState(std::map<int64_t, cfg::SwitchDrainState>&
+                                     switchId2ActualSwitchDrainState) override;
+  void getMultiSwitchRunState(MultiSwitchRunState& runState) override;
 
  protected:
   void addMplsRoutesImpl(
@@ -414,9 +438,6 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
   void getPortStatusImpl(
       std::map<int32_t, PortStatus>& statusMap,
       const std::unique_ptr<std::vector<int32_t>>& ports) const;
-  void addTeFlowsImpl(
-      std::shared_ptr<SwitchState>* state,
-      const std::vector<FlowEntry>& teFlowEntries) const;
 
   void ensureConfigured(folly::StringPiece function) const;
   void ensureConfigured() const {
@@ -427,20 +448,7 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
  private:
   void ensureNPU(folly::StringPiece function) const;
   void ensureNotFabric(folly::StringPiece function) const;
-  struct ThreadLocalListener {
-    EventBase* eventBase;
-    std::unordered_map<
-        const apache::thrift::server::TConnectionContext*,
-        std::shared_ptr<NeighborListenerClientAsyncClient>>
-        clients;
-
-    explicit ThreadLocalListener(EventBase* eb) : eventBase(eb){};
-  };
-  folly::ThreadLocalPtr<ThreadLocalListener, int> listeners_;
-  void invokeNeighborListeners(
-      ThreadLocalListener* info,
-      std::vector<std::string> added,
-      std::vector<std::string> deleted);
+  void ensureVoqOrFabric(folly::StringPiece function) const;
   void updateUnicastRoutesImpl(
       int32_t vrf,
       int16_t client,
@@ -466,10 +474,15 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
     FbossError error(folly::exceptionStr(ex));
     callback->exception(error);
   }
-  bool isNpuSwitch() const;
-  bool isFabricSwitch() const;
-  bool isVoqSwitch() const;
-  bool isSwitchType(cfg::SwitchType switchType) const;
+  template <typename AddressT, typename NeighborThriftT>
+  void addRemoteNeighbors(
+      const std::shared_ptr<SwitchState> state,
+      std::vector<NeighborThriftT>& nbrs) const;
+
+  std::string getCurrentStateJSONForPath(const std::string& path) const;
+
+  void getSwitchIdToSwitchInfo(
+      std::map<int64_t, cfg::SwitchInfo>& switchIdToSwitchInfo) override;
 
   /*
    * A pointer to the SwSwitch.  We don't own this.

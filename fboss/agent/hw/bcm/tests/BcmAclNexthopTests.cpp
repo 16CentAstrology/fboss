@@ -19,7 +19,6 @@
 #include "fboss/agent/hw/bcm/tests/BcmTest.h"
 #include "fboss/agent/hw/bcm/tests/BcmTestUtils.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
-#include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SwitchState.h"
 
 extern "C" {
@@ -36,6 +35,9 @@ using folly::IPAddress;
 namespace {
 constexpr auto kAclName = "acl0";
 const RouterID kRid(0);
+HwSwitchMatcher scope() {
+  return HwSwitchMatcher{std::unordered_set<SwitchID>{SwitchID(0)}};
+}
 } // namespace
 
 namespace facebook::fboss {
@@ -79,8 +81,8 @@ class BcmAclNexthopTest : public BcmTest {
 
   void updateAcl(std::string name, RouteNextHopSet nexthops) {
     auto newState = getProgrammedState()->clone();
-    auto origAclEntry = newState->getAcls()->getEntry(name);
-    auto newAclEntry = origAclEntry->modify(&newState);
+    auto origAclEntry = newState->getAcls()->getNodeIf(name);
+    auto newAclEntry = origAclEntry->modify(&newState, scope());
     // THRIFT_COPY
     MatchAction action =
         MatchAction::fromThrift(newAclEntry->getAclAction()->toThrift());
@@ -153,7 +155,7 @@ TEST_F(BcmAclNexthopTest, AddAclWithRedirect) {
   };
 
   auto verify = [=]() {
-    const auto& acl = getProgrammedState()->getAcls()->getEntry(kAclName);
+    const auto& acl = getProgrammedState()->getAcls()->getNodeIf(kAclName);
     verifyAclEntryProgramming(acl, nexthops);
   };
 
@@ -170,7 +172,7 @@ TEST_F(BcmAclNexthopTest, NoResolvedNexthops) {
   };
 
   auto verify = [=]() {
-    const auto& acl = getProgrammedState()->getAcls()->getEntry(kAclName);
+    const auto& acl = getProgrammedState()->getAcls()->getNodeIf(kAclName);
     verifyAclEntryProgramming(acl, nexthops);
   };
 
@@ -203,7 +205,7 @@ TEST_F(BcmAclNexthopTest, AddAclWithRedirectV6) {
     updateAcl(kAclName, nexthops);
   };
   auto verify = [=]() {
-    const auto& acl = getProgrammedState()->getAcls()->getEntry(kAclName);
+    const auto& acl = getProgrammedState()->getAcls()->getNodeIf(kAclName);
     verifyAclEntryProgramming(acl, nexthops);
   };
   verifyAcrossWarmBoots(setup, verify);
@@ -219,7 +221,7 @@ TEST_F(BcmAclNexthopTest, NoResolvedNexthopsV6) {
   };
 
   auto verify = [=]() {
-    const auto& acl = getProgrammedState()->getAcls()->getEntry(kAclName);
+    const auto& acl = getProgrammedState()->getAcls()->getNodeIf(kAclName);
     verifyAclEntryProgramming(acl, nexthops);
   };
 

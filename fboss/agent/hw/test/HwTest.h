@@ -14,20 +14,21 @@
 #include <utility>
 
 #include <folly/Range.h>
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 
 #include "fboss/agent/Constants.h"
 #include "fboss/agent/GtestDefs.h"
 #include "fboss/agent/HwSwitch.h"
 #include "fboss/agent/L2Entry.h"
+#include "fboss/agent/SwitchIdScopeResolver.h"
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_types.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/hw/test/HwSwitchEnsemble.h"
 #include "fboss/agent/hw/test/HwSwitchEnsembleRouteUpdateWrapper.h"
-#include "fboss/agent/hw/test/HwTestConstants.h"
-#include "fboss/agent/hw/test/HwTestStatUtils.h"
 #include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SwitchState.h"
+#include "fboss/agent/test/utils/AgentHwTestConstants.h"
+#include "fboss/agent/test/utils/PortStatsTestUtils.h"
 #include "fboss/agent/types.h"
 
 DECLARE_bool(setup_for_warmboot);
@@ -58,13 +59,27 @@ class HwTest : public ::testing::Test,
     return const_cast<HwTest*>(this)->getPlatform();
   }
   const HwAsic* getAsic() const;
+  cfg::AsicType getAsicType() const;
+  cfg::SwitchType getSwitchType() const;
   bool isSupported(HwAsic::Feature feature) const;
 
   void packetReceived(RxPacket* /*pkt*/) noexcept override {}
   void linkStateChanged(PortID /*port*/, bool /*up*/) override {}
+  void linkActiveStateChangedOrFwIsolated(
+      const std::map<PortID, bool>& /*port2IsActive */,
+      bool /* fwIsolated */,
+      const std::optional<uint32_t>& /* numActiveFabricPortsAtFwIsolate */
+      ) override {}
+  void switchReachabilityChanged(
+      const SwitchID /*switchId*/,
+      const std::map<SwitchID, std::set<PortID>>& /*switchReachabilityInfo*/)
+      override {}
   void l2LearningUpdateReceived(
       L2Entry /*l2Entry*/,
       L2EntryUpdateType /*l2EntryUpdateType*/) override {}
+  void linkConnectivityChanged(
+      const std::map<PortID, multiswitch::FabricConnectivityDelta>&
+      /*port2OldAndNewConnectivity*/) override {}
 
   HwSwitchEnsemble* getHwSwitchEnsemble() {
     return hwSwitchEnsemble_.get();
@@ -94,6 +109,8 @@ class HwTest : public ::testing::Test,
   std::vector<PortID> masterLogicalFabricPortIds() const;
 
   std::vector<PortID> getAllPortsInGroup(PortID portID) const;
+
+  const SwitchIdScopeResolver& scopeResolver() const;
 
  protected:
   /*
@@ -142,8 +159,7 @@ class HwTest : public ::testing::Test,
 
   template <typename SETUP_FN, typename VERIFY_FN>
   void verifyAcrossWarmBoots(SETUP_FN setup, VERIFY_FN verify) {
-    verifyAcrossWarmBoots(
-        setup, verify, []() {}, []() {});
+    verifyAcrossWarmBoots(setup, verify, []() {}, []() {});
   }
   std::shared_ptr<SwitchState> applyNewConfig(const cfg::SwitchConfig& config);
   std::shared_ptr<SwitchState> applyNewState(
@@ -155,6 +171,10 @@ class HwTest : public ::testing::Test,
     return applyNewStateImpl(newState, true);
   }
   std::shared_ptr<SwitchState> getProgrammedState() const;
+
+  void setSwitchDrainState(
+      const cfg::SwitchConfig& curConfig,
+      cfg::SwitchDrainState drainState);
 
   template <typename EcmpHelperT>
   void resolveNeigborAndProgramRoutes(const EcmpHelperT& ecmp, int width) {
@@ -172,6 +192,9 @@ class HwTest : public ::testing::Test,
   virtual std::optional<std::map<int64_t, cfg::DsfNode>> overrideDsfNodes(
       const std::map<int64_t, cfg::DsfNode>& /*curDsfNodes*/) const {
     return std::nullopt;
+  }
+  virtual bool failHwCallsOnWarmboot() const {
+    return true;
   }
 
   std::shared_ptr<SwitchState> applyNewStateImpl(

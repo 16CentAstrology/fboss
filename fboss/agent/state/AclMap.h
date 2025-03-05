@@ -35,6 +35,7 @@ using AclMapTraits =
 class AclMap : public ThriftMapNode<AclMap, AclMapTraits> {
  public:
   using Base = ThriftMapNode<AclMap, AclMapTraits>;
+  using Traits = AclMapTraits;
 
   AclMap();
   ~AclMap() override;
@@ -67,8 +68,6 @@ class AclMap : public ThriftMapNode<AclMap, AclMapTraits> {
   size_t numEntries() const {
     return size();
   }
-
-  AclMap* modify(std::shared_ptr<SwitchState>* state);
 
   /*
    * The following functions modify the static state.
@@ -125,8 +124,8 @@ struct PrioAclMapTraits {
 
 class PrioAclMap : public NodeMapT<PrioAclMap, PrioAclMapTraits> {
  public:
-  PrioAclMap() {}
-  ~PrioAclMap() override {}
+  PrioAclMap() = default;
+  ~PrioAclMap() override = default;
 
   void addAcls(const std::shared_ptr<const AclMap>& acls) {
     for (const auto& iter : *acls) {
@@ -146,5 +145,39 @@ using AclMapDelta = NodeMapDelta<
     PrioAclMap,
     DeltaValue<PrioAclMap::Node>,
     MapUniquePointerTraits<PrioAclMap>>;
+
+using MultiSwitchAclMapTypeClass = apache::thrift::type_class::
+    map<apache::thrift::type_class::string, AclMapTypeClass>;
+using MultiSwitchAclMapThriftType = std::map<std::string, AclMapThriftType>;
+
+class MultiSwitchAclMap;
+
+using MultiSwitchAclMapTraits = ThriftMultiSwitchMapNodeTraits<
+    MultiSwitchAclMap,
+    MultiSwitchAclMapTypeClass,
+    MultiSwitchAclMapThriftType,
+    AclMap>;
+
+class HwSwitchMatcher;
+
+class MultiSwitchAclMap : public ThriftMultiSwitchMapNode<
+                              MultiSwitchAclMap,
+                              MultiSwitchAclMapTraits> {
+ public:
+  using Traits = MultiSwitchAclMapTraits;
+  using BaseT =
+      ThriftMultiSwitchMapNode<MultiSwitchAclMap, MultiSwitchAclMapTraits>;
+  using BaseT::modify;
+
+  MultiSwitchAclMap() = default;
+  virtual ~MultiSwitchAclMap() = default;
+
+  MultiSwitchAclMap* modify(std::shared_ptr<SwitchState>* state);
+
+ private:
+  // Inherit the constructors required for clone()
+  using BaseT::BaseT;
+  friend class CloneAllocator;
+};
 
 } // namespace facebook::fboss

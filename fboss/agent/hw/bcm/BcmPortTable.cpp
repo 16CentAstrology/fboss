@@ -9,7 +9,6 @@
  */
 #include "fboss/agent/hw/bcm/BcmPortTable.h"
 
-#include "common/stats/MonotonicCounter.h"
 #include "fboss/agent/AgentConfig.h"
 #include "fboss/agent/hw/bcm/BcmError.h"
 #include "fboss/agent/hw/bcm/BcmPlatform.h"
@@ -263,5 +262,4 @@ void BcmPortTable::initPortGroupFromConfig(
   }
   bcmPortGroups_.push_back(std::move(group));
 }
-
 } // namespace facebook::fboss

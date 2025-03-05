@@ -10,6 +10,7 @@
 #pragma once
 
 #include "fboss/agent/FbossError.h"
+#include "fboss/agent/gen-cpp2/switch_config_constants.h"
 #include "fboss/agent/hw/sai/api/AclApi.h"
 #include "fboss/agent/hw/sai/api/AdapterKeySerializers.h"
 #include "fboss/agent/hw/sai/api/LagApi.h"
@@ -24,7 +25,7 @@
 #include "fboss/agent/hw/sai/store/Traits.h"
 #include "fboss/lib/RefMap.h"
 
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 
 #include <memory>
 #include <optional>
@@ -47,14 +48,20 @@ template <>
 struct AdapterHostKeyWarmbootRecoverable<SaiAclTableTraits> : std::false_type {
 };
 
-#if defined(SAI_VERSION_8_2_0_0_ODP) ||                                        \
-    defined(SAI_VERSION_8_2_0_0_DNX_ODP) || defined(SAI_VERSION_9_0_EA_ODP) || \
-    defined(SAI_VERSION_8_2_0_0_SIM_ODP) ||                                    \
-    defined(SAI_VERSION_9_0_EA_SIM_ODP) || defined(SAI_VERSION_9_0_EA_DNX_ODP)
+template <>
+struct AdapterHostKeyWarmbootRecoverable<SaiUdfGroupTraits> : std::false_type {
+};
 
+#if defined(BRCM_SAI_SDK_XGS_AND_DNX)
 template <>
 struct AdapterHostKeyWarmbootRecoverable<SaiWredTraits> : std::false_type {};
 
+#endif
+
+#if defined(CHENAB_SAI_SDK)
+template <>
+struct AdapterHostKeyWarmbootRecoverable<SaiAclCounterTraits>
+    : std::false_type {};
 #endif
 
 /*
@@ -72,7 +79,7 @@ class SaiObjectStore {
       SaiObject<SaiObjectTraits>>::type;
   using ObjectTraits = SaiObjectTraits;
 
-  explicit SaiObjectStore(sai_object_id_t switchId) : switchId_(switchId) {}
+  explicit SaiObjectStore(sai_object_id_t switchId) : saiSwitchId_(switchId) {}
   SaiObjectStore() {}
   ~SaiObjectStore() {
     for (auto iter : warmBootHandles_) {
@@ -81,7 +88,7 @@ class SaiObjectStore {
   }
 
   void setSwitchId(sai_object_id_t switchId) {
-    switchId_ = switchId;
+    saiSwitchId_ = switchId;
   }
 
   static folly::StringPiece objectTypeName() {
@@ -100,6 +107,7 @@ class SaiObjectStore {
       bool addToWarmbootHandles = false) {
     auto object = reloadObject(adapterKey, addToWarmbootHandles);
     object->setOwnedByAdapter(true);
+    XLOGF(DBG5, "SaiStore reload by adapter {}", *object.get());
     return object;
   }
 
@@ -142,7 +150,7 @@ class SaiObjectStore {
   void reload(
       const folly::dynamic* adapterKeysJson,
       const folly::dynamic* adapterKeys2AdapterHostKey) {
-    if (!switchId_) {
+    if (!saiSwitchId_) {
       XLOG(FATAL)
           << "Attempted to reload() on a SaiObjectStore without a switchId";
     }
@@ -164,15 +172,14 @@ class SaiObjectStore {
               }),
           keys.end());
     }
-    for (const auto k : keys) {
+    for (const auto& k : keys) {
       ObjectType obj = getObject(k, adapterKeys2AdapterHostKey);
       auto adapterHostKey = obj.adapterHostKey();
       XLOGF(DBG5, "SaiStore reloaded {}", obj);
       auto ins = objects_.refOrInsert(adapterHostKey, std::move(obj));
       if (!ins.second) {
         XLOG(FATAL) << "[" << saiObjectTypeToString(SaiObjectTraits::ObjectType)
-                    << "]"
-                    << " Unexpected duplicate adapterHostKey";
+                    << "]" << " Unexpected duplicate adapterHostKey";
       }
       warmBootHandles_.emplace(adapterHostKey, ins.first);
     }
@@ -188,7 +195,7 @@ class SaiObjectStore {
     auto itr = warmBootHandles_.find(adapterHostKey);
     CHECK(itr == warmBootHandles_.end());
     auto object = std::make_shared<ObjectType>(
-        ObjectType(adapterHostKey, attributes, switchId_.value()));
+        ObjectType(adapterHostKey, attributes, saiSwitchId_.value()));
     warmBootHandles_.emplace(adapterHostKey, object);
   }
 
@@ -369,22 +376,18 @@ class SaiObjectStore {
     return objects_.end();
   }
 
-  size_t warmBootHandlesCount() const {
-    // ignore handles owned by adapter
-    return std::count_if(
-        std::begin(warmBootHandles_),
-        std::end(warmBootHandles_),
-        [](const auto& handle) { return !handle.second->isOwnedByAdapter(); });
-  }
-
-  bool hasUnexpectedUnclaimedWarmbootHandles() const {
-    bool unclaimedHandles = warmBootHandlesCount() > 0 &&
-        !IsSaiObjectOwnedByAdapter<SaiObjectTraits>::value;
+  bool hasUnexpectedUnclaimedWarmbootHandles(
+      bool includeAdapterOwned = false) const {
+    auto handlesCount = warmBootHandlesCount(includeAdapterOwned);
+    bool unclaimedHandles = handlesCount > 0 &&
+        (includeAdapterOwned ||
+         !IsSaiObjectOwnedByAdapter<SaiObjectTraits>::value);
     XLOGF(
         DBG1,
-        "unexpected warmboot handles {} entries: {}",
+        "unexpected warmboot handles {} entries: {}, includeAdapterOwned: {}",
         objectTypeName(),
-        unclaimedHandles);
+        unclaimedHandles,
+        includeAdapterOwned);
     return unclaimedHandles;
   }
 
@@ -398,8 +401,9 @@ class SaiObjectStore {
   }
 
   void removeUnclaimedWarmbootHandlesIf(
-      std::function<bool(const std::shared_ptr<ObjectType>&)> condition) {
-    if (!hasUnexpectedUnclaimedWarmbootHandles()) {
+      std::function<bool(const std::shared_ptr<ObjectType>&)> condition,
+      bool includeAdapterOwned = false) {
+    if (!hasUnexpectedUnclaimedWarmbootHandles(includeAdapterOwned)) {
       return;
     }
     auto iter = std::begin(warmBootHandles_);
@@ -412,12 +416,23 @@ class SaiObjectStore {
     }
   }
 
-  void removeUnexpectedUnclaimedWarmbootHandles() {
+  void removeUnexpectedUnclaimedWarmbootHandles(
+      bool includeAdapterOwned = false) {
     // delete all unclaimed handles
-    removeUnclaimedWarmbootHandlesIf([](const auto&) { return true; });
+    removeUnclaimedWarmbootHandlesIf(
+        [](const auto&) { return true; }, includeAdapterOwned);
   }
 
  private:
+  size_t warmBootHandlesCount(bool includeAdapterOwned = false) const {
+    return std::count_if(
+        std::begin(warmBootHandles_),
+        std::end(warmBootHandles_),
+        [includeAdapterOwned](const auto& handle) {
+          return includeAdapterOwned || !handle.second->isOwnedByAdapter();
+        });
+  }
+
   ObjectType getObject(
       typename ObjectTraits::AdapterKey key,
       const folly::dynamic* adapterKey2AdapterHostKey) {
@@ -429,7 +444,10 @@ class SaiObjectStore {
         if constexpr (std::is_same_v<ObjectTraits, SaiAclTableTraits>) {
           // TODO(pshaikh): hack to allow warm boot from version which doesn't
           // save ahk
-          return ObjectType(key, SaiAclTableTraits::AdapterHostKey{kAclTable1});
+          return ObjectType(
+              key,
+              SaiAclTableTraits::AdapterHostKey{
+                  cfg::switch_config_constants::DEFAULT_INGRESS_ACL_TABLE()});
         }
         if constexpr (std::is_same_v<ObjectTraits, SaiNextHopGroupTraits>) {
           // a special handling has been added to deal with next hop group to
@@ -437,9 +455,13 @@ class SaiObjectStore {
           // state.
           return ObjectType(key);
         }
-#if defined(SAI_VERSION_8_2_0_0_ODP) ||                                        \
-    defined(SAI_VERSION_8_2_0_0_DNX_ODP) || defined(SAI_VERSION_9_0_EA_ODP) || \
-    defined(SAI_VERSION_9_0_EA_DNX_ODP)
+        if constexpr (std::is_same_v<ObjectTraits, SaiUdfGroupTraits>) {
+          // UDF groups are similar to ACL tables above where adapterHostKey is
+          // a string. This if condition is strictly not required and here only
+          // to allow build
+          return ObjectType(key, SaiUdfGroupTraits::AdapterHostKey{"udfGroup"});
+        }
+#if defined(BRCM_SAI_SDK_XGS)
         if constexpr (std::is_same_v<ObjectTraits, SaiWredTraits>) {
           // Allow warm boot from version which doesn't save ahk
           // TODO(zecheng): Remove after device warmbooted to 8.2
@@ -462,7 +484,7 @@ class SaiObjectStore {
         ? std::make_pair(existingObj, false)
         : objects_.refOrInsert(
               adapterHostKey,
-              ObjectType(adapterHostKey, attributes, switchId_.value()),
+              ObjectType(adapterHostKey, attributes, saiSwitchId_.value()),
               true /*force*/);
     if (!ins.second) {
       ins.first->setAttributes(attributes);
@@ -478,8 +500,9 @@ class SaiObjectStore {
 
   std::vector<typename SaiObjectTraits::AdapterKey> getAdapterKeys(
       const folly::dynamic* adapterKeysJson) const {
-    return adapterKeysJson ? adapterKeysFromFollyDynamic(*adapterKeysJson)
-                           : getObjectKeys<SaiObjectTraits>(switchId_.value());
+    return adapterKeysJson
+        ? adapterKeysFromFollyDynamic(*adapterKeysJson)
+        : getObjectKeys<SaiObjectTraits>(saiSwitchId_.value());
   }
 
   std::optional<typename SaiObjectTraits::AdapterHostKey> getAdapterHostKey(
@@ -495,7 +518,7 @@ class SaiObjectStore {
         iter->second);
   }
 
-  std::optional<sai_object_id_t> switchId_;
+  std::optional<sai_object_id_t> saiSwitchId_;
   UnorderedRefMap<typename SaiObjectTraits::AdapterHostKey, ObjectType>
       objects_;
   std::unordered_map<
@@ -508,11 +531,11 @@ class SaiObjectStore {
  * Specialize SaiSwitchObj to allow for stand alone construction
  * since we don't create a object store for SaiSwitchObj
  */
-class SaiSwitchObj : public SaiObject<SaiSwitchTraits> {
+class SaiSwitchObj : public SaiObjectWithCounters<SaiSwitchTraits> {
  public:
   template <typename... Args>
   SaiSwitchObj(Args&&... args)
-      : SaiObject<SaiSwitchTraits>(std::forward<Args>(args)...) {}
+      : SaiObjectWithCounters<SaiSwitchTraits>(std::forward<Args>(args)...) {}
 };
 /*
  * SaiStore represents FBOSS's knowledge of objects and their attributes
@@ -567,13 +590,17 @@ class SaiStore {
   void printWarmbootHandles() const;
 
  private:
-  sai_object_id_t switchId_{};
+  sai_object_id_t saiSwitchId_{};
   std::tuple<
       SaiObjectStore<SaiAclTableGroupTraits>,
       SaiObjectStore<SaiAclTableGroupMemberTraits>,
       SaiObjectStore<SaiAclTableTraits>,
       SaiObjectStore<SaiAclEntryTraits>,
       SaiObjectStore<SaiAclCounterTraits>,
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+      SaiObjectStore<SaiArsTraits>,
+      SaiObjectStore<SaiArsProfileTraits>,
+#endif
       SaiObjectStore<SaiBridgeTraits>,
       SaiObjectStore<SaiBridgePortTraits>,
       SaiObjectStore<SaiBufferPoolTraits>,
@@ -582,9 +609,13 @@ class SaiStore {
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
       SaiObjectStore<SaiCounterTraits>,
 #endif
-      SaiObjectStore<SaiDebugCounterTraits>,
+      SaiObjectStore<SaiInPortDebugCounterTraits>,
+      SaiObjectStore<SaiOutPortDebugCounterTraits>,
       SaiObjectStore<SaiSystemPortTraits>,
       SaiObjectStore<SaiPortTraits>,
+      SaiObjectStore<SaiUdfTraits>,
+      SaiObjectStore<SaiUdfGroupTraits>,
+      SaiObjectStore<SaiUdfMatchTraits>,
       SaiObjectStore<SaiVlanTraits>,
       SaiObjectStore<SaiVlanMemberTraits>,
       SaiObjectStore<SaiRouteTraits>,
@@ -603,6 +634,7 @@ class SaiStore {
       SaiObjectStore<SaiNeighborTraits>,
       SaiObjectStore<SaiHostifTrapGroupTraits>,
       SaiObjectStore<SaiHostifTrapTraits>,
+      SaiObjectStore<SaiHostifUserDefinedTrapTraits>,
       SaiObjectStore<SaiQueueTraits>,
       SaiObjectStore<SaiSchedulerTraits>,
       SaiObjectStore<SaiSamplePacketTraits>,
@@ -612,11 +644,19 @@ class SaiStore {
       SaiObjectStore<SaiPortSerdesTraits>,
       SaiObjectStore<SaiPortConnectorTraits>,
       SaiObjectStore<SaiWredTraits>,
+      SaiObjectStore<SaiTamTraits>,
       SaiObjectStore<SaiTamReportTraits>,
       SaiObjectStore<SaiTamEventActionTraits>,
+#if defined(BRCM_SAI_SDK_DNX_GTE_11_0)
+      SaiObjectStore<SaiTamEventAgingGroupTraits>,
+#endif
       SaiObjectStore<SaiTamEventTraits>,
-      SaiObjectStore<SaiTamTraits>,
+      SaiObjectStore<SaiTamTransportTraits>,
+      SaiObjectStore<SaiTamCollectorTraits>,
       SaiObjectStore<SaiTunnelTraits>,
+#if defined(BRCM_SAI_SDK_DNX_GTE_12_0)
+      SaiObjectStore<SaiVendorSwitchTraits>,
+#endif
       SaiObjectStore<SaiP2MPTunnelTermTraits>,
       SaiObjectStore<SaiP2PTunnelTermTraits>,
       SaiObjectStore<SaiLagTraits>,
@@ -641,14 +681,14 @@ namespace fmt {
 template <typename SaiObjectTraits>
 struct formatter<facebook::fboss::SaiObjectStore<SaiObjectTraits>> {
   template <typename ParseContext>
-  constexpr auto parse(ParseContext& ctx) {
+  constexpr auto parse(ParseContext& ctx) const {
     return ctx.begin();
   }
 
   template <typename FormatContext>
   auto format(
       const facebook::fboss::SaiObjectStore<SaiObjectTraits>& store,
-      FormatContext& ctx) {
+      FormatContext& ctx) const {
     std::stringstream ss;
     ss << "Object type: "
        << facebook::fboss::saiObjectTypeToString(SaiObjectTraits::ObjectType)

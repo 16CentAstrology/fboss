@@ -14,23 +14,16 @@ namespace rackmon {
 struct ModbusDeviceFilter {
   std::optional<std::set<uint8_t>> addrFilter{};
   std::optional<std::set<std::string>> typeFilter{};
-  operator bool() const {
-    return addrFilter || typeFilter;
-  }
-  bool contains(uint8_t addr) const {
-    return addrFilter && addrFilter->find(addr) != addrFilter->end();
-  }
-  bool contains(const std::string& type) const {
-    return typeFilter && typeFilter->find(type) != typeFilter->end();
-  }
+  bool contains(const ModbusDevice& dev) const;
 };
 
 class Rackmon {
   static constexpr int kScanNumRetry = 3;
   static constexpr time_t kDormantMinInactiveTime = 300;
-  static constexpr ModbusTime kProbeTimeout = std::chrono::milliseconds(50);
-  std::unique_ptr<PollThread<Rackmon>> monitorThread_;
-  std::unique_ptr<PollThread<Rackmon>> scanThread_;
+  static constexpr ModbusTime kProbeTimeout = std::chrono::milliseconds(70);
+  std::shared_mutex threadMutex_{};
+  std::shared_ptr<PollThread<Rackmon>> monitorThread_;
+  std::shared_ptr<PollThread<Rackmon>> scanThread_;
   // Has to be before defining active or dormant devices
   // to ensure users get destroyed before the interface.
   std::vector<std::unique_ptr<Modbus>> interfaces_{};
@@ -56,9 +49,14 @@ class Rackmon {
   time_t lastScanTime_;
   time_t lastMonitorTime_;
 
+  // Interval at which we will monitor all the discovered
+  // devices.
+  PollThreadTime monitorInterval_ = std::chrono::minutes(3);
+
   // Probe an interface for the presence of the address.
   bool probe(Modbus& interface, uint8_t addr);
-  // Probe all interfaces for the presence of the address.
+
+  // Probe for the presence of an address
   bool probe(uint8_t addr);
 
   // --------- Private Methods --------
@@ -84,6 +82,9 @@ class Rackmon {
   void scan();
 
  protected:
+  // Return the device given address.
+  ModbusDevice& getModbusDevice(uint8_t addr);
+
   PollThread<Rackmon>& getScanThread() {
     if (!scanThread_) {
       throw std::runtime_error("Invalid scanThread state");
@@ -121,19 +122,17 @@ class Rackmon {
   void load(const std::string& confPath, const std::string& regmapDir);
 
   // Create a worker thread
-  virtual std::unique_ptr<PollThread<Rackmon>> makeThread(
+  virtual std::shared_ptr<PollThread<Rackmon>> makeThread(
       std::function<void(Rackmon*)> func,
       PollThreadTime interval);
 
   // Start the monitoring/scanning loops
   void start(PollThreadTime interval = std::chrono::minutes(3));
   // Stop the monitoring/scanning loops
-  void stop();
+  void stop(bool forceStop = true);
 
   // Force rackmond to do a full scan on the next scan loop.
-  void forceScan() {
-    reqForceScan_ = true;
-  }
+  void forceScan();
 
   // Executes the Raw command. Throws an exception on error.
   void rawCmd(Request& req, Response& resp, ModbusTime timeout);
@@ -177,6 +176,10 @@ class Rackmon {
       const ModbusDeviceFilter& devFilter = {},
       const ModbusRegisterFilter& regFilter = {},
       bool latestValueOnly = false) const;
+
+  void reload(
+      const ModbusDeviceFilter& devFilter,
+      const ModbusRegisterFilter& regFilter);
 };
 
 } // namespace rackmon

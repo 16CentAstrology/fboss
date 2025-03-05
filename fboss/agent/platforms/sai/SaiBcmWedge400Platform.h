@@ -16,8 +16,9 @@ class Tomahawk3Asic;
 
 class SaiBcmWedge400Platform : public SaiBcmPlatform {
  public:
-  explicit SaiBcmWedge400Platform(
+  SaiBcmWedge400Platform(
       std::unique_ptr<PlatformProductInfo> productInfo,
+      PlatformType type,
       folly::MacAddress localMac,
       const std::string& platformMappingStr);
   ~SaiBcmWedge400Platform() override;
@@ -36,7 +37,8 @@ class SaiBcmWedge400Platform : public SaiBcmPlatform {
         FlexPortMode::FOURX25G,
         FlexPortMode::ONEX40G,
         FlexPortMode::TWOX50G,
-        FlexPortMode::ONEX100G};
+        FlexPortMode::ONEX100G,
+        FlexPortMode::ONEX400G};
   }
 
   bool isSerdesApiSupported() const override {
@@ -46,13 +48,15 @@ class SaiBcmWedge400Platform : public SaiBcmPlatform {
   void initLEDs() override;
 
   std::unique_ptr<PlatformMapping> createWedge400PlatformMapping(
+      PlatformType type,
       const std::string& platformMappingStr);
 
  private:
   void setupAsic(
-      cfg::SwitchType switchType,
       std::optional<int64_t> switchId,
-      std::optional<cfg::Range64> systemPortRange) override;
+      const cfg::SwitchInfo& switchInfo,
+      std::optional<HwAsic::FabricNodeRole> fabricNodeRole) override;
+
   std::unique_ptr<Tomahawk3Asic> asic_;
 };
 

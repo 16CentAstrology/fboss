@@ -9,7 +9,7 @@
  */
 #pragma once
 
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 #include <string>
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 
@@ -33,24 +33,18 @@ class HwSwitchWarmBootHelper {
   bool canWarmBoot() const {
     return canWarmBoot_;
   }
-  /*
-   * Sets a flag that can be read when we next start up that indicates that
-   * warm boot is possible. Since warm boot is not currently supported this is
-   * always a no-op for now.
-   */
-  void setCanWarmBoot();
 
-  bool storeWarmBootState(
-      const folly::dynamic& switchState,
-      const state::WarmbootState& switchStateThrift);
-  std::tuple<folly::dynamic, std::optional<state::WarmbootState>>
-  getWarmBootState() const;
+  void storeHwSwitchWarmBootState(const folly::dynamic& switchState);
 
+  folly::dynamic getWarmBootState() const;
+
+  folly::dynamic getHwSwitchWarmBootState() const;
+
+  // bcm switch specific
   std::string startupSdkDumpFile() const;
+  // bcm switch specific
   std::string shutdownSdkDumpFile() const;
-  bool warmBootStateWritten() const {
-    return warmBootStateWritten_;
-  }
+  // used only in sai
   std::string warmBootDataPath() const;
 
   int getSwitchId() const {
@@ -63,13 +57,20 @@ class HwSwitchWarmBootHelper {
   }
 
  private:
+  /*
+   * Sets a flag that can be read when we next start up that indicates that
+   * warm boot is possible. Since warm boot is not currently supported this is
+   * always a no-op for now.
+   */
+  void setCanWarmBoot();
+
   // Forbidden copy constructor and assignment operator
   HwSwitchWarmBootHelper(HwSwitchWarmBootHelper const&) = delete;
   HwSwitchWarmBootHelper& operator=(HwSwitchWarmBootHelper const&) = delete;
 
   std::string warmBootFlag() const;
   std::string forceColdBootOnceFlag() const;
-  std::string warmBootFollySwitchStateFile() const;
+  std::string warmBootHwSwitchStateFile() const;
   std::string warmBootThriftSwitchStateFile() const;
 
   void setupWarmBootFile();
@@ -86,11 +87,12 @@ class HwSwitchWarmBootHelper {
    */
   bool checkAndClearWarmBootFlags();
 
+  folly::dynamic getHwSwitchWarmBootState(const std::string& fileName) const;
+
   int switchId_{-1};
   std::string warmBootDir_;
   std::string sdkWarmbootFilePrefix_;
   int warmBootFd_{-1};
   bool canWarmBoot_{false};
-  bool warmBootStateWritten_{false};
 };
 } // namespace facebook::fboss

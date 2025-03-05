@@ -2,53 +2,73 @@
 
 #include "fboss/agent/test/AgentTest.h"
 #include <folly/gen/Base.h>
+#include <optional>
 #include "fboss/agent/AgentConfig.h"
+#include "fboss/agent/CommonInit.h"
+#include "fboss/agent/HwAsicTable.h"
 #include "fboss/agent/Main.h"
+#include "fboss/agent/SwitchIdScopeResolver.h"
+#include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/state/Port.h"
 #include "fboss/agent/state/SwitchState.h"
+#include "fboss/agent/test/utils/QosTestUtils.h"
 #include "fboss/qsfp_service/lib/QsfpClient.h"
 
 namespace {
 int argCount{0};
 char** argVec{nullptr};
 facebook::fboss::PlatformInitFn initPlatform{nullptr};
+std::optional<facebook::fboss::cfg::StreamType> streamTypeOpt{std::nullopt};
 } // unnamed namespace
 
 DEFINE_bool(setup_for_warmboot, false, "Set up test for warmboot");
-DEFINE_bool(run_forever, false, "run the test forever");
 
 DECLARE_string(config);
+DECLARE_bool(disable_looped_fabric_ports);
 
 namespace facebook::fboss {
 
 void AgentTest::setupAgent() {
-  AgentInitializer::createSwitch(
-      argCount,
-      argVec,
+  setVersionInfo();
+  auto config = fbossCommonInit(argCount, argVec);
+  MonolithicAgentInitializer::createSwitch(
+      std::move(config),
       (HwSwitch::FeaturesDesired::PACKET_RX_DESIRED |
        HwSwitch::FeaturesDesired::LINKSCAN_DESIRED),
       initPlatform);
+  if (streamTypeOpt.has_value()) {
+    HwAsic* hwAsicTableEntry = sw()->getHwAsicTable()->getHwAsicIf(
+        platform()->getAsic()->getSwitchId()
+            ? SwitchID(*platform()->getAsic()->getSwitchId())
+            : SwitchID(0));
+    hwAsicTableEntry->setDefaultStreamType(streamTypeOpt.value());
+  }
+  FLAGS_verify_apply_oper_delta = true;
+  // Looped ports are the common case in tests
+  FLAGS_disable_looped_fabric_ports = false;
   utilCreateDir(getAgentTestDir());
   setupConfigFlag();
   asyncInitThread_.reset(
-      new std::thread([this] { AgentInitializer::initAgent(); }));
-  // Cannot join the thread because initAgent starts a thrift server in the main
-  // thread and that runs for lifetime of the application.
-  asyncInitThread_->detach();
+      new std::thread([this] { MonolithicAgentInitializer::initAgent(); }));
   initializer()->waitForInitDone();
   XLOG(DBG2) << "Agent has been setup and ready for the test";
 }
 
 void AgentTest::TearDown() {
-  if (FLAGS_run_forever) {
+  if (FLAGS_run_forever ||
+      (::testing::Test::HasFailure() && FLAGS_run_forever_on_failure)) {
     runForever();
   }
-  AgentInitializer::stopAgent(FLAGS_setup_for_warmboot);
+  bool gracefulExit = !::testing::Test::HasFailure();
+  MonolithicAgentInitializer::stopAgent(
+      FLAGS_setup_for_warmboot, gracefulExit /* gracefulExit */);
+  asyncInitThread_->join();
+  asyncInitThread_.reset();
 }
 
 std::map<std::string, HwPortStats> AgentTest::getPortStats(
     const std::vector<std::string>& ports) const {
-  auto allPortStats = sw()->getHw()->getPortStats();
+  auto allPortStats = platform()->getHwSwitch()->getPortStats();
   std::map<std::string, HwPortStats> portStats;
   std::for_each(ports.begin(), ports.end(), [&](const auto& portName) {
     portStats.insert({portName, allPortStats[portName]});
@@ -62,7 +82,7 @@ void AgentTest::resolveNeighbor(
     folly::MacAddress mac) {
   // TODO support agg ports as well.
   CHECK(portDesc.isPhysicalPort());
-  auto port = sw()->getState()->getPort(portDesc.phyPortID());
+  auto port = sw()->getState()->getPorts()->getNodeIf(portDesc.phyPortID());
   auto vlan = port->getVlans().begin()->first;
   if (ip.isV4()) {
     resolveNeighbor(portDesc, ip.asV4(), vlan, mac);
@@ -77,9 +97,10 @@ void AgentTest::resolveNeighbor(
     const AddrT& ip,
     VlanID vlanId,
     folly::MacAddress mac) {
-  auto resolveNeighborFn = [=](const std::shared_ptr<SwitchState>& state) {
+  auto resolveNeighborFn = [=,
+                            this](const std::shared_ptr<SwitchState>& state) {
     auto outputState{state->clone()};
-    auto vlan = outputState->getVlans()->getVlan(vlanId);
+    auto vlan = outputState->getVlans()->getNode(vlanId);
     auto nbrTable = vlan->template getNeighborEntryTable<AddrT>()->modify(
         vlanId, &outputState);
     if (nbrTable->getEntryIf(ip)) {
@@ -118,27 +139,24 @@ bool AgentTest::waitForSwitchStateCondition(
 }
 
 void AgentTest::setPortStatus(PortID portId, bool up) {
-  auto configFnLinkDown = [=](const std::shared_ptr<SwitchState>& state) {
+  auto configFnLinkDown = [=, this](const std::shared_ptr<SwitchState>& state) {
     auto newState = state->clone();
-    auto ports = newState->getPorts()->clone();
-    auto port = ports->getPort(portId)->clone();
+    auto ports = newState->getPorts()->modify(&newState);
+    auto port = ports->getNodeIf(portId)->clone();
     port->setAdminState(
         up ? cfg::PortState::ENABLED : cfg::PortState::DISABLED);
-    ports->updateNode(port);
-    newState->resetPorts(ports);
+    ports->updateNode(port, sw()->getScopeResolver()->scope(port));
     return newState;
   };
   sw()->updateStateBlocking("set port state", configFnLinkDown);
 }
 
 void AgentTest::setPortLoopbackMode(PortID portId, cfg::PortLoopbackMode mode) {
-  auto setLbMode = [=](const std::shared_ptr<SwitchState>& state) {
+  auto setLbMode = [=, this](const std::shared_ptr<SwitchState>& state) {
     auto newState = state->clone();
-    auto ports = newState->getPorts()->clone();
-    auto port = ports->getPort(portId)->clone();
+    auto ports = newState->getPorts()->modify(&newState);
+    auto port = ports->getNodeIf(portId)->clone();
     port->setLoopbackMode(mode);
-    ports->updateNode(port);
-    newState->resetPorts(ports);
     return newState;
   };
   sw()->updateStateBlocking("set port loopback mode", setLbMode);
@@ -148,7 +166,7 @@ void AgentTest::setPortLoopbackMode(PortID portId, cfg::PortLoopbackMode mode) {
 std::vector<std::string> AgentTest::getPortNames(
     const std::vector<PortID>& ports) const {
   return folly::gen::from(ports) | folly::gen::map([&](PortID port) {
-           return sw()->getState()->getPort(port)->getName();
+           return sw()->getState()->getPorts()->getNodeIf(port)->getName();
          }) |
       folly::gen::as<std::vector<std::string>>();
 }
@@ -168,13 +186,15 @@ void AgentTest::waitForLinkStatus(
     badPorts.clear();
     for (const auto& port : portsToCheck) {
       if (*portStatus[port].up() != up) {
-        std::this_thread::sleep_for(msBetweenRetry);
         portStatus = sw()->getPortStatus();
         badPorts.push_back(port);
       }
     }
     if (badPorts.empty()) {
       return;
+    } else {
+      /* sleep override */
+      std::this_thread::sleep_for(msBetweenRetry);
     }
   }
 
@@ -197,7 +217,7 @@ void AgentTest::assertNoInDiscards(int maxNumDiscards) {
   int maxRetry = 5;
   while (numRounds < 2 && maxRetry-- > 0) {
     bool retry = false;
-    auto portStats = sw()->getHw()->getPortStats();
+    auto portStats = platform()->getHwSwitch()->getPortStats();
     for (auto [port, stats] : portStats) {
       auto inDiscards = *stats.inDiscards_();
       XLOG(DBG2) << "Port: " << port << " in discards: " << inDiscards
@@ -254,10 +274,38 @@ void AgentTest::reloadConfig(std::string reason) const {
 
 AgentTest::~AgentTest() {}
 
-void initAgentTest(int argc, char** argv, PlatformInitFn initPlatformFn) {
+SwitchID AgentTest::scope(
+    const boost::container::flat_set<PortDescriptor>& ports) {
+  return scope(sw()->getState(), ports);
+}
+
+SwitchID AgentTest::scope(
+    const std::shared_ptr<SwitchState>& state,
+    const boost::container::flat_set<PortDescriptor>& ports) {
+  auto matcher = sw()->getScopeResolver()->scope(state, ports);
+  return matcher.switchId();
+}
+
+PortID AgentTest::getPortID(const std::string& portName) const {
+  for (auto portMap : std::as_const(*sw()->getState()->getPorts())) {
+    for (auto port : std::as_const(*portMap.second)) {
+      if (port.second->getName() == portName) {
+        return port.second->getID();
+      }
+    }
+  }
+  throw FbossError("No port named: ", portName);
+}
+
+void initAgentTest(
+    int argc,
+    char** argv,
+    PlatformInitFn initPlatformFn,
+    std::optional<cfg::StreamType> streamType) {
   argCount = argc;
   argVec = argv;
   initPlatform = initPlatformFn;
+  streamTypeOpt = streamType;
 }
 
 } // namespace facebook::fboss

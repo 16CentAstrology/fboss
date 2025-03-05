@@ -51,6 +51,7 @@ class BcmMultiPathNextHop {
   RouteNextHopSet fwd_;
   std::vector<std::shared_ptr<BcmNextHop>> nexthops_;
   std::unique_ptr<BcmEcmpEgress> ecmpEgress_;
+  BcmMultiPathNextHopKey key_;
 };
 
 using BcmMultiPathNextHopTableBase =
@@ -79,6 +80,8 @@ class BcmMultiPathNextHopTable : public BcmMultiPathNextHopTableBase {
   }
 
   long getEcmpEgressCount() const;
+  void updateEcmpsForFlowletSwitching();
+  bool updateEcmpsForFlowletTableLocked();
 
  private:
   bool ucmpSupported_{false};
@@ -86,4 +89,34 @@ class BcmMultiPathNextHopTable : public BcmMultiPathNextHopTableBase {
   bool wideEcmpSupported_{false};
 };
 
+class BcmMultiPathNextHopStatsManager {
+ public:
+  BcmMultiPathNextHopStatsManager() = default;
+  ~BcmMultiPathNextHopStatsManager() = default;
+
+  void addBcmMultiPathNextHopKey(
+      const BcmMultiPathNextHopKey& key,
+      const std::weak_ptr<BcmMultiPathNextHop>& wp) {
+    bcmMultiPathNextHopKeys_.wlock()->emplace(key, wp);
+  }
+
+  void removeBcmMultiPathNextHopKey(BcmMultiPathNextHopKey& key) {
+    bcmMultiPathNextHopKeys_.wlock()->erase(key);
+  }
+
+  std::map<BcmMultiPathNextHopKey, std::weak_ptr<BcmMultiPathNextHop>>
+  getBcmMultiPathNextHopKeysExpensive() const {
+    auto keys = bcmMultiPathNextHopKeys_.rlock();
+    return *keys;
+  }
+
+  std::vector<EcmpDetails> getAllEcmpDetails() const;
+  HwFlowletStats getHwFlowletStats() const;
+
+ private:
+  // map of all the bcm multipath nexthop keys and weak ptr
+  folly::Synchronized<
+      std::map<BcmMultiPathNextHopKey, std::weak_ptr<BcmMultiPathNextHop>>>
+      bcmMultiPathNextHopKeys_;
+};
 } // namespace facebook::fboss

@@ -16,7 +16,7 @@ namespace facebook::fboss {
 
 class SaiBcmFujiPlatform : public SaiBcmPlatform {
  public:
-  explicit SaiBcmFujiPlatform(
+  SaiBcmFujiPlatform(
       std::unique_ptr<PlatformProductInfo> productInfo,
       folly::MacAddress localMac,
       const std::string& platformMappingStr);
@@ -34,9 +34,10 @@ class SaiBcmFujiPlatform : public SaiBcmPlatform {
 
  private:
   void setupAsic(
-      cfg::SwitchType switchType,
       std::optional<int64_t> switchId,
-      std::optional<cfg::Range64> systemPortRange) override;
+      const cfg::SwitchInfo& switchInfo,
+      std::optional<HwAsic::FabricNodeRole> fabricNodeRole) override;
+
   std::unique_ptr<Tomahawk4Asic> asic_;
 };
 

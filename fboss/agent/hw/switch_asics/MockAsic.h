@@ -10,17 +10,19 @@ namespace facebook::fboss {
 
 class MockAsic : public HwAsic {
  public:
+  static auto constexpr kDefaultNumPortQueues = 10;
   MockAsic(
-      cfg::SwitchType switchType,
       std::optional<int64_t> switchId,
-      std::optional<cfg::Range64> systemPortRange)
+      cfg::SwitchInfo switchInfo,
+      std::optional<cfg::SdkVersion> sdkVersion = std::nullopt)
       : HwAsic(
-            switchType,
             switchId,
-            systemPortRange,
+            switchInfo,
+            sdkVersion,
             {cfg::SwitchType::NPU,
              cfg::SwitchType::VOQ,
              cfg::SwitchType::FABRIC}) {}
+
   bool isSupported(Feature feature) const override {
     switch (feature) {
       case Feature::HSDK:
@@ -34,7 +36,11 @@ class MockAsic : public HwAsic {
       case Feature::EGRESS_QUEUE_FLEX_COUNTER:
       case Feature::WIDE_ECMP:
       case HwAsic::Feature::LINK_TRAINING:
+      case HwAsic::Feature::WEIGHTED_NEXTHOPGROUP_MEMBER:
+      case HwAsic::Feature::EVENTOR_PORT_FOR_SFLOW:
         return false;
+      case Feature::CPU_PORT:
+        return getSwitchType() != cfg::SwitchType::FABRIC;
 
       default:
         return true;
@@ -58,7 +64,9 @@ class MockAsic : public HwAsic {
       case cfg::PortType::CPU_PORT:
         return {cfg::StreamType::MULTICAST};
       case cfg::PortType::INTERFACE_PORT:
+      case cfg::PortType::MANAGEMENT_PORT:
       case cfg::PortType::RECYCLE_PORT:
+      case cfg::PortType::EVENTOR_PORT:
         return {cfg::StreamType::UNICAST};
       case cfg::PortType::FABRIC_PORT:
         return {cfg::StreamType::FABRIC_TX};
@@ -67,9 +75,10 @@ class MockAsic : public HwAsic {
         "Mock ASIC does not support:",
         apache::thrift::util::enumNameSafe(portType));
   }
-  int getDefaultNumPortQueues(cfg::StreamType /* streamType */, bool /*cpu*/)
-      const override {
-    return 10;
+  int getDefaultNumPortQueues(
+      cfg::StreamType /* streamType */,
+      cfg::PortType /*portType*/) const override {
+    return kDefaultNumPortQueues;
   }
   uint32_t getMaxLabelStackDepth() const override {
     // Copying TH3's max label stack depth
@@ -79,15 +88,20 @@ class MockAsic : public HwAsic {
     // Fake MMU size
     return 64 * 1024 * 1024;
   }
+  uint64_t getSramSizeBytes() const override {
+    // No HBM!
+    return getMMUSizeBytes();
+  }
   uint32_t getMaxMirrors() const override {
     return 4;
   }
-  uint64_t getDefaultReservedBytes(cfg::StreamType /*streamType*/, bool cpu)
-      const override {
+  std::optional<uint64_t> getDefaultReservedBytes(
+      cfg::StreamType /*streamType*/,
+      cfg::PortType portType) const override {
     // Mimicking TH
-    return cpu ? 1664 : 0;
+    return portType == cfg::PortType::CPU_PORT ? 1664 : 0;
   }
-  cfg::MMUScalingFactor getDefaultScalingFactor(
+  std::optional<cfg::MMUScalingFactor> getDefaultScalingFactor(
       cfg::StreamType /*streamType*/,
       bool /*cpu*/) const override {
     // Mimicking TH
@@ -122,6 +136,21 @@ class MockAsic : public HwAsic {
   }
   uint32_t getMaxEcmpSize() const override {
     return 512;
+  }
+  std::optional<uint32_t> getMaxEcmpGroups() const override {
+    return 4;
+  }
+  std::optional<uint32_t> getMaxEcmpMembers() const override {
+    return 128;
+  }
+  std::optional<uint32_t> getMaxDlbEcmpGroups() const override {
+    return 4;
+  }
+  std::optional<uint32_t> getMaxNdpTableSize() const override {
+    return 8;
+  }
+  std::optional<uint32_t> getMaxArpTableSize() const override {
+    return 8;
   }
   AsicVendor getAsicVendor() const override {
     return HwAsic::AsicVendor::ASIC_VENDOR_MOCK;
@@ -158,6 +187,11 @@ class MockAsic : public HwAsic {
         return 1;
       case cfg::MMUScalingFactor::FOUR:
         return 2;
+      case cfg::MMUScalingFactor::ONE_32768TH:
+        // Unsupported
+        throw FbossError(
+            "Unsupported scaling factor : ",
+            apache::thrift::util::enumNameSafe(scalingFactor));
     }
     CHECK(0) << "Should never get here";
     return -1;
@@ -168,15 +202,23 @@ class MockAsic : public HwAsic {
   cfg::Range64 getReservedEncapIndexRange() const override {
     return makeRange(1000, 2000);
   }
-  HwAsic::RecyclePortInfo getRecyclePortInfo() const override {
+  HwAsic::RecyclePortInfo getRecyclePortInfo(
+      InterfaceNodeRole /* intfRole */) const override {
     return {
         .coreId = 0,
         .corePortIndex = 1,
-        .speedMbps = 10000 // 10G
+        .speedMbps = 10000, // 10G
+        .inbandPortId = 1,
     };
   }
   uint32_t getNumMemoryBuffers() const override {
     return 0;
+  }
+  int getMidPriCpuQueueId() const override {
+    throw FbossError("Mock ASIC does not support cpu queue");
+  }
+  int getHiPriCpuQueueId() const override {
+    throw FbossError("Mock ASIC does not support cpu queue");
   }
 };
 

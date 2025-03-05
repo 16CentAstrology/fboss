@@ -3,6 +3,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import errno
 import glob
 import os
@@ -15,9 +17,6 @@ import sys
 from struct import unpack
 from typing import List, Optional
 
-from .envfuncs import path_search
-
-
 OBJECT_SUBDIRS = ("bin", "lib", "lib64")
 
 
@@ -27,9 +26,9 @@ def copyfile(src, dest) -> None:
 
 
 class DepBase(object):
-    def __init__(self, buildopts, install_dirs, strip) -> None:
+    def __init__(self, buildopts, env, install_dirs, strip) -> None:
         self.buildopts = buildopts
-        self.env = buildopts.compute_env_for_install_dirs(install_dirs)
+        self.env = env
         self.install_dirs = install_dirs
         self.strip = strip
 
@@ -169,8 +168,8 @@ class DepBase(object):
 
 
 class WinDeps(DepBase):
-    def __init__(self, buildopts, install_dirs, strip) -> None:
-        super(WinDeps, self).__init__(buildopts, install_dirs, strip)
+    def __init__(self, buildopts, env, install_dirs, strip) -> None:
+        super(WinDeps, self).__init__(buildopts, env, install_dirs, strip)
         self.dumpbin = self.find_dumpbin()
 
     def find_dumpbin(self) -> str:
@@ -190,6 +189,9 @@ class WinDeps(DepBase):
                 "VC/bin/dumpbin.exe"
             ),
             ("c:/Program Files (x86)/Microsoft Visual Studio */VC/bin/dumpbin.exe"),
+            (
+                "C:/Program Files/Microsoft Visual Studio/*/Professional/VC/Tools/MSVC/*/bin/HostX64/x64/dumpbin.exe"
+            ),
         ]
         for pattern in globs:
             for exe in glob.glob(pattern):
@@ -332,20 +334,25 @@ try {{
 
 
 class ElfDeps(DepBase):
-    def __init__(self, buildopts, install_dirs, strip) -> None:
-        super(ElfDeps, self).__init__(buildopts, install_dirs, strip)
+    def __init__(self, buildopts, env, install_dirs, strip) -> None:
+        super(ElfDeps, self).__init__(buildopts, env, install_dirs, strip)
 
         # We need patchelf to rewrite deps, so ensure that it is built...
-        subprocess.check_call([sys.executable, sys.argv[0], "build", "patchelf"])
+        args = [sys.executable, sys.argv[0]]
+        if buildopts.allow_system_packages:
+            args.append("--allow-system-packages")
+        subprocess.check_call(args + ["build", "patchelf"])
+
         # ... and that we know where it lives
-        self.patchelf = os.path.join(
-            os.fsdecode(
-                subprocess.check_output(
-                    [sys.executable, sys.argv[0], "show-inst-dir", "patchelf"]
-                ).strip()
-            ),
-            "bin/patchelf",
+        patchelf_install = os.fsdecode(
+            subprocess.check_output(args + ["show-inst-dir", "patchelf"]).strip()
         )
+        if not patchelf_install:
+            # its a system package, so we assume it is in the path
+            patchelf_install = "patchelf"
+        else:
+            patchelf_install = os.path.join(patchelf_install, "bin", "patchelf")
+        self.patchelf = patchelf_install
 
     def list_dynamic_deps(self, objfile):
         out = (
@@ -441,14 +448,14 @@ class MachDeps(DepBase):
 
 
 def create_dyn_dep_munger(
-    buildopts, install_dirs, strip: bool = False
+    buildopts, env, install_dirs, strip: bool = False
 ) -> Optional[DepBase]:
     if buildopts.is_linux():
-        return ElfDeps(buildopts, install_dirs, strip)
+        return ElfDeps(buildopts, env, install_dirs, strip)
     if buildopts.is_darwin():
-        return MachDeps(buildopts, install_dirs, strip)
+        return MachDeps(buildopts, env, install_dirs, strip)
     if buildopts.is_windows():
-        return WinDeps(buildopts, install_dirs, strip)
+        return WinDeps(buildopts, env, install_dirs, strip)
     if buildopts.is_freebsd():
-        return ElfDeps(buildopts, install_dirs, strip)
+        return ElfDeps(buildopts, env, install_dirs, strip)
     return None

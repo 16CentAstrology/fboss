@@ -16,8 +16,10 @@
 #include <folly/io/Cursor.h>
 #include <folly/logging/xlog.h>
 #include <unistd.h>
+#include "fboss/agent/HwAsicTable.h"
 #include "fboss/agent/RxPacket.h"
 #include "fboss/agent/SwSwitch.h"
+#include "fboss/agent/SwitchIdScopeResolver.h"
 #include "fboss/agent/SwitchStats.h"
 #include "fboss/agent/TxPacket.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
@@ -30,37 +32,39 @@ using folly::StringPiece;
 using folly::io::RWPrivateCursor;
 using std::shared_ptr;
 
-/**
- * False if the given LLDP tag has an Expected value configured, and
- * the value received was not as expected.
- *
- * True otherwise.
+namespace {
+
+/*
+ * Checks if the tag is present in the LLDP config, and if the received value
+ * matches the expected value.
  */
-bool checkTag(
+LldpValidationResult checkTag(
     facebook::fboss::PortID id,
     const facebook::fboss::Port::LLDPValidations& lldpmap,
     facebook::fboss::cfg::LLDPTag tag,
     const std::string& val) {
   auto res = lldpmap.find(tag);
-
   if (res == lldpmap.end()) {
-    XLOG(DBG4) << "Port " << id << ": " << std::to_string(static_cast<int>(tag))
-               << ": Not present in config";
-    return true;
+    XLOG(WARNING) << "Port " << id << ": "
+                  << std::to_string(static_cast<int>(tag))
+                  << ": Not present in config";
+    return LldpValidationResult::MISSING;
   }
 
   auto expect = res->second;
   if (val.find(expect) != std::string::npos) {
     XLOG(DBG4) << "Port " << id << std::to_string(static_cast<int>(tag))
                << ", matches: \"" << expect << "\", got: \"" << val << "\"";
-    return true;
+    return LldpValidationResult::SUCCESS;
   }
 
   XLOG(WARNING) << "Port " << id << ", LLDP tag "
                 << std::to_string(static_cast<int>(tag)) << ", expected: \""
                 << expect << "\", got: \"" << val << "\"";
-  return false;
+  return LldpValidationResult::MISMATCH;
 }
+
+} // namespace
 
 namespace facebook::fboss {
 
@@ -74,12 +78,12 @@ LldpManager::LldpManager(SwSwitch* sw)
 LldpManager::~LldpManager() {}
 
 void LldpManager::start() {
-  sw_->getBackgroundEvb()->runInEventBaseThread(
+  sw_->getBackgroundEvb()->runInFbossEventBaseThread(
       [this] { this->timeoutExpired(); });
 }
 
 void LldpManager::stop() {
-  sw_->getBackgroundEvb()->runInEventBaseThreadAndWait(
+  sw_->getBackgroundEvb()->runInFbossEventBaseThreadAndWait(
       [this] { this->cancelTimeout(); });
 }
 
@@ -107,9 +111,8 @@ void LldpManager::handlePacket(
              << " port=" << neighbor->humanReadablePortId()
              << " name=" << neighbor->getSystemName();
 
-  auto plport = sw_->getPlatform()->getPlatformPort(pkt->getSrcPort());
-  auto port = sw_->getState()->getPorts()->getPortIf(pkt->getSrcPort());
-  PortID pid = pkt->getSrcPort();
+  auto pid = pkt->getSrcPort();
+  auto port = sw_->getState()->getPorts()->getNodeIf(pid);
 
   XLOG(DBG4) << "Port " << pid << ", local name: " << port->getName()
              << ", local desc: " << port->getDescription()
@@ -118,22 +121,35 @@ void LldpManager::handlePacket(
              << ", LLDP dsc: " << neighbor->getPortDescription();
 
   auto lldpmap = port->getLLDPValidations();
-  if (!(checkTag(
-            pid,
-            lldpmap,
-            cfg::LLDPTag::SYSTEM_NAME,
-            neighbor->getSystemName()) &&
-        checkTag(
-            pid,
-            lldpmap,
-            cfg::LLDPTag::PORT,
-            neighbor->humanReadablePortId()))) {
+  auto systemNameValidation = checkTag(
+      pid, lldpmap, cfg::LLDPTag::SYSTEM_NAME, neighbor->getSystemName());
+  auto portIdValidation = checkTag(
+      pid, lldpmap, cfg::LLDPTag::PORT, neighbor->humanReadablePortId());
+  if (systemNameValidation == LldpValidationResult::MISMATCH ||
+      portIdValidation == LldpValidationResult::MISMATCH) {
     sw_->stats()->LldpValidateMisMatch();
-    // TODO(pjakma): Figure out how to mock plport
-    if (plport) {
-      plport->externalState(PortLedExternalState::CABLING_ERROR);
-    }
     XLOG(DBG4) << "LLDP expected/recvd value mismatch!";
+    auto updateFn = [pid](const shared_ptr<SwitchState>& state) {
+      auto newState = state->clone();
+      auto newPort = state->getPorts()->getNodeIf(pid)->modify(&newState);
+      newPort->setLedPortExternalState(PortLedExternalState::CABLING_ERROR);
+      newPort->addError(PortError::MISMATCHED_NEIGHBOR);
+      return newState;
+    };
+    sw_->updateState("set port error and LED state from lldp", updateFn);
+  } else {
+    // clear the cabling error led state if needed
+    if (port->getLedPortExternalState().has_value() &&
+        port->getLedPortExternalState().value() ==
+            PortLedExternalState::CABLING_ERROR) {
+      auto updateFn = [pid](const shared_ptr<SwitchState>& state) {
+        auto newState = state->clone();
+        auto newPort = state->getPorts()->getNodeIf(pid)->modify(&newState);
+        newPort->setLedPortExternalState(PortLedExternalState::NONE);
+        return newState;
+      };
+      sw_->updateState("clear port LED state from lldp", updateFn);
+    }
   }
   db_.update(neighbor);
 }
@@ -151,12 +167,25 @@ void LldpManager::timeoutExpired() noexcept {
 void LldpManager::sendLldpOnAllPorts() {
   // send lldp frames through all the ports here.
   std::shared_ptr<SwitchState> state = sw_->getState();
-  for (const auto& port : std::as_const(*state->getPorts())) {
-    if (port.second->getPortType() == cfg::PortType::INTERFACE_PORT &&
-        port.second->isPortUp()) {
-      sendLldpInfo(port.second);
-    } else {
-      XLOG(DBG5) << "Skipping LLDP send on port: " << port.second->getID();
+  for (const auto& portMap : std::as_const(*state->getPorts())) {
+    for (const auto& [_, port] : std::as_const(*portMap.second)) {
+      bool sendLldp = false;
+      switch (port->getPortType()) {
+        case cfg::PortType::INTERFACE_PORT:
+        case cfg::PortType::MANAGEMENT_PORT:
+          sendLldp = true;
+          break;
+        case cfg::PortType::FABRIC_PORT:
+        case cfg::PortType::CPU_PORT:
+        case cfg::PortType::RECYCLE_PORT:
+        case cfg::PortType::EVENTOR_PORT:
+          break;
+      }
+      if (sendLldp && port->isPortUp()) {
+        sendLldpInfo(port);
+      } else {
+        XLOG(DBG5) << "Skipping LLDP send on port: " << port->getID();
+      }
     }
   }
 }
@@ -255,7 +284,7 @@ uint32_t LldpManager::LldpPktSize(
 void LldpManager::fillLldpTlv(
     TxPacket* pkt,
     const MacAddress macaddr,
-    VlanID vlanid,
+    const std::optional<VlanID>& vlanID,
     const std::string& systemdescr,
     const std::string& hostname,
     const std::string& portname,
@@ -263,7 +292,7 @@ void LldpManager::fillLldpTlv(
     const uint16_t ttl,
     const uint16_t capabilities) {
   RWPrivateCursor cursor(pkt->buf());
-  pkt->writeEthHeader(&cursor, LLDP_DEST_MAC, macaddr, vlanid, ETHERTYPE_LLDP);
+  pkt->writeEthHeader(&cursor, LLDP_DEST_MAC, macaddr, vlanID, ETHERTYPE_LLDP);
   // now write chassis ID TLV
   writeTlv(
       LldpTlvType::CHASSIS,
@@ -310,7 +339,27 @@ void LldpManager::fillLldpTlv(
 std::unique_ptr<TxPacket> LldpManager::createLldpPkt(
     SwSwitch* sw,
     const MacAddress macaddr,
-    VlanID vlanid,
+    const std::optional<VlanID>& vlanID,
+    const std::string& hostname,
+    const std::string& portname,
+    const std::string& portdesc,
+    const uint16_t ttl,
+    const uint16_t capabilities) {
+  return createLldpPkt(
+      [sw](uint32_t size) { return sw->allocatePacket(size); },
+      macaddr,
+      vlanID,
+      hostname,
+      portname,
+      portdesc,
+      ttl,
+      capabilities);
+}
+
+std::unique_ptr<TxPacket> LldpManager::createLldpPkt(
+    const facebook::fboss::utility::AllocatePktFn& allocatePacket,
+    const MacAddress macaddr,
+    const std::optional<VlanID>& vlanID,
     const std::string& hostname,
     const std::string& portname,
     const std::string& portdesc,
@@ -319,11 +368,11 @@ std::unique_ptr<TxPacket> LldpManager::createLldpPkt(
   static std::string lldpSysDescStr("FBOSS");
   uint32_t frameLen = LldpPktSize(hostname, portname, portdesc, lldpSysDescStr);
 
-  auto pkt = sw->allocatePacket(frameLen);
+  auto pkt = allocatePacket(frameLen);
   fillLldpTlv(
       pkt.get(),
       macaddr,
-      vlanid,
+      vlanID,
       lldpSysDescStr,
       hostname,
       portname,
@@ -332,10 +381,11 @@ std::unique_ptr<TxPacket> LldpManager::createLldpPkt(
       capabilities);
   return pkt;
 }
-
 void LldpManager::sendLldpInfo(const std::shared_ptr<Port>& port) {
-  MacAddress cpuMac = sw_->getPlatform()->getLocalMac();
   PortID thisPortID = port->getID();
+  auto switchId = sw_->getScopeResolver()->scope(thisPortID).switchId();
+  MacAddress cpuMac =
+      sw_->getHwAsicTable()->getHwAsicIf(switchId)->getAsicMac();
 
   const size_t kMaxLen = 64;
   std::array<char, kMaxLen> hostname;
@@ -360,8 +410,7 @@ void LldpManager::sendLldpInfo(const std::shared_ptr<Port>& port) {
   sw_->sendNetworkControlPacketAsync(
       std::move(pkt), PortDescriptor(thisPortID));
 
-  XLOG(DBG4) << "sent LLDP "
-             << " on port " << port->getID() << " with CPU MAC "
+  XLOG(DBG4) << "sent LLDP " << " on port " << port->getID() << " with CPU MAC "
              << cpuMac.toString() << " port id " << port->getName()
              << " and vlan " << port->getIngressVlan();
 }

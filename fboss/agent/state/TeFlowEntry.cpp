@@ -4,23 +4,115 @@
 #include "fboss/agent/state/NodeBase-defs.h"
 #include "fboss/agent/state/SwitchState.h"
 
+DECLARE_bool(intf_nbr_tables);
+
 namespace facebook::fboss {
 
-TeFlowEntry* TeFlowEntry::modify(std::shared_ptr<SwitchState>* state) {
-  if (!isPublished()) {
-    CHECK(!(*state)->isPublished());
-    return this;
+std::shared_ptr<TeFlowEntry> TeFlowEntry::createTeFlowEntry(
+    const FlowEntry& entry) {
+  auto teFlowEntry = std::make_shared<TeFlowEntry>(*entry.flow());
+  if (entry.nexthops().has_value()) {
+    teFlowEntry->setNextHops(*entry.nexthops());
+  } else if (!(*entry.nextHops()).empty()) {
+    teFlowEntry->setNextHops(*entry.nextHops());
   }
-
-  TeFlowTable* table = (*state)->getTeFlowTable()->modify(state);
-  auto newEntry = clone();
-  auto* ptr = newEntry.get();
-  table->updateNode(std::move(newEntry));
-  return ptr;
+  if (entry.counterID().has_value()) {
+    teFlowEntry->setCounterID(entry.counterID().value());
+  }
+  return teFlowEntry;
 }
 
 std::string TeFlowEntry::getID() const {
   return getTeFlowStr(getFlow()->toThrift());
+}
+
+template <typename AddrT>
+std::optional<folly::MacAddress> TeFlowEntry::getNeighborMac(
+    const std::shared_ptr<SwitchState>& state,
+    const std::shared_ptr<Interface>& interface,
+    AddrT ip) {
+  using NeighborEntryT = std::conditional_t<
+      std::is_same<AddrT, folly::IPAddressV4>::value,
+      ArpEntry,
+      NdpEntry>;
+
+  std::shared_ptr<NeighborEntryT> neighbor;
+  if (FLAGS_intf_nbr_tables) {
+    auto intf = state->getInterfaces()->getNodeIf(interface->getID());
+    neighbor = intf->getNeighborEntryTable<AddrT>()->getNodeIf(ip.str());
+  } else {
+    auto vlan = state->getVlans()->getNodeIf(interface->getVlanID());
+    neighbor = vlan->getNeighborEntryTable<AddrT>()->getNodeIf(ip.str());
+  }
+
+  if (!neighbor) {
+    return std::nullopt;
+  }
+  return neighbor->getMac();
+}
+
+bool TeFlowEntry::isNexthopResolved(
+    NextHopThrift nexthop,
+    const std::shared_ptr<SwitchState>& state) {
+  auto nhop = util::fromThrift(nexthop, true);
+  if (!nhop.isResolved()) {
+    XLOG(WARNING) << "Unresolved nexthop for TE flow " << nhop;
+    return false;
+  }
+  auto interface = state->getInterfaces()->getNodeIf(nhop.intfID().value());
+  if (!interface) {
+    XLOG(WARNING) << "Invalid inteface ID " << nhop;
+    return false;
+  }
+  std::optional<folly::MacAddress> dstMac;
+  if (nhop.addr().isV6()) {
+    dstMac = getNeighborMac<folly::IPAddressV6>(
+        state, interface, nhop.addr().asV6());
+    if (!dstMac.has_value()) {
+      XLOG(WARNING) << "No NDP entry for TE flow redirection nexthop " << nhop;
+      return false;
+    }
+  } else {
+    dstMac = getNeighborMac<folly::IPAddressV4>(
+        state, interface, nhop.addr().asV4());
+    if (!dstMac.has_value()) {
+      XLOG(WARNING) << "No ARP entry for TE flow redirection nexthop " << nhop;
+      return false;
+    }
+  }
+  if (dstMac.value().isBroadcast()) {
+    XLOG(WARNING)
+        << "No resolved neighbor entry for TE flow redirection nexthop "
+        << nhop;
+    return false;
+  }
+  return true;
+}
+
+void TeFlowEntry::resolve(const std::shared_ptr<SwitchState>& state) {
+  std::vector<NextHopThrift> resolvedNextHops;
+  for (const auto& nexthop : getNextHops()->toThrift()) {
+    if (!isNexthopResolved(nexthop, state)) {
+      auto nhop = util::fromThrift(nexthop, true);
+      throw FbossError(
+          "Invalid redirection nexthop. NH: ",
+          nhop.str(),
+          " TeFlow entry: ",
+          getID());
+    }
+    resolvedNextHops.emplace_back(nexthop);
+  }
+  if (resolvedNextHops.size()) {
+    setEnabled(true);
+  } else {
+    setEnabled(false);
+  }
+  setResolvedNextHops(std::move(resolvedNextHops));
+  if (getCounterID().has_value() && (FLAGS_emStatOnlyMode || getEnabled())) {
+    setStatEnabled(true);
+  } else {
+    setStatEnabled(false);
+  }
 }
 
 std::string TeFlowEntry::str() const {
@@ -49,7 +141,10 @@ std::string TeFlowEntry::str() const {
   for (const auto& nhop : util::toRouteNextHopSet(resolvedNhops->toThrift())) {
     flowString.append(fmt::format("{},", nhop.str()));
   }
-  flowString.append(fmt::format("Enabled:{}", getEnabled()));
+  flowString.append(fmt::format("Enabled:{},", getEnabled()));
+  auto statEnabled =
+      getStatEnabled().has_value() ? getStatEnabled().value() : false;
+  flowString.append(fmt::format("statEnabled:{}", statEnabled));
   return flowString;
 }
 

@@ -24,7 +24,9 @@ target_link_libraries(thrift_node_tests
     switch_config_cpp2
     thrift_cow_nodes
     thrift_cow_serializer
+    thrift_cow_visitor_test_utils
     fsdb_oper_cpp2
+    fsdb_model_cpp2
     state
     FBThrift::thriftcpp2
     ${GTEST}

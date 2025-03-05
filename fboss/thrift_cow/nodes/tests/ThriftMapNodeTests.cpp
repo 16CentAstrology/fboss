@@ -8,15 +8,13 @@
  *
  */
 
-#include <thrift/lib/cpp2/protocol/Serializer.h>
-#include <thrift/lib/cpp2/reflection/folly_dynamic.h>
+#include <fboss/thrift_cow/visitors/tests/VisitorTestUtils.h>
+#include <thrift/lib/cpp2/folly_dynamic/folly_dynamic.h>
 #include <thrift/lib/cpp2/reflection/reflection.h>
 #include <thrift/lib/cpp2/reflection/testing.h>
-#include "fboss/agent/gen-cpp2/switch_config_fatal_types.h"
 #include "fboss/fsdb/if/gen-cpp2/fsdb_oper_types.h"
 #include "fboss/thrift_cow/nodes/Serializer.h"
 #include "fboss/thrift_cow/nodes/Types.h"
-#include "fboss/thrift_cow/nodes/tests/gen-cpp2/test_fatal_types.h"
 
 #include "fboss/agent/state/DeltaFunctions.h"
 #include "fboss/agent/state/MapDelta.h"
@@ -43,6 +41,7 @@ cfg::L4PortRange buildPortRange(int min, int max) {
 
 TEST(ThriftMapNodeTests, ThriftMapFieldsPrimitivesSimple) {
   ThriftMapFields<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
@@ -53,6 +52,7 @@ TEST(ThriftMapNodeTests, ThriftMapFieldsPrimitivesSimple) {
 
 TEST(ThriftMapNodeTests, ThriftMapFieldsPrimitivesGetSet) {
   ThriftMapFields<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
@@ -69,6 +69,7 @@ TEST(ThriftMapNodeTests, ThriftMapFieldsPrimitivesGetSet) {
 TEST(ThriftMapNodeTests, ThriftMapFieldsPrimitivesConstructFromThrift) {
   std::unordered_map<int, int> data = {{1, 2}, {5, 99}};
   ThriftMapFields<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
@@ -84,6 +85,7 @@ TEST(ThriftMapNodeTests, ThriftMapFieldsPrimitivesConstructFromThrift) {
 
 TEST(ThriftMapNodeTests, ThriftMapFieldsStructsSimple) {
   ThriftMapFields<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
@@ -94,6 +96,7 @@ TEST(ThriftMapNodeTests, ThriftMapFieldsStructsSimple) {
 
 TEST(ThriftMapNodeTests, ThriftMapFieldsStructsGetSet) {
   ThriftMapFields<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
@@ -120,6 +123,7 @@ TEST(ThriftMapNodeTests, ThriftMapFieldsStructsConstructFromThrift) {
       {TestEnum::FIRST, buildPortRange(100, 999)},
       {TestEnum::SECOND, buildPortRange(1000, 9999)}};
   ThriftMapFields<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
@@ -135,6 +139,7 @@ TEST(ThriftMapNodeTests, ThriftMapFieldsStructsConstructFromThrift) {
 
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesSimple) {
   ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
@@ -145,6 +150,7 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesSimple) {
 
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesGetSet) {
   ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
@@ -161,6 +167,7 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesGetSet) {
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesConstructFromThrift) {
   std::unordered_map<int, int> data = {{1, 2}, {5, 99}};
   ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
@@ -177,6 +184,7 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesConstructFromThrift) {
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesVisit) {
   std::unordered_map<int, int> data = {{1, 2}, {5, 99}};
   ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
@@ -184,35 +192,21 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesVisit) {
       node(data);
 
   folly::dynamic out;
-  auto f = [&out](auto& node) { out = node.toFollyDynamic(); };
+  auto f = [&out](auto& node, auto /*begin*/, auto /*end*/) {
+    out = node.toFollyDynamic();
+  };
 
   std::vector<std::string> path = {"0"};
-  auto result = node.visitPath(path.begin(), path.end(), f);
+  auto result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::NON_EXISTENT_NODE);
 
   path = {"1"};
-  result = node.visitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 2);
 
   path = {"5"};
-  result = node.visitPath(path.begin(), path.end(), f);
-  ASSERT_EQ(result, ThriftTraverseResult::OK);
-  ASSERT_EQ(out, 99);
-
-  // also test cvisit
-  result = node.cvisitPath(path.begin(), path.end(), f);
-  ASSERT_EQ(result, ThriftTraverseResult::OK);
-  ASSERT_EQ(out, 99);
-
-  // Now create const node and test cvisit
-  const ThriftMapNode<ThriftMapTraits<
-      apache::thrift::type_class::map<
-          apache::thrift::type_class::integral,
-          apache::thrift::type_class::integral>,
-      std::unordered_map<int, int>>>
-      nodeConst(data);
-  result = nodeConst.cvisitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 99);
 }
@@ -220,6 +214,7 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesVisit) {
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesVisitMutable) {
   std::unordered_map<int, int> data = {{1, 2}, {5, 99}};
   ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
@@ -227,34 +222,39 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesVisitMutable) {
       node(data);
 
   folly::dynamic toWrite, out;
-  auto write = [&toWrite](auto& node) { node.fromFollyDynamic(toWrite); };
-  auto read = [&out](auto& node) { out = node.toFollyDynamic(); };
+  auto write = [&toWrite](auto& node, auto /*begin*/, auto /*end*/) {
+    node.fromFollyDynamic(toWrite);
+  };
+  auto read = [&out](auto& node, auto /*begin*/, auto /*end*/) {
+    out = node.toFollyDynamic();
+  };
 
   std::vector<std::string> path = {"0"};
-  auto result = node.visitPath(path.begin(), path.end(), read);
+  auto result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::NON_EXISTENT_NODE);
 
   path = {"1"};
-  result = node.visitPath(path.begin(), path.end(), read);
+  result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 2);
 
   path = {"5"};
-  result = node.visitPath(path.begin(), path.end(), read);
+  result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 99);
 
   path = {"1"};
   toWrite = 888;
-  result = node.visitPath(path.begin(), path.end(), write);
+  result = visitPath(node, path.begin(), path.end(), write);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
-  result = node.visitPath(path.begin(), path.end(), read);
+  result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, toWrite);
 }
 
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesClone) {
   using TestNodeType = ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
@@ -276,6 +276,7 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesClone) {
 
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesModify) {
   using TestNodeType = ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
@@ -305,6 +306,7 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesModify) {
 
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesRemove) {
   using TestNodeType = ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
@@ -340,6 +342,7 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesRemove) {
 
 TEST(ThriftMapNodeTests, ThriftMapNodeStructsSimple) {
   ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
@@ -350,6 +353,7 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsSimple) {
 
 TEST(ThriftMapNodeTests, ThriftMapNodeStructsGetSet) {
   ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
@@ -376,6 +380,7 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsConstructFromThrift) {
       {TestEnum::FIRST, buildPortRange(100, 999)},
       {TestEnum::SECOND, buildPortRange(1000, 9999)}};
   ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
@@ -394,6 +399,7 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsVisit) {
       {TestEnum::FIRST, buildPortRange(100, 999)},
       {TestEnum::SECOND, buildPortRange(1000, 9999)}};
   ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
@@ -401,63 +407,69 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsVisit) {
       node(data);
 
   folly::dynamic out;
-  auto f = [&out](auto& node) { out = node.toFollyDynamic(); };
+  auto f = [&out](auto& node, auto /*begin*/, auto /*end*/) {
+    out = node.toFollyDynamic();
+  };
 
   std::vector<std::string> path = {"FIRST"};
-  auto result = node.visitPath(path.begin(), path.end(), f);
+  auto result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   folly::dynamic expected;
-  apache::thrift::to_dynamic(
-      expected, data[TestEnum::FIRST], apache::thrift::dynamic_format::JSON_1);
+  facebook::thrift::to_dynamic(
+      expected,
+      data[TestEnum::FIRST],
+      facebook::thrift::dynamic_format::JSON_1);
   ASSERT_EQ(out, expected);
 
   // visit by enum value should also work
   path = {"1"};
-  result = node.visitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, expected);
 
   path = {"SECOND"};
-  result = node.visitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
-  apache::thrift::to_dynamic(
-      expected, data[TestEnum::SECOND], apache::thrift::dynamic_format::JSON_1);
+  facebook::thrift::to_dynamic(
+      expected,
+      data[TestEnum::SECOND],
+      facebook::thrift::dynamic_format::JSON_1);
   ASSERT_EQ(out, expected);
 
   path = {"2"};
-  result = node.visitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, expected);
 
   path = {"THIRD"};
-  result = node.visitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::NON_EXISTENT_NODE);
 
   path = {"FIRST", "nonexistent"};
-  result = node.visitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::INVALID_STRUCT_MEMBER);
 
   path = {"1", "nonexistent"};
-  result = node.visitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::INVALID_STRUCT_MEMBER);
 
   path = {"FIRST", "min"};
-  result = node.visitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 100);
 
   path = {"1", "min"};
-  result = node.visitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 100);
 
   path = {"SECOND", "min"};
-  result = node.visitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 1000);
 
   path = {"2", "min"};
-  result = node.visitPath(path.begin(), path.end(), f);
+  result = visitPath(node, path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 1000);
 }
@@ -467,6 +479,7 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsVisitMutable) {
       {TestEnum::FIRST, buildPortRange(100, 999)},
       {TestEnum::SECOND, buildPortRange(1000, 9999)}};
   ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
@@ -474,60 +487,69 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsVisitMutable) {
       node(data);
 
   folly::dynamic toWrite, out;
-  auto write = [&toWrite](auto& node) { node.fromFollyDynamic(toWrite); };
-  auto read = [&out](auto& node) { out = node.toFollyDynamic(); };
+  auto write = [&toWrite](auto& node, auto /*begin*/, auto /*end*/) {
+    node.fromFollyDynamic(toWrite);
+  };
+  auto read = [&out](auto& node, auto /*begin*/, auto /*end*/) {
+    out = node.toFollyDynamic();
+  };
 
   std::vector<std::string> path = {"FIRST"};
-  auto result = node.visitPath(path.begin(), path.end(), read);
+  auto result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   folly::dynamic expected;
-  apache::thrift::to_dynamic(
-      expected, data[TestEnum::FIRST], apache::thrift::dynamic_format::JSON_1);
+  facebook::thrift::to_dynamic(
+      expected,
+      data[TestEnum::FIRST],
+      facebook::thrift::dynamic_format::JSON_1);
   ASSERT_EQ(out, expected);
 
   path = {"SECOND"};
-  result = node.visitPath(path.begin(), path.end(), read);
+  result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
-  apache::thrift::to_dynamic(
-      expected, data[TestEnum::SECOND], apache::thrift::dynamic_format::JSON_1);
+  facebook::thrift::to_dynamic(
+      expected,
+      data[TestEnum::SECOND],
+      facebook::thrift::dynamic_format::JSON_1);
   ASSERT_EQ(out, expected);
 
   path = {"THIRD"};
-  result = node.visitPath(path.begin(), path.end(), read);
+  result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::NON_EXISTENT_NODE);
 
   path = {"FIRST", "min"};
-  result = node.visitPath(path.begin(), path.end(), read);
+  result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 100);
 
   path = {"SECOND", "min"};
-  result = node.visitPath(path.begin(), path.end(), read);
+  result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 1000);
 
   path = {"FIRST"};
-  apache::thrift::to_dynamic(
-      toWrite, buildPortRange(1, 2), apache::thrift::dynamic_format::JSON_1);
-  result = node.visitPath(path.begin(), path.end(), write);
+  facebook::thrift::to_dynamic(
+      toWrite, buildPortRange(1, 2), facebook::thrift::dynamic_format::JSON_1);
+  result = visitPath(node, path.begin(), path.end(), write);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
-  result = node.visitPath(path.begin(), path.end(), read);
+  result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, toWrite);
 
   path = {"FIRST", "min"};
-  result = node.visitPath(path.begin(), path.end(), read);
+  result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 1);
 
   path = {"SECOND", "min"};
-  result = node.visitPath(path.begin(), path.end(), read);
+  result = visitPath(node, path.begin(), path.end(), read);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
   ASSERT_EQ(out, 1000);
 }
 
 TEST(ThriftMapNodeTests, ThriftMapNodeStructsClone) {
   using TestNodeType = ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
@@ -554,6 +576,7 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsClone) {
 
 TEST(ThriftMapNodeTests, ThriftMapNodeStructsModify) {
   using TestNodeType = ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
@@ -600,6 +623,7 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsModify) {
 
 TEST(ThriftMapNodeTests, MapDelta) {
   using Map = ThriftMapNode<ThriftMapTraits<
+      false,
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,

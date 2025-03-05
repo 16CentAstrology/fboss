@@ -8,10 +8,12 @@
  *
  */
 
+#include <utility>
 #include "fboss/agent/hw/test/dataplane_tests/HwTestQosUtils.h"
 #include "fboss/agent/state/PortDescriptor.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/AgentTest.h"
+#include "fboss/agent/test/utils/QosTestUtils.h"
 #include "fboss/agent/types.h"
 
 DECLARE_string(config);
@@ -36,18 +38,18 @@ class MultiNodeTest : public AgentTest {
       AddrT addr,
       InterfaceID intfID) const {
     auto state = sw()->getState();
-    auto vlan = state->getInterfaces()->getInterfaceIf(intfID)->getVlanID();
+    auto vlan = state->getInterfaces()->getNodeIf(intfID)->getVlanID();
     if constexpr (std::is_same_v<AddrT, folly::IPAddressV6>) {
       auto entry = sw()->getState()
                        ->getVlans()
-                       ->getVlanIf(vlan)
+                       ->getNodeIf(vlan)
                        ->getNdpTable()
                        ->getEntryIf(addr);
       return {entry->getMac(), entry->getPort()};
     } else {
       auto entry = sw()->getState()
                        ->getVlans()
-                       ->getVlanIf(vlan)
+                       ->getNodeIf(vlan)
                        ->getArpTable()
                        ->getEntryIf(addr);
       return {entry->getMac(), entry->getPort()};
@@ -55,30 +57,35 @@ class MultiNodeTest : public AgentTest {
   }
 
   template <typename AddrT>
-  void disableTTLDecrementsForRoute(RoutePrefix<AddrT> prefix) const {
-    auto fibContainer =
-        sw()->getState()->getFibs()->getFibContainer(RouterID(0));
+  void disableTTLDecrementsForRoute(RoutePrefix<AddrT> prefix) {
+    auto fibContainer = sw()->getState()->getFibs()->getNode(RouterID(0));
     auto fib = fibContainer->template getFib<AddrT>();
     auto defaultRoute = fib->getRouteIf(prefix);
     auto nhSet = defaultRoute->getForwardInfo().getNextHopSet();
 
-    for (const auto nhop : nhSet) {
+    std::vector<utility::EcmpNextHop<AddrT>> ecmpNhops{};
+    boost::container::flat_set<PortDescriptor> ports{};
+
+    for (const auto& nhop : nhSet) {
       if constexpr (std::is_same_v<AddrT, folly::IPAddressV6>) {
         auto ecmpNh = utility::EcmpNextHop<AddrT>(
             nhop.addr().asV6(),
             getNeighborEntry(nhop.addr().asV6(), nhop.intf()).second,
             getNeighborEntry(nhop.addr().asV6(), nhop.intf()).first,
             *nhop.intfID());
-        utility::disableTTLDecrements(sw()->getHw(), RouterID(0), ecmpNh);
+        ports.emplace(ecmpNh.portDesc);
+        ecmpNhops.emplace_back(std::move(ecmpNh));
       } else {
         auto ecmpNh = utility::EcmpNextHop<AddrT>(
             nhop.addr().asV4(),
             getNeighborEntry(nhop.addr().asV4(), nhop.intf()).second,
             getNeighborEntry(nhop.addr().asV4(), nhop.intf()).first,
             *nhop.intfID());
-        utility::disableTTLDecrements(sw()->getHw(), RouterID(0), ecmpNh);
+        ports.emplace(ecmpNh.portDesc);
+        ecmpNhops.emplace_back(std::move(ecmpNh));
       }
     }
+    utility::disableTTLDecrements(sw(), RouterID(0), ecmpNhops);
   }
   std::vector<PortID> testPorts() const;
   std::vector<std::string> testPortNames() const;

@@ -17,7 +17,6 @@ extern "C" {
 #include <folly/IPAddressV4.h>
 #include <folly/IPAddressV6.h>
 #include <folly/logging/xlog.h>
-#include "fboss/agent/Constants.h"
 #include "fboss/agent/hw/bcm/BcmError.h"
 #include "fboss/agent/hw/bcm/BcmIntf.h"
 #include "fboss/agent/hw/bcm/BcmMultiPathNextHop.h"
@@ -67,7 +66,6 @@ void attachRouteStat(
         " counter ",
         (*newCounterID).str());
     if (isFlexCounterSupported) {
-#if defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_20)
       auto rc = bcm_l3_route_flexctr_object_set(
           unit, rt, newCounterID.value().getHwOffset());
       bcmCheckError(
@@ -76,7 +74,6 @@ void attachRouteStat(
           prefix,
           " counter ",
           (*newCounterID).str());
-#endif
     }
   }
 }
@@ -161,9 +158,7 @@ void programLpmRoute(
         unit, &rt, bcmL3RouteInPackets, &hwCounterIndex);
     if (rc == BCM_E_NONE) {
       if (isFlexCounterSupported) {
-#if defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_20)
         rc = bcm_l3_route_flexctr_object_get(unit, &rt, &hwCounterOffset);
-#endif
       }
       oldCounterID.emplace(
           facebook::fboss::BcmRouteCounterID(hwCounterIndex, hwCounterOffset));

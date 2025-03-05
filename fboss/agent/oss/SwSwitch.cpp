@@ -15,14 +15,6 @@
 
 namespace facebook::fboss {
 
-void SwSwitch::publishInitTimes(std::string /*name*/, const float& /*time*/) {}
-
-void SwSwitch::updateRouteStats() {}
-void SwSwitch::updateTeFlowStats() {}
-void SwSwitch::updatePortInfo() {}
-
-void SwSwitch::publishSwitchInfo(const HwInitResult& /*hwInitRet*/) {}
-
 void SwSwitch::logLinkStateEvent(PortID port, bool up) {
   std::string logMsg = folly::sformat(
       "LinkState: Port {0} {1}", (uint16_t)port, (up ? "Up" : "Down"));

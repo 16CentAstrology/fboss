@@ -26,32 +26,33 @@ std::vector<int> getControllingPortIDs() {
 }
 } // namespace
 
+// @lint-ignore CLANGTIDY
+DECLARE_string(mac);
+
 namespace facebook::fboss {
 
 FakeBcmTestPlatform::FakeBcmTestPlatform()
     : BcmTestPlatform(
           fakeProductInfo(),
-          std::make_unique<FakeTestPlatformMapping>(getControllingPortIDs())) {}
+          std::make_unique<FakeTestPlatformMapping>(getControllingPortIDs())) {
+  agentDirUtil_ = std::make_unique<AgentDirectoryUtil>(
+      tmpDir_.path().string() + "/volatile",
+      tmpDir_.path().string() + "/persist");
+  FLAGS_mac = "02:00:00:00:00:01";
+}
 
 void FakeBcmTestPlatform::setupAsic(
-    cfg::SwitchType switchType,
     std::optional<int64_t> switchId,
-    std::optional<cfg::Range64> systemPortRange) {
-  asic_ = std::make_unique<FakeAsic>(switchType, switchId, systemPortRange);
+    const cfg::SwitchInfo& switchInfo,
+    std::optional<HwAsic::FabricNodeRole> fabricNodeRole) {
+  CHECK(!fabricNodeRole.has_value());
+  asic_ = std::make_unique<FakeAsic>(switchId, switchInfo);
 }
 
 FakeBcmTestPlatform::~FakeBcmTestPlatform() {}
 
 std::unique_ptr<BcmTestPort> FakeBcmTestPlatform::createTestPort(PortID id) {
   return std::make_unique<FakeBcmTestPort>(id, this);
-}
-
-std::string FakeBcmTestPlatform::getVolatileStateDir() const {
-  return tmpDir_.path().string() + "/volatile";
-}
-
-std::string FakeBcmTestPlatform::getPersistentStateDir() const {
-  return tmpDir_.path().string() + "/persist";
 }
 
 HwAsic* FakeBcmTestPlatform::getAsic() const {

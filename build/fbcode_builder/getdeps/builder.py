@@ -4,6 +4,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import glob
 import json
 import os
@@ -13,8 +15,10 @@ import stat
 import subprocess
 import sys
 import typing
+from shlex import quote as shellquote
 from typing import Optional
 
+from .copytree import simple_copytree
 from .dyndeps import create_dyn_dep_munger
 from .envfuncs import add_path_entry, Env, path_search
 from .fetcher import copy_if_different
@@ -27,6 +31,8 @@ if typing.TYPE_CHECKING:
 class BuilderBase(object):
     def __init__(
         self,
+        loader,
+        dep_manifests,  # manifests of dependencies
         build_opts: "BuildOptions",
         ctx,
         manifest,
@@ -53,6 +59,9 @@ class BuilderBase(object):
         self.build_opts = build_opts
         self.manifest = manifest
         self.final_install_prefix = final_install_prefix
+        self.loader = loader
+        self.dep_manifests = dep_manifests
+        self.install_dirs = [loader.get_project_install_dir(m) for m in dep_manifests]
 
     def _get_cmd_prefix(self):
         if self.build_opts.is_windows():
@@ -62,7 +71,18 @@ class BuilderBase(object):
                 # the cmd quoting rules to assemble a command that calls the script
                 # to prep the environment and then triggers the actual command that
                 # we wanted to run.
-                return [vcvarsall, "amd64", "&&"]
+
+                # Due to changes in vscrsall.bat, it now reports an ERRORLEVEL of 1
+                # even when succeeding. This occurs when an extension is not present.
+                # To continue, we must ignore the ERRORLEVEL returned. We do this by
+                # wrapping the call in a batch file that always succeeds.
+                wrapper = os.path.join(self.build_dir, "succeed.bat")
+                with open(wrapper, "w") as f:
+                    f.write("@echo off\n")
+                    f.write(f'call "{vcvarsall}" amd64\n')
+                    f.write("set ERRORLEVEL=0\n")
+                    f.write("exit /b 0\n")
+                return [wrapper, "&&"]
         return []
 
     def _run_cmd(
@@ -113,7 +133,7 @@ class BuilderBase(object):
         patchfile = os.path.join(
             self.build_opts.fbcode_builder_dir, "patches", self.patchfile
         )
-        patchcmd = ["git", "apply"]
+        patchcmd = ["git", "apply", "--ignore-space-change"]
         if self.patchfile_opts:
             patchcmd.append(self.patchfile_opts)
         try:
@@ -123,27 +143,71 @@ class BuilderBase(object):
         os.chdir(old_wd)
         patched_sentinel_file.touch()
 
-    def prepare(self, install_dirs, reconfigure: bool) -> None:
+    def prepare(self, reconfigure: bool) -> None:
         print("Preparing %s..." % self.manifest.name)
         reconfigure = self._reconfigure(reconfigure)
         self._apply_patchfile()
-        self._prepare(install_dirs=install_dirs, reconfigure=reconfigure)
+        self._prepare(reconfigure=reconfigure)
 
-    def build(self, install_dirs, reconfigure: bool) -> None:
+    def debug(self, reconfigure: bool) -> None:
+        reconfigure = self._reconfigure(reconfigure)
+        self._apply_patchfile()
+        self._prepare(reconfigure=reconfigure)
+        env = self._compute_env()
+        print("Starting a shell in %s, ^D to exit..." % self.build_dir)
+        # TODO: print the command to run the build
+        shell = ["powershell.exe"] if sys.platform == "win32" else ["/bin/sh", "-i"]
+        self._run_cmd(shell, cwd=self.build_dir, env=env)
+
+    def printenv(self, reconfigure: bool) -> None:
+        """print the environment in a shell sourcable format"""
+        reconfigure = self._reconfigure(reconfigure)
+        self._apply_patchfile()
+        self._prepare(reconfigure=reconfigure)
+        env = self._compute_env(env=Env(src={}))
+        prefix = "export "
+        sep = ":"
+        expand = "$"
+        expandpost = ""
+        if self.build_opts.is_windows():
+            prefix = "SET "
+            sep = ";"
+            expand = "%"
+            expandpost = "%"
+        for k, v in sorted(env.items()):
+            existing = os.environ.get(k, None)
+            if k.endswith("PATH") and existing:
+                v = shellquote(v) + sep + f"{expand}{k}{expandpost}"
+            else:
+                v = shellquote(v)
+            print("%s%s=%s" % (prefix, k, v))
+
+    def build(self, reconfigure: bool) -> None:
         print("Building %s..." % self.manifest.name)
         reconfigure = self._reconfigure(reconfigure)
         self._apply_patchfile()
-        self._prepare(install_dirs=install_dirs, reconfigure=reconfigure)
-        self._build(install_dirs=install_dirs, reconfigure=reconfigure)
+        self._prepare(reconfigure=reconfigure)
+        self._build(reconfigure=reconfigure)
 
-        # On Windows, emit a wrapper script that can be used to run build artifacts
-        # directly from the build directory, without installing them.  On Windows $PATH
-        # needs to be updated to include all of the directories containing the runtime
-        # library dependencies in order to run the binaries.
-        if self.build_opts.is_windows():
+        if self.build_opts.free_up_disk:
+            # don't clean --src-dir=. case as user may want to build again or run tests on the build
+            if self.src_dir.startswith(self.build_opts.scratch_dir) and os.path.isdir(
+                self.build_dir
+            ):
+                if os.path.islink(self.build_dir):
+                    os.remove(self.build_dir)
+                else:
+                    shutil.rmtree(self.build_dir)
+        elif self.build_opts.is_windows():
+            # On Windows, emit a wrapper script that can be used to run build artifacts
+            # directly from the build directory, without installing them.  On Windows $PATH
+            # needs to be updated to include all of the directories containing the runtime
+            # library dependencies in order to run the binaries.
             script_path = self.get_dev_run_script_path()
-            dep_munger = create_dyn_dep_munger(self.build_opts, install_dirs)
-            dep_dirs = self.get_dev_run_extra_path_dirs(install_dirs, dep_munger)
+            dep_munger = create_dyn_dep_munger(
+                self.build_opts, self._compute_env(), self.install_dirs
+            )
+            dep_dirs = self.get_dev_run_extra_path_dirs(dep_munger)
             # pyre-fixme[16]: Optional type has no attribute `emit_dev_run_script`.
             dep_munger.emit_dev_run_script(script_path, dep_dirs)
 
@@ -168,49 +232,55 @@ class BuilderBase(object):
             )
         )
 
-    def run_tests(
-        self, install_dirs, schedule_type, owner, test_filter, retry, no_testpilot
-    ) -> None:
+    def run_tests(self, schedule_type, owner, test_filter, retry, no_testpilot) -> None:
         """Execute any tests that we know how to run.  If they fail,
         raise an exception."""
         pass
 
-    def _prepare(self, install_dirs, reconfigure) -> None:
+    def _prepare(self, reconfigure) -> None:
         """Prepare the build. Useful when need to generate config,
         but builder is not the primary build system.
         e.g. cargo when called from cmake"""
         pass
 
-    def _build(self, install_dirs, reconfigure) -> None:
+    def _build(self, reconfigure) -> None:
         """Perform the build.
-        install_dirs contains the list of installation directories for
-        the dependencies of this project.
         reconfigure will be set to true if the fetcher determined
         that the sources have changed in such a way that the build
         system needs to regenerate its rules."""
         pass
 
-    def _compute_env(self, install_dirs):
+    def _compute_env(self, env=None) -> Env:
+        if env is None:
+            env = self.env
         # CMAKE_PREFIX_PATH is only respected when passed through the
         # environment, so we construct an appropriate path to pass down
         return self.build_opts.compute_env_for_install_dirs(
-            install_dirs, env=self.env, manifest=self.manifest
+            self.loader,
+            self.dep_manifests,
+            self.ctx,
+            env=env,
+            manifest=self.manifest,
         )
 
     def get_dev_run_script_path(self):
         assert self.build_opts.is_windows()
         return os.path.join(self.build_dir, "run.ps1")
 
-    def get_dev_run_extra_path_dirs(self, install_dirs, dep_munger=None):
+    def get_dev_run_extra_path_dirs(self, dep_munger=None):
         assert self.build_opts.is_windows()
         if dep_munger is None:
-            dep_munger = create_dyn_dep_munger(self.build_opts, install_dirs)
+            dep_munger = create_dyn_dep_munger(
+                self.build_opts, self._compute_env(), self.install_dirs
+            )
         return dep_munger.compute_dependency_paths(self.build_dir)
 
 
 class MakeBuilder(BuilderBase):
     def __init__(
         self,
+        loader,
+        dep_manifests,
         build_opts,
         ctx,
         manifest,
@@ -222,7 +292,14 @@ class MakeBuilder(BuilderBase):
         test_args,
     ) -> None:
         super(MakeBuilder, self).__init__(
-            build_opts, ctx, manifest, src_dir, build_dir, inst_dir
+            loader,
+            dep_manifests,
+            build_opts,
+            ctx,
+            manifest,
+            src_dir,
+            build_dir,
+            inst_dir,
         )
         self.build_args = build_args or []
         self.install_args = install_args or []
@@ -235,9 +312,9 @@ class MakeBuilder(BuilderBase):
     def _get_prefix(self):
         return ["PREFIX=" + self.inst_dir, "prefix=" + self.inst_dir]
 
-    def _build(self, install_dirs, reconfigure) -> None:
+    def _build(self, reconfigure) -> None:
 
-        env = self._compute_env(install_dirs)
+        env = self._compute_env()
 
         # Need to ensure that PREFIX is set prior to install because
         # libbpf uses it when generating its pkg-config file.
@@ -260,20 +337,31 @@ class MakeBuilder(BuilderBase):
             for file in glob.glob(srcpattern):
                 shutil.copy(file, libdir)
 
-    def run_tests(
-        self, install_dirs, schedule_type, owner, test_filter, retry, no_testpilot
-    ) -> None:
+    def run_tests(self, schedule_type, owner, test_filter, retry, no_testpilot) -> None:
         if not self.test_args:
             return
 
-        env = self._compute_env(install_dirs)
+        env = self._compute_env()
+        if test_filter:
+            env["GETDEPS_TEST_FILTER"] = test_filter
+        else:
+            env["GETDEPS_TEST_FILTER"] = ""
 
-        cmd = [self._make_binary] + self.test_args + self._get_prefix()
-        self._run_cmd(cmd, env=env)
+        if retry:
+            env["GETDEPS_TEST_RETRY"] = retry
+        else:
+            env["GETDEPS_TEST_RETRY"] = 0
+
+        cmd = (
+            [self._make_binary, "-j%s" % self.num_jobs]
+            + self.test_args
+            + self._get_prefix()
+        )
+        self._run_cmd(cmd, allow_fail=False, env=env)
 
 
 class CMakeBootStrapBuilder(MakeBuilder):
-    def _build(self, install_dirs, reconfigure) -> None:
+    def _build(self, reconfigure) -> None:
         self._run_cmd(
             [
                 "./bootstrap",
@@ -281,12 +369,14 @@ class CMakeBootStrapBuilder(MakeBuilder):
                 f"--parallel={self.num_jobs}",
             ]
         )
-        super(CMakeBootStrapBuilder, self)._build(install_dirs, reconfigure)
+        super(CMakeBootStrapBuilder, self)._build(reconfigure)
 
 
 class AutoconfBuilder(BuilderBase):
     def __init__(
         self,
+        loader,
+        dep_manifests,
         build_opts,
         ctx,
         manifest,
@@ -297,7 +387,14 @@ class AutoconfBuilder(BuilderBase):
         conf_env_args,
     ) -> None:
         super(AutoconfBuilder, self).__init__(
-            build_opts, ctx, manifest, src_dir, build_dir, inst_dir
+            loader,
+            dep_manifests,
+            build_opts,
+            ctx,
+            manifest,
+            src_dir,
+            build_dir,
+            inst_dir,
         )
         self.args = args or []
         self.conf_env_args = conf_env_args or {}
@@ -306,14 +403,14 @@ class AutoconfBuilder(BuilderBase):
     def _make_binary(self):
         return self.manifest.get("build", "make_binary", "make", ctx=self.ctx)
 
-    def _build(self, install_dirs, reconfigure) -> None:
+    def _build(self, reconfigure) -> None:
         configure_path = os.path.join(self.src_dir, "configure")
         autogen_path = os.path.join(self.src_dir, "autogen.sh")
 
-        env = self._compute_env(install_dirs)
+        env = self._compute_env()
 
         # Some configure scripts need additional env values passed derived from cmds
-        for (k, cmd_args) in self.conf_env_args.items():
+        for k, cmd_args in self.conf_env_args.items():
             out = (
                 subprocess.check_output(cmd_args, env=dict(env.items()))
                 .decode("utf-8")
@@ -340,41 +437,45 @@ class AutoconfBuilder(BuilderBase):
                 self._run_cmd(["autoreconf", "-ivf"], cwd=self.src_dir, env=env)
         configure_cmd = [configure_path, "--prefix=" + self.inst_dir] + self.args
         self._run_cmd(configure_cmd, env=env)
-        self._run_cmd([self._make_binary, "-j%s" % self.num_jobs], env=env)
+        only_install = self.manifest.get("build", "only_install", "false", ctx=self.ctx)
+        if not only_install:
+            self._run_cmd([self._make_binary, "-j%s" % self.num_jobs], env=env)
         self._run_cmd([self._make_binary, "install"], env=env)
 
 
 class Iproute2Builder(BuilderBase):
     # ./configure --prefix does not work for iproute2.
-    # Thus, explicitly copy sources from src_dir to build_dir, bulid,
+    # Thus, explicitly copy sources from src_dir to build_dir, build,
     # and then install to inst_dir using DESTDIR
     # lastly, also copy include from build_dir to inst_dir
-    def __init__(self, build_opts, ctx, manifest, src_dir, build_dir, inst_dir) -> None:
+    def __init__(
+        self,
+        loader,
+        dep_manifests,
+        build_opts,
+        ctx,
+        manifest,
+        src_dir,
+        build_dir,
+        inst_dir,
+    ) -> None:
         super(Iproute2Builder, self).__init__(
-            build_opts, ctx, manifest, src_dir, build_dir, inst_dir
+            loader,
+            dep_manifests,
+            build_opts,
+            ctx,
+            manifest,
+            src_dir,
+            build_dir,
+            inst_dir,
         )
 
-    def _patch(self) -> None:
-        # FBOSS build currently depends on an old version of iproute2 (commit
-        # 7ca63aef7d1b0c808da0040c6b366ef7a61f38c1). This is missing a commit
-        # (ae717baf15fb4d30749ada3948d9445892bac239) needed to build iproute2
-        # successfully. Apply it viz.: include stdint.h
-        # Reference: https://fburl.com/ilx9g5xm
-        with open(self.build_dir + "/tc/tc_core.c", "r") as f:
-            data = f.read()
-
-        with open(self.build_dir + "/tc/tc_core.c", "w") as f:
-            f.write("#include <stdint.h>\n")
-            f.write(data)
-
-    def _build(self, install_dirs, reconfigure) -> None:
+    def _build(self, reconfigure) -> None:
         configure_path = os.path.join(self.src_dir, "configure")
-
         env = self.env.copy()
         self._run_cmd([configure_path], env=env)
         shutil.rmtree(self.build_dir)
         shutil.copytree(self.src_dir, self.build_dir)
-        self._patch()
         self._run_cmd(["make", "-j%s" % self.num_jobs], env=env)
         install_cmd = ["make", "install", "DESTDIR=" + self.inst_dir]
 
@@ -385,6 +486,61 @@ class Iproute2Builder(BuilderBase):
                 )
 
         self._run_cmd(install_cmd, env=env)
+
+
+class SystemdBuilder(BuilderBase):
+    # SystemdBuilder assumes that meson build tool has already been installed on
+    # the machine.
+    def __init__(
+        self,
+        loader,
+        dep_manifests,
+        build_opts,
+        ctx,
+        manifest,
+        src_dir,
+        build_dir,
+        inst_dir,
+    ) -> None:
+        super(SystemdBuilder, self).__init__(
+            loader,
+            dep_manifests,
+            build_opts,
+            ctx,
+            manifest,
+            src_dir,
+            build_dir,
+            inst_dir,
+        )
+
+    def _build(self, reconfigure) -> None:
+        env = self._compute_env()
+        meson = path_search(env, "meson")
+        if meson is None:
+            raise Exception("Failed to find Meson")
+
+        # Meson builds typically require setup, compile, and install steps.
+        # During this setup step we ensure that the static library is built and
+        # the prefix is empty.
+        self._run_cmd(
+            [
+                meson,
+                "setup",
+                "-Dstatic-libsystemd=true",
+                "-Dprefix=/",
+                self.build_dir,
+                self.src_dir,
+            ]
+        )
+
+        # Compile step needs to satisfy the build directory that was previously
+        # prepared during setup.
+        self._run_cmd([meson, "compile", "-C", self.build_dir])
+
+        # Install step
+        self._run_cmd(
+            [meson, "install", "-C", self.build_dir, "--destdir", self.inst_dir]
+        )
 
 
 class CMakeBuilder(BuilderBase):
@@ -478,7 +634,7 @@ def main():
                 "--target",
                 target,
                 "--config",
-                "Release",
+                "{build_type}",
                 get_jobs_argument(args.num_jobs),
         ] + args.cmake_args
     elif args.mode == "test":
@@ -502,6 +658,8 @@ if __name__ == "__main__":
 
     def __init__(
         self,
+        loader,
+        dep_manifests,
         build_opts,
         ctx,
         manifest,
@@ -509,12 +667,13 @@ if __name__ == "__main__":
         build_dir,
         inst_dir,
         defines,
-        loader=None,
         final_install_prefix=None,
         extra_cmake_defines=None,
         cmake_target="install",
     ) -> None:
         super(CMakeBuilder, self).__init__(
+            loader,
+            dep_manifests,
             build_opts,
             ctx,
             manifest,
@@ -600,8 +759,9 @@ if __name__ == "__main__":
             # unspecified.  Some of the deps fail to compile in release mode
             # due to warning->error promotion.  RelWithDebInfo is the happy
             # medium.
-            "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+            "CMAKE_BUILD_TYPE": self.build_opts.build_type,
         }
+
         if "SANDCASTLE" not in os.environ:
             # We sometimes see intermittent ccache related breakages on some
             # of the FB internal CI hosts, so we prefer to disable ccache
@@ -674,10 +834,10 @@ if __name__ == "__main__":
 
         return define_args
 
-    def _build(self, install_dirs, reconfigure: bool) -> None:
+    def _build(self, reconfigure: bool) -> None:
         reconfigure = reconfigure or self._needs_reconfigure()
 
-        env = self._compute_env(install_dirs)
+        env = self._compute_env()
         if not self.build_opts.is_windows() and self.final_install_prefix:
             env["DESTDIR"] = self.inst_dir
 
@@ -698,6 +858,7 @@ if __name__ == "__main__":
                 build_dir=self.build_dir,
                 install_dir=self.inst_dir,
                 sys=sys,
+                build_type=self.build_opts.build_type,
             )
 
             self._invalidate_cache()
@@ -711,7 +872,7 @@ if __name__ == "__main__":
                 "--target",
                 self.cmake_target,
                 "--config",
-                "Release",
+                self.build_opts.build_type,
                 "-j",
                 str(self.num_jobs),
             ],
@@ -719,9 +880,9 @@ if __name__ == "__main__":
         )
 
     def run_tests(
-        self, install_dirs, schedule_type, owner, test_filter, retry: int, no_testpilot
+        self, schedule_type, owner, test_filter, retry: int, no_testpilot
     ) -> None:
-        env = self._compute_env(install_dirs)
+        env = self._compute_env()
         ctest = path_search(env, "ctest")
         cmake = path_search(env, "cmake")
 
@@ -735,7 +896,7 @@ if __name__ == "__main__":
         # since CMake will emit RPATH properly in the binary so they can find these
         # dependencies.
         if self.build_opts.is_windows():
-            path_entries = self.get_dev_run_extra_path_dirs(install_dirs)
+            path_entries = self.get_dev_run_extra_path_dirs()
             path = env.get("PATH")
             if path:
                 path_entries.insert(0, path)
@@ -818,12 +979,18 @@ if __name__ == "__main__":
             # better signals for flaky tests.
             retry = 0
 
-        tpx = path_search(env, "tpx")
+        tpx = None
+        try:
+            from .facebook.testinfra import start_run
+
+            tpx = path_search(env, "tpx")
+        except ImportError:
+            # internal testinfra not available
+            pass
+
         if tpx and not no_testpilot:
             buck_test_info = list_tests()
             import os
-
-            from .facebook.testinfra import start_run
 
             buck_test_info_name = os.path.join(self.build_dir, ".buck-test-info.json")
             with open(buck_test_info_name, "w") as f:
@@ -832,7 +999,6 @@ if __name__ == "__main__":
             env.set("http_proxy", "")
             env.set("https_proxy", "")
             runs = []
-            from sys import platform
 
             with start_run(env["FBSOURCE_HASH"]) as run_id:
                 testpilot_args = [
@@ -936,12 +1102,29 @@ if __name__ == "__main__":
 
 
 class NinjaBootstrap(BuilderBase):
-    def __init__(self, build_opts, ctx, manifest, build_dir, src_dir, inst_dir) -> None:
+    def __init__(
+        self,
+        loader,
+        dep_manifests,
+        build_opts,
+        ctx,
+        manifest,
+        build_dir,
+        src_dir,
+        inst_dir,
+    ) -> None:
         super(NinjaBootstrap, self).__init__(
-            build_opts, ctx, manifest, src_dir, build_dir, inst_dir
+            loader,
+            dep_manifests,
+            build_opts,
+            ctx,
+            manifest,
+            src_dir,
+            build_dir,
+            inst_dir,
         )
 
-    def _build(self, install_dirs, reconfigure) -> None:
+    def _build(self, reconfigure) -> None:
         self._run_cmd([sys.executable, "configure.py", "--bootstrap"], cwd=self.src_dir)
         src_ninja = os.path.join(self.src_dir, "ninja")
         dest_ninja = os.path.join(self.inst_dir, "bin/ninja")
@@ -953,28 +1136,50 @@ class NinjaBootstrap(BuilderBase):
 
 
 class OpenSSLBuilder(BuilderBase):
-    def __init__(self, build_opts, ctx, manifest, build_dir, src_dir, inst_dir) -> None:
+    def __init__(
+        self,
+        loader,
+        dep_manifests,
+        build_opts,
+        ctx,
+        manifest,
+        build_dir,
+        src_dir,
+        inst_dir,
+    ) -> None:
         super(OpenSSLBuilder, self).__init__(
-            build_opts, ctx, manifest, src_dir, build_dir, inst_dir
+            loader,
+            dep_manifests,
+            build_opts,
+            ctx,
+            manifest,
+            src_dir,
+            build_dir,
+            inst_dir,
         )
 
-    def _build(self, install_dirs, reconfigure) -> None:
+    def _build(self, reconfigure) -> None:
         configure = os.path.join(self.src_dir, "Configure")
 
         # prefer to resolve the perl that we installed from
         # our manifest on windows, but fall back to the system
         # path on eg: darwin
         env = self.env.copy()
-        for d in install_dirs:
-            bindir = os.path.join(d, "bin")
+        for m in self.dep_manifests:
+            bindir = os.path.join(self.loader.get_project_install_dir(m), "bin")
             add_path_entry(env, "PATH", bindir, append=False)
 
         perl = typing.cast(str, path_search(env, "perl", "perl"))
 
         make_j_args = []
+        extra_args = []
         if self.build_opts.is_windows():
-            make = "nmake.exe"
+            # jom is compatible with nmake, adds the /j argument for parallel build
+            make = "jom.exe"
+            make_j_args = ["/j%s" % self.num_jobs]
             args = ["VC-WIN64A-masm", "-utf-8"]
+            # fixes "if multiple CL.EXE write to the same .PDB file, please use /FS"
+            extra_args = ["/FS"]
         elif self.build_opts.is_darwin():
             make = "make"
             make_j_args = ["-j%s" % self.num_jobs]
@@ -1007,16 +1212,28 @@ class OpenSSLBuilder(BuilderBase):
                 "no-unit-test",
                 "no-tests",
             ]
+            + extra_args
         )
+        # show the config produced
+        self._run_cmd([perl, "configdata.pm", "--dump"], env=env)
         make_build = [make] + make_j_args
-        self._run_cmd(make_build)
+        self._run_cmd(make_build, env=env)
         make_install = [make, "install_sw", "install_ssldirs"]
-        self._run_cmd(make_install)
+        self._run_cmd(make_install, env=env)
 
 
 class Boost(BuilderBase):
     def __init__(
-        self, build_opts, ctx, manifest, src_dir, build_dir, inst_dir, b2_args
+        self,
+        loader,
+        dep_manifests,
+        build_opts,
+        ctx,
+        manifest,
+        src_dir,
+        build_dir,
+        inst_dir,
+        b2_args,
     ) -> None:
         children = os.listdir(src_dir)
         assert len(children) == 1, "expected a single directory entry: %r" % (children,)
@@ -1024,12 +1241,19 @@ class Boost(BuilderBase):
         assert boost_src.startswith("boost")
         src_dir = os.path.join(src_dir, children[0])
         super(Boost, self).__init__(
-            build_opts, ctx, manifest, src_dir, build_dir, inst_dir
+            loader,
+            dep_manifests,
+            build_opts,
+            ctx,
+            manifest,
+            src_dir,
+            build_dir,
+            inst_dir,
         )
         self.b2_args = b2_args
 
-    def _build(self, install_dirs, reconfigure) -> None:
-        env = self._compute_env(install_dirs)
+    def _build(self, reconfigure) -> None:
+        env = self._compute_env()
         linkage = ["static"]
         if self.build_opts.is_windows() or self.build_opts.shared_libs:
             linkage.append("shared")
@@ -1084,12 +1308,14 @@ class Boost(BuilderBase):
 
 
 class NopBuilder(BuilderBase):
-    def __init__(self, build_opts, ctx, manifest, src_dir, inst_dir) -> None:
+    def __init__(
+        self, loader, dep_manifests, build_opts, ctx, manifest, src_dir, inst_dir
+    ) -> None:
         super(NopBuilder, self).__init__(
-            build_opts, ctx, manifest, src_dir, None, inst_dir
+            loader, dep_manifests, build_opts, ctx, manifest, src_dir, None, inst_dir
         )
 
-    def build(self, install_dirs, reconfigure: bool) -> None:
+    def build(self, reconfigure: bool) -> None:
         print("Installing %s -> %s" % (self.src_dir, self.inst_dir))
         parent = os.path.dirname(self.inst_dir)
         if not os.path.exists(parent):
@@ -1110,7 +1336,7 @@ class NopBuilder(BuilderBase):
                     os.makedirs(dest_parent)
                 if os.path.isdir(full_src):
                     if not os.path.exists(full_dest):
-                        shutil.copytree(full_src, full_dest)
+                        simple_copytree(full_src, full_dest)
                 else:
                     shutil.copyfile(full_src, full_dest)
                     shutil.copymode(full_src, full_dest)
@@ -1122,36 +1348,33 @@ class NopBuilder(BuilderBase):
                         os.chmod(full_dest, st.st_mode | stat.S_IXUSR)
         else:
             if not os.path.exists(self.inst_dir):
-                shutil.copytree(self.src_dir, self.inst_dir)
-
-
-class OpenNSABuilder(NopBuilder):
-    # OpenNSA libraries are stored with git LFS. As a result, fetcher fetches
-    # LFS pointers and not the contents. Use git-lfs to pull the real contents
-    # before copying to install dir using NoopBuilder.
-    # In future, if more builders require git-lfs, we would consider installing
-    # git-lfs as part of the sandcastle infra as against repeating similar
-    # logic for each builder that requires git-lfs.
-    def __init__(self, build_opts, ctx, manifest, src_dir, inst_dir) -> None:
-        super(OpenNSABuilder, self).__init__(
-            build_opts, ctx, manifest, src_dir, inst_dir
-        )
-
-    def build(self, install_dirs, reconfigure: bool) -> None:
-        env = self._compute_env(install_dirs)
-        self._run_cmd(["git", "lfs", "install", "--local"], cwd=self.src_dir, env=env)
-        self._run_cmd(["git", "lfs", "pull"], cwd=self.src_dir, env=env)
-
-        super(OpenNSABuilder, self).build(install_dirs, reconfigure)
+                simple_copytree(self.src_dir, self.inst_dir)
 
 
 class SqliteBuilder(BuilderBase):
-    def __init__(self, build_opts, ctx, manifest, src_dir, build_dir, inst_dir) -> None:
+    def __init__(
+        self,
+        loader,
+        dep_manifests,
+        build_opts,
+        ctx,
+        manifest,
+        src_dir,
+        build_dir,
+        inst_dir,
+    ) -> None:
         super(SqliteBuilder, self).__init__(
-            build_opts, ctx, manifest, src_dir, build_dir, inst_dir
+            loader,
+            dep_manifests,
+            build_opts,
+            ctx,
+            manifest,
+            src_dir,
+            build_dir,
+            inst_dir,
         )
 
-    def _build(self, install_dirs, reconfigure) -> None:
+    def _build(self, reconfigure) -> None:
         for f in ["sqlite3.c", "sqlite3.h", "sqlite3ext.h"]:
             src = os.path.join(self.src_dir, f)
             dest = os.path.join(self.build_dir, f)
@@ -1190,7 +1413,7 @@ install(FILES sqlite3.h sqlite3ext.h DESTINATION include)
         define_args = ["-D%s=%s" % (k, v) for (k, v) in defines.items()]
         define_args += ["-G", "Ninja"]
 
-        env = self._compute_env(install_dirs)
+        env = self._compute_env()
 
         # Resolve the cmake that we installed
         cmake = path_search(env, "cmake")
@@ -1204,7 +1427,7 @@ install(FILES sqlite3.h sqlite3ext.h DESTINATION include)
                 "--target",
                 "install",
                 "--config",
-                "Release",
+                self.build_opts.build_type,
                 "-j",
                 str(self.num_jobs),
             ],

@@ -16,11 +16,13 @@
 #include "fboss/agent/hw/mock/MockRxPacket.h"
 #include "fboss/agent/hw/sim/SimPlatform.h"
 #include "fboss/agent/hw/sim/SimSwitch.h"
+#include "fboss/agent/single/MonolithicHwSwitchHandler.h"
 #include "fboss/agent/state/ArpResponseTable.h"
 #include "fboss/agent/state/Interface.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/state/Vlan.h"
 #include "fboss/agent/state/VlanMap.h"
+#include "fboss/agent/test/TestUtils.h"
 
 using namespace facebook::fboss;
 using folly::IPAddress;
@@ -37,18 +39,28 @@ namespace {
 unique_ptr<SwSwitch> sw;
 unique_ptr<MockRxPacket> arpRequest_10_0_0_1;
 unique_ptr<MockRxPacket> arpRequest_10_0_0_5;
+unique_ptr<SimPlatform> simPlatform;
 
 unique_ptr<SwSwitch> setupSwitch() {
   MacAddress localMac("02:00:01:00:00:01");
-  auto sw = make_unique<SwSwitch>(make_unique<SimPlatform>(localMac, 10));
-  sw->init(nullptr /* No custom TunManager */);
-
+  simPlatform = make_unique<SimPlatform>(localMac, 10);
+  auto sw = make_unique<SwSwitch>(
+      [platform = simPlatform.get()](
+          const SwitchID& switchId, const cfg::SwitchInfo& info, SwSwitch* sw) {
+        return std::make_unique<facebook::fboss::MonolithicHwSwitchHandler>(
+            platform, switchId, info, sw);
+      },
+      simPlatform->getDirectoryUtil(),
+      simPlatform->supportsAddRemovePort(),
+      nullptr);
+  sw->init(nullptr /* No custom TunManager */, mockHwSwitchInitFn(sw.get()));
+  auto matcher = HwSwitchMatcher(std::unordered_set<SwitchID>({SwitchID(0)}));
   auto updateFn = [&](const shared_ptr<SwitchState>& oldState) {
     auto state = oldState->clone();
 
     // Add VLAN 1, and ports 1-9 which belong to it.
     auto vlan1 = make_shared<Vlan>(VlanID(1), std::string("Vlan1"));
-    state->addVlan(vlan1);
+    state->getVlans()->addNode(vlan1, matcher);
     for (int idx = 1; idx < 10; ++idx) {
       vlan1->addPort(PortID(idx), false);
     }
@@ -66,7 +78,8 @@ unique_ptr<SwSwitch> setupSwitch() {
     addrs1.emplace(IPAddress("10.0.0.1"), 24);
     addrs1.emplace(IPAddress("192.168.0.1"), 24);
     intf1->setAddresses(addrs1);
-    state->addIntf(intf1);
+    auto allIntfs = state->getInterfaces()->modify(&state);
+    allIntfs->addNode(intf1, matcher);
 
     // Set up an arp response table for VLAN 1 with entries for
     // 10.0.0.1 and 192.168.0.1
@@ -79,7 +92,7 @@ unique_ptr<SwSwitch> setupSwitch() {
         IPAddressV4("192.168.0.1"),
         MacAddress("00:02:00:00:00:02"),
         InterfaceID(4));
-    state->getVlans()->getVlan(VlanID(1))->setArpResponseTable(respTable1);
+    state->getVlans()->getNode(VlanID(1))->setArpResponseTable(respTable1);
     return state;
   };
 
@@ -140,7 +153,8 @@ void init() {
 
 BENCHMARK(ArpRequest, numIters) {
   BENCHMARK_SUSPEND {
-    SimSwitch* sim = boost::polymorphic_downcast<SimSwitch*>(sw->getHw());
+    SimSwitch* sim =
+        boost::polymorphic_downcast<SimSwitch*>(simPlatform->getHwSwitch());
     sim->resetTxCount();
   }
 
@@ -152,14 +166,16 @@ BENCHMARK(ArpRequest, numIters) {
   BENCHMARK_SUSPEND {
     // Make sure the SwSwitch sent out 1 packet for each iteration,
     // just to verify that it was actually sending ARP replies
-    SimSwitch* sim = boost::polymorphic_downcast<SimSwitch*>(sw->getHw());
+    SimSwitch* sim =
+        boost::polymorphic_downcast<SimSwitch*>(simPlatform->getHwSwitch());
     CHECK_EQ(sim->getTxCount(), numIters);
   }
 }
 
 BENCHMARK(ArpRequestNotMine, numIters) {
   BENCHMARK_SUSPEND {
-    SimSwitch* sim = boost::polymorphic_downcast<SimSwitch*>(sw->getHw());
+    SimSwitch* sim =
+        boost::polymorphic_downcast<SimSwitch*>(simPlatform->getHwSwitch());
     sim->resetTxCount();
   }
 
@@ -171,7 +187,8 @@ BENCHMARK(ArpRequestNotMine, numIters) {
   BENCHMARK_SUSPEND {
     // This request wasn't for one of our IPs, so no outgoing packets
     // should have been generated.
-    SimSwitch* sim = boost::polymorphic_downcast<SimSwitch*>(sw->getHw());
+    SimSwitch* sim =
+        boost::polymorphic_downcast<SimSwitch*>(simPlatform->getHwSwitch());
     CHECK_EQ(sim->getTxCount(), 0);
   }
 }

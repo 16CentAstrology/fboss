@@ -25,14 +25,12 @@ class MockWedgeManager : public WedgeManager {
       : WedgeManager(
             std::make_unique<MockTransceiverPlatformApi>(),
             makeFakePlatformMappnig(numModules, numPortsPerModule),
-            PlatformMode::WEDGE),
+            PlatformType::PLATFORM_WEDGE),
         numModules_(numModules) {}
 
-  PlatformMode getPlatformMode() const override {
-    return PlatformMode::WEDGE;
+  PlatformType getPlatformType() const override {
+    return PlatformType::PLATFORM_WEDGE;
   }
-
-  std::map<TransceiverID, MockSffModule*> mockTransceivers_;
 
   std::unique_ptr<TransceiverI2CApi> getI2CBus() override {
     return std::make_unique<MockTransceiverI2CApi>();
@@ -40,9 +38,9 @@ class MockWedgeManager : public WedgeManager {
 
   MOCK_METHOD1(getXphyInfo, phy::PhyInfo(PortID));
   MOCK_METHOD0(clearAllTransceiverReset, void());
-  MOCK_METHOD1(triggerQsfpHardReset, void(int));
   MOCK_METHOD1(verifyEepromChecksums, bool(TransceiverID));
   MOCK_METHOD2(programExternalPhyPorts, void(TransceiverID, bool));
+  MOCK_METHOD1(readyTransceiver, bool(TransceiverID));
 
   void overridePresence(unsigned int id, bool presence) {
     MockTransceiverI2CApi* mockApi =
@@ -53,7 +51,7 @@ class MockWedgeManager : public WedgeManager {
   void overrideMgmtInterface(unsigned int id, uint8_t mgmt) {
     MockTransceiverI2CApi* mockApi =
         dynamic_cast<MockTransceiverI2CApi*>(wedgeI2cBus_.get());
-    mockApi->overrideMgmtInterface(id, mgmt);
+    mockApi->overrideMgmtInterface(id, mgmt, this);
   }
 
   std::map<TransceiverID, TransceiverManagementInterface> mgmtInterfaces() {
@@ -79,7 +77,7 @@ class MockWedgeManager : public WedgeManager {
     throw FbossError("Can't find Transceiver=", id);
   }
 
-  int getNumQsfpModules() override {
+  int getNumQsfpModules() const override {
     return numModules_;
   }
 
@@ -106,7 +104,8 @@ class MockWedgeManager : public WedgeManager {
           n += numPortsPerModule;
           return port;
         });
-    return std::make_unique<FakeTestPlatformMapping>(controllingPortIDs);
+    return std::make_unique<FakeTestPlatformMapping>(
+        controllingPortIDs, numPortsPerModule);
   }
 
   int numModules_;

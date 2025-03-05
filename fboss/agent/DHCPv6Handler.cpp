@@ -15,9 +15,10 @@
 #include <folly/logging/xlog.h>
 #include <string>
 #include "fboss/agent/FbossError.h"
-#include "fboss/agent/Platform.h"
+#include "fboss/agent/HwAsicTable.h"
 #include "fboss/agent/RxPacket.h"
 #include "fboss/agent/SwSwitch.h"
+#include "fboss/agent/SwitchIdScopeResolver.h"
 #include "fboss/agent/SwitchStats.h"
 #include "fboss/agent/TxPacket.h"
 #include "fboss/agent/Utils.h"
@@ -52,7 +53,7 @@ void sendDHCPv6Packet(
     SwSwitch* sw,
     MacAddress dstMac,
     MacAddress srcMac,
-    std::optional<VlanID> vlan,
+    std::optional<VlanID> vlanID,
     IPAddressV6 dstIp,
     IPAddressV6 srcIp,
     uint16_t udpDstPort,
@@ -61,9 +62,9 @@ void sendDHCPv6Packet(
     DHCPBodyFn serializeDhcp) {
   // construct EthHdr,
   VlanTags_t vlanTags;
-  if (vlan.has_value()) {
+  if (vlanID.has_value()) {
     vlanTags.push_back(VlanTag(
-        vlan.value(), static_cast<uint16_t>(ETHERTYPE::ETHERTYPE_VLAN)));
+        vlanID.value(), static_cast<uint16_t>(ETHERTYPE::ETHERTYPE_VLAN)));
   }
 
   EthHdr ethHdr(
@@ -77,7 +78,7 @@ void sendDHCPv6Packet(
   ipHdr.nextHeader = static_cast<uint8_t>(IP_PROTO::IP_PROTO_UDP);
   ipHdr.trafficClass = kGetNetworkControlTrafficClass();
   ipHdr.payloadLength = UDPHeader::size() + dhcpLength;
-  ipHdr.hopLimit = 255;
+  ipHdr.hopLimit = 127;
 
   // UDPHeader
   UDPHeader udpHdr(udpSrcPort, udpDstPort, UDPHeader::size() + dhcpLength);
@@ -93,7 +94,7 @@ void sendDHCPv6Packet(
       &rwCursor,
       ethHdr.getDstMac(),
       ethHdr.getSrcMac(),
-      VlanID(vlanTags[0].vid()),
+      vlanID,
       ethHdr.getEtherType());
   ipHdr.serialize(&rwCursor);
 
@@ -108,8 +109,7 @@ void sendDHCPv6Packet(
   udpHdr.updateChecksum(ipHdr, payloadStart);
   csumCursor.writeBE<uint16_t>(udpHdr.csum);
 
-  XLOG(DBG4) << " Send dhcp packet:"
-             << " Eth header: " << ethHdr.toString()
+  XLOG(DBG4) << " Send dhcp packet:" << " Eth header: " << ethHdr.toString()
              << " IP header: " << ipHdr.toString()
              << " UDP Header: " << udpHdr.toString()
              << " dhcpLength: " << dhcpLength;
@@ -127,6 +127,7 @@ bool DHCPv6Handler::isForDHCPv6RelayOrServer(const UDPHeader& udpHdr) {
   return (udpHdr.dstPort == DHCPv6Packet::DHCP6_SERVERAGENT_UDPPORT);
 }
 
+template <typename VlanOrIntfT>
 void DHCPv6Handler::handlePacket(
     SwSwitch* sw,
     std::unique_ptr<RxPacket> pkt,
@@ -134,13 +135,14 @@ void DHCPv6Handler::handlePacket(
     MacAddress dstMac,
     const IPv6Hdr& ipHdr,
     const UDPHeader& /*udpHdr*/,
-    Cursor cursor) {
+    Cursor cursor,
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf) {
   sw->portStats(pkt->getSrcPort())->dhcpV6Pkt();
   // Parse dhcp packet
   DHCPv6Packet dhcp6Pkt;
   try {
     dhcp6Pkt.parse(&cursor);
-  } catch (const FbossError& err) {
+  } catch (const FbossError&) {
     sw->portStats(pkt->getSrcPort())->dhcpV6BadPkt();
     throw; // Rethrow
   }
@@ -156,50 +158,98 @@ void DHCPv6Handler::handlePacket(
         sw, std::move(pkt), srcMac, dstMac, ipHdr, dhcp6Pkt);
   } else {
     XLOG(DBG4) << "Received DHCPv6 packet: " << dhcp6Pkt.toString();
-    processDHCPv6Packet(sw, std::move(pkt), srcMac, dstMac, ipHdr, dhcp6Pkt);
+    processDHCPv6Packet(
+        sw, std::move(pkt), srcMac, dstMac, ipHdr, dhcp6Pkt, vlanOrIntf);
   }
 }
 
+// Explicit instantiation to avoid linker errors
+// https://isocpp.org/wiki/faq/templates#separate-template-fn-defn-from-decl
+template void DHCPv6Handler::handlePacket<Vlan>(
+    SwSwitch* sw,
+    std::unique_ptr<RxPacket> pkt,
+    MacAddress srcMac,
+    MacAddress dstMac,
+    const IPv6Hdr& ipHdr,
+    const UDPHeader& /*udpHdr*/,
+    Cursor cursor,
+    const std::shared_ptr<Vlan>& vlanOrIntf);
+
+template void DHCPv6Handler::handlePacket<Interface>(
+    SwSwitch* sw,
+    std::unique_ptr<RxPacket> pkt,
+    MacAddress srcMac,
+    MacAddress dstMac,
+    const IPv6Hdr& ipHdr,
+    const UDPHeader& /*udpHdr*/,
+    Cursor cursor,
+    const std::shared_ptr<Interface>& vlanOrIntf);
+
+template <typename VlanOrIntfT>
 void DHCPv6Handler::processDHCPv6Packet(
     SwSwitch* sw,
     std::unique_ptr<RxPacket> pkt,
     MacAddress srcMac,
     MacAddress /*dstMac*/,
     const IPv6Hdr& ipHdr,
-    const DHCPv6Packet& dhcpPacket) {
-  auto vlanId = pkt->getSrcVlan();
-  auto states = sw->getState();
-  auto vlan = states->getVlans()->getVlanIf(vlanId);
-  if (!vlan) {
+    const DHCPv6Packet& dhcpPacket,
+    const std::shared_ptr<VlanOrIntfT>& vlanOrIntf) {
+  auto vlanId = getVlanIDFromVlanOrIntf(vlanOrIntf);
+  auto vlanIdStr = vlanId.has_value()
+      ? folly::to<std::string>(static_cast<int>(vlanId.value()))
+      : "None";
+  auto state = sw->getState();
+
+  if (!vlanOrIntf) {
     sw->stats()->dhcpV6DropPkt();
-    XLOG(DBG2) << "VLAN " << vlanId << " is no longer present"
-               << "DHCPv6Packet dropped.";
+    XLOG(DBG2) << "VLAN " << vlanIdStr << " is no longer present"
+               << "DHCPv6Packet dropped on port " << pkt->getSrcPort();
     return;
   }
 
-  auto dhcp6ServerIp = vlan->getDhcpV6Relay();
+  auto dhcp6Server = vlanOrIntf->getDhcpV6Relay();
 
   // look in the override map, and use relevant destination
   XLOG(DBG4) << "srcMac: " << srcMac.toString();
-  auto dhcpOverrideMap = vlan->getDhcpV6RelayOverrides();
+  auto dhcpOverrideMap = vlanOrIntf->getDhcpV6RelayOverrides();
   for (auto o : dhcpOverrideMap) {
     if (MacAddress(o.first) == srcMac) {
-      dhcp6ServerIp = o.second;
-      XLOG(DBG4) << "dhcp6ServerIp: " << dhcp6ServerIp;
+      dhcp6Server = o.second;
+      if constexpr (std::is_same_v<VlanOrIntfT, Vlan>) {
+        XLOG(DBG4) << "dhcp6Server: " << dhcp6Server;
+      } else {
+        XLOG(DBG4) << "dhcp6Server: " << dhcp6Server.value();
+      }
       break;
     }
   }
 
-  if (dhcp6ServerIp.isZero()) {
-    XLOG(DBG4) << "No DHCPv6 relay configured for Vlan " << vlan->getID()
-               << " dropped DHCPv6 packet";
-    sw->stats()->dhcpV6DropPkt();
-    return;
+  IPAddressV6 dhcp6ServerIP;
+  if constexpr (std::is_same_v<VlanOrIntfT, Vlan>) {
+    if (dhcp6Server.isZero()) {
+      XLOG(DBG4) << "No DHCPv6 relay configured for Vlan " << vlanIdStr
+                 << " dropped DHCPv6 packet on port " << pkt->getSrcPort();
+      sw->stats()->dhcpV6DropPkt();
+      return;
+    }
+    dhcp6ServerIP = dhcp6Server;
+  } else {
+    if (!dhcp6Server.has_value() || dhcp6Server.value().isZero()) {
+      sw->stats()->dhcpV6DropPkt();
+      XLOG(DBG4) << "No DHCPv6 relay configured for Interface "
+                 << vlanOrIntf->getID() << " dropped DHCPv6 packet on port "
+                 << pkt->getSrcPort();
+      return;
+    }
+    dhcp6ServerIP = dhcp6Server.value();
   }
 
-  auto switchIp = states->getDhcpV6RelaySrc();
+  auto switchIp = state->getDhcpV6RelaySrc();
   if (switchIp.isZero()) {
-    switchIp = getSwitchVlanIPv6(states, vlanId);
+    switchIp = getSwitchIntfIPv6(
+        state,
+        sw->getState()->getInterfaceIDForPort(
+            PortDescriptor(pkt->getSrcPort())));
   }
 
   // link address set to unspecified
@@ -222,7 +272,15 @@ void DHCPv6Handler::processDHCPv6Packet(
 
   // create the dhcpv6 packet
   // vlanIp -> ip src, ipHdr.dst -> ip dst, srcMac -> mac src, dstMac -> mac dst
-  MacAddress cpuMac = sw->getPlatform()->getLocalMac();
+  SwitchID switchID;
+  if constexpr (std::is_same_v<VlanOrIntfT, Vlan>) {
+    switchID = sw->getScopeResolver()->scope(vlanOrIntf).switchId();
+  } else {
+    switchID =
+        sw->getScopeResolver()->scope(vlanOrIntf, sw->getState()).switchId();
+  }
+
+  MacAddress cpuMac = sw->getHwAsicTable()->getHwAsicIf(switchID)->getAsicMac();
   auto serializeBody = [&](RWPrivateCursor* sendCursor) {
     relayFwdPkt.write(sendCursor);
   };
@@ -232,7 +290,7 @@ void DHCPv6Handler::processDHCPv6Packet(
       cpuMac,
       cpuMac,
       vlanId,
-      dhcp6ServerIp,
+      dhcp6ServerIP,
       switchIp,
       DHCPv6Packet::DHCP6_SERVERAGENT_UDPPORT,
       DHCPv6Packet::DHCP6_SERVERAGENT_UDPPORT,
@@ -259,11 +317,12 @@ void DHCPv6Handler::processDHCPv6RelayForward(
   }
   // increment the hopcount and forward it
   dhcpPacket.hopCount++;
-  auto vlan = pkt->getSrcVlan();
+  auto vlan = pkt->getSrcVlanIf();
   auto serializeBody = [&](RWPrivateCursor* sendCursor) {
     dhcpPacket.write(sendCursor);
   };
-  MacAddress cpuMac = sw->getPlatform()->getLocalMac();
+  auto switchId = sw->getScopeResolver()->scope(pkt->getSrcPort()).switchId();
+  MacAddress cpuMac = sw->getHwAsicTable()->getHwAsicIf(switchId)->getAsicMac();
   sendDHCPv6Packet(
       sw,
       dstMac,
@@ -329,7 +388,10 @@ void DHCPv6Handler::processDHCPv6RelayReply(
    * switch ip -> ip src, peerAddr -> ip dst,
    * relay message option -> send dhcp packet,
    */
-  MacAddress cpuMac = sw->getPlatform()->getLocalMac();
+  auto switchIds = sw->getScopeResolver()->scope(pkt->getSrcPort()).switchIds();
+  CHECK_EQ(switchIds.size(), 1);
+  MacAddress cpuMac =
+      sw->getHwAsicTable()->getHwAsicIf(*switchIds.begin())->getAsicMac();
   // send dhcp packet
   auto serializeBody = [&](RWPrivateCursor* sendCursor) {
     sendCursor->push(relayData, relayLen);

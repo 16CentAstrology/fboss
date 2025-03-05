@@ -237,7 +237,7 @@ void BcmPortIngressBufferManager::resetIngressPoolsToDefault() {
   writeCosqTypeToHwIfNeeded(
       kDefaultPgId,
       bcmCosqControlIngressHeadroomPoolLimitBytes,
-      bufferPoolCfg.getHeadroomBytes(),
+      *bufferPoolCfg.getHeadroomBytes(),
       "bcmCosqControlIngressHeadroomPoolLimitBytes");
 }
 
@@ -251,6 +251,7 @@ void BcmPortIngressBufferManager::resetPgsToDefault(
   pgIdList.clear();
   programLosslessMode(port);
   setPgIdListInHw(pgIdList);
+  bufferPoolName_ = kDefaultBufferPoolName;
 }
 
 void BcmPortIngressBufferManager::programPgLosslessMode(int pgId, int value) {
@@ -288,6 +289,14 @@ void BcmPortIngressBufferManager::programLosslessMode(
   if (const auto& pgConfigs = port->getPortPgConfigs()) {
     for (const auto& pgConfig : *pgConfigs) {
       if (pgConfig->cref<switch_state_tags::headroomLimitBytes>()) {
+        // This is a disruptive flag. Check if headroomLimit is not zero before
+        // enabling lossless configuration
+        if (FLAGS_fix_lossless_mode_per_pg) {
+          if (pgConfig->cref<switch_state_tags::headroomLimitBytes>()->cref() ==
+              0) {
+            continue;
+          }
+        }
         losslessPgList.insert(pgConfig->cref<switch_state_tags::id>()->cref());
       }
     }
@@ -350,6 +359,12 @@ void BcmPortIngressBufferManager::reprogramPgs(
 void BcmPortIngressBufferManager::reprogramIngressPools(
     const std::shared_ptr<Port> port) {
   const auto& portPgCfgs = port->getPortPgConfigs();
+  if (portPgCfgs->size()) {
+    // All PGs should have the same buffer pool associated!
+    bufferPoolName_ = (*std::as_const(*portPgCfgs).begin())
+                          ->cref<switch_state_tags::bufferPoolName>()
+                          ->toThrift();
+  }
   for (const auto& portPgCfg : std::as_const(*portPgCfgs)) {
     auto portPgId = portPgCfg->cref<switch_state_tags::id>()->cref();
     if (auto bufferPoolCfg =
@@ -357,9 +372,9 @@ void BcmPortIngressBufferManager::reprogramIngressPools(
       auto currentGlobalHeadroomBytes = getIngressPoolHeadroomBytes(portPgId);
       auto currentGlobalSharedBytes = getIngressSharedBytes(portPgId);
       auto newGlobalSharedBytes =
-          bufferPoolCfg->cref<switch_state_tags::sharedBytes>()->cref();
+          bufferPoolCfg->cref<common_if_tags::sharedBytes>()->cref();
       auto newGlobalHeadroomBytes =
-          bufferPoolCfg->cref<switch_state_tags::headroomBytes>()->cref();
+          bufferPoolCfg->cref<common_if_tags::headroomBytes>()->cref();
 
       // When we program shared pool, SDK runs a check on hdrm + shared buffer
       // and it shouldn't exceed the MAX. If we program shared buffer first
@@ -504,8 +519,7 @@ void BcmPortIngressBufferManager::getPgParamsHw(
 
 BufferPoolCfgPtr BcmPortIngressBufferManager::getCurrentIngressPoolSettings()
     const {
-  const std::string bufferName = "currentIngressPool";
-  auto cfg = std::make_shared<BufferPoolCfg>(bufferName);
+  auto cfg = std::make_shared<BufferPoolCfg>(bufferPoolName_);
   // pick the settings for pgid = 0, since its global pool
   // all others will have the same values
   cfg->setHeadroomBytes(getIngressPoolHeadroomBytes(kDefaultPgId));

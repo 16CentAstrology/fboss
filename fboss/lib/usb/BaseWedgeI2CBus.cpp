@@ -177,9 +177,12 @@ bool BaseWedgeI2CBus::isPresent(unsigned int module) {
   uint8_t buf = 0;
   for (int i = 0; i < kNumPresenceDetectionRetries; ++i) {
     try {
-      moduleRead(module, {TransceiverI2CApi::ADDR_QSFP, 0, sizeof(buf)}, &buf);
+      moduleRead(
+          module,
+          {TransceiverAccessParameter::ADDR_QSFP, 0, sizeof(buf)},
+          &buf);
       return true;
-    } catch (const I2cError& ex) {
+    } catch (const I2cError&) {
       /*
        * This can either mean that we failed to open the USB device
        * because it was already in use, or that the I2C read failed.
@@ -200,9 +203,9 @@ void BaseWedgeI2CBus::scanPresence(
     try {
       moduleRead(
           presence.first + 1,
-          {TransceiverI2CApi::ADDR_QSFP, 0, sizeof(buf)},
+          {TransceiverAccessParameter::ADDR_QSFP, 0, sizeof(buf)},
           &buf);
-    } catch (const I2cError& ex) {
+    } catch (const I2cError&) {
       /*
        * This can either mean that we failed to open the USB device
        * because it was already in use, or that the I2C read failed.

@@ -18,16 +18,12 @@
 #include "fboss/agent/hw/bcm/BcmQosPolicyTable.h"
 #include "fboss/agent/hw/bcm/BcmQosUtils.h"
 #include "fboss/agent/hw/bcm/BcmSwitch.h"
-#include "fboss/agent/hw/test/TrafficPolicyUtils.h"
-#include "fboss/agent/platforms/tests/utils/BcmTestPlatform.h"
-#include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SwitchState.h"
+#include "fboss/agent/test/utils/TrafficPolicyTestUtils.h"
 
 #include "fboss/agent/hw/test/ConfigFactory.h"
 
 extern "C" {
-#include <bcm/cosq.h>
-#include <bcm/field.h>
 #include <bcm/qos.h>
 }
 
@@ -60,15 +56,18 @@ void checkSwHwQosMapsMatch(
   auto bcmQosPolicyTable = hw->getQosPolicyTable();
   // default qos policy is mainted in sw switch state, but is maintained in same
   // qos policy map in bcm switch, need to reconcile this
-  auto swStateSize =
-      qosPolicyTable->size() + (state->getDefaultDataPlaneQosPolicy() ? 1 : 0);
+  auto swStateSize = qosPolicyTable->numNodes() +
+      (state->getDefaultDataPlaneQosPolicy() ? 1 : 0);
   ASSERT_EQ(swStateSize, bcmQosPolicyTable->getNumQosPolicies());
   ASSERT_EQ(swStateSize, getNumHwIngressL3QosMaps(hw));
 
-  for (const auto& [name, qosPolicy] : std::as_const(*qosPolicyTable)) {
-    auto bcmQosPolicy = bcmQosPolicyTable->getQosPolicyIf(qosPolicy->getName());
-    ASSERT_NE(nullptr, bcmQosPolicy);
-    ASSERT_TRUE(bcmQosPolicy->policyMatches(qosPolicy));
+  for (const auto& tableIter : std::as_const(*qosPolicyTable)) {
+    for (const auto& [name, qosPolicy] : std::as_const(*tableIter.second)) {
+      auto bcmQosPolicy =
+          bcmQosPolicyTable->getQosPolicyIf(qosPolicy->getName());
+      ASSERT_NE(nullptr, bcmQosPolicy);
+      ASSERT_TRUE(bcmQosPolicy->policyMatches(qosPolicy));
+    }
   }
 }
 
@@ -125,7 +124,10 @@ class BcmQosPolicyTest : public BcmTest {
  protected:
   cfg::SwitchConfig initialConfig() const override {
     return utility::oneL3IntfNPortConfig(
-        getHwSwitch(), {masterLogicalPortIds()[0], masterLogicalPortIds()[1]});
+        getHwSwitch()->getPlatform()->getPlatformMapping(),
+        getHwSwitch()->getPlatform()->getAsic(),
+        {masterLogicalPortIds()[0], masterLogicalPortIds()[1]},
+        getHwSwitch()->getPlatform()->supportsAddRemovePort());
   }
 };
 

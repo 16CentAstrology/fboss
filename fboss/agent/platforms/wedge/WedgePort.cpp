@@ -10,16 +10,13 @@
 
 #include "fboss/agent/platforms/wedge/WedgePort.h"
 
-#include <folly/futures/Future.h>
 #include <folly/gen/Base.h>
 #include <folly/io/async/EventBase.h>
-#include <folly/io/async/EventBaseManager.h>
 
-#include "fboss/agent/FbossError.h"
+#include "fboss/agent/HwSwitch.h"
 #include "fboss/agent/hw/bcm/BcmPortGroup.h"
 #include "fboss/agent/platforms/wedge/WedgePlatform.h"
 #include "fboss/lib/config/PlatformConfigUtils.h"
-#include "fboss/qsfp_service/lib/QsfpCache.h"
 #include "fboss/qsfp_service/lib/QsfpClient.h"
 
 namespace facebook::fboss {
@@ -50,35 +47,13 @@ bool WedgePort::isMediaPresent() {
   return false;
 }
 
-folly::Future<TransceiverInfo> WedgePort::getFutureTransceiverInfo() const {
-  auto qsfpCache = dynamic_cast<WedgePlatform*>(getPlatform())->getQsfpCache();
-  return qsfpCache->futureGet(getTransceiverID().value());
-}
-
-folly::Future<TransmitterTechnology> WedgePort::getTransmitterTech(
-    folly::EventBase* evb) const {
-  DCHECK(evb);
-
-  // If there's no transceiver this is a backplane port.
-  // However, we know these are using copper, so pass that along
-  if (!supportsTransceiver()) {
-    return folly::makeFuture<TransmitterTechnology>(
-        TransmitterTechnology::COPPER);
-  }
-  int32_t transID = static_cast<int32_t>(getTransceiverID().value());
-  auto getTech = [](TransceiverInfo info) {
-    if (auto cable = info.cable()) {
-      return *cable->transmitterTech();
-    }
-    return TransmitterTechnology::UNKNOWN;
-  };
-  auto handleError = [transID](const folly::exception_wrapper& e) {
-    XLOG(ERR) << "Error retrieving info for transceiver " << transID
-              << " Exception: " << folly::exceptionStr(e);
-    return TransmitterTechnology::UNKNOWN;
-  };
-  return getFutureTransceiverInfo().via(evb).thenValueInline(getTech).thenError(
-      std::move(handleError));
+std::shared_ptr<TransceiverSpec> WedgePort::getTransceiverSpec() const {
+  auto transceiverMaps = dynamic_cast<WedgePlatform*>(getPlatform())
+                             ->getHwSwitch()
+                             ->getProgrammedState()
+                             ->getTransceivers();
+  auto transceiverSpec = transceiverMaps->getNodeIf(getTransceiverID().value());
+  return transceiverSpec;
 }
 
 void WedgePort::statusIndication(

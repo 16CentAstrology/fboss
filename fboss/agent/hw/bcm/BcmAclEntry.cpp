@@ -20,10 +20,8 @@
 #include "fboss/agent/hw/bcm/BcmMultiPathNextHop.h"
 #include "fboss/agent/hw/bcm/BcmPlatform.h"
 #include "fboss/agent/hw/bcm/BcmSwitch.h"
+#include "fboss/agent/hw/bcm/BcmUdfManager.h"
 #include "fboss/agent/hw/bcm/BcmWarmBootCache.h"
-#include "fboss/agent/state/AclEntry.h"
-
-#include <boost/container/flat_map.hpp>
 
 #include <folly/MacAddress.h>
 #include <folly/logging/xlog.h>
@@ -91,7 +89,7 @@ std::optional<facebook::fboss::BcmMirrorHandle> getAclMirrorHandle(
     const facebook::fboss::BcmSwitch* hw,
     const std::optional<std::string>& mirrorName) {
   auto* mirror = mirrorName
-      ? hw->getBcmMirrorTable()->getMirrorIf(mirrorName.value())
+      ? hw->getBcmMirrorTable()->getNodeIf(mirrorName.value())
       : nullptr;
   if (!mirror) {
     return std::nullopt;
@@ -299,6 +297,79 @@ void BcmAclEntry::createAclQualifiers() {
     bcmCheckError(
         rv, "failed to qualify OuterVlanId:", acl_->getVlanID().value());
   }
+
+  if (acl_->getUdfGroups() && acl_->getRoceOpcode()) {
+    const auto groups = acl_->getUdfGroups().value();
+    for (const auto& group : groups) {
+      const int bcmUdfGroupId = hw_->getUdfMgr()->getBcmUdfGroupId(group);
+      uint8 data[] = {acl_->getRoceOpcode().value()};
+      uint8 mask[] = {0xff};
+
+      rv = bcm_field_qualify_udf(
+          hw_->getUnit(),
+          handle_,
+          bcmUdfGroupId,
+          1 /*length*/,
+          &data[0],
+          &mask[0]);
+      bcmCheckError(
+          rv,
+          "failed to qualify udf opcode ",
+          group,
+          " bcmUdfGroupId:",
+          bcmUdfGroupId);
+    }
+  }
+
+  if (acl_->getUdfGroups() && acl_->getRoceBytes() && acl_->getRoceMask()) {
+    const auto groups = acl_->getUdfGroups().value();
+    for (const auto& group : groups) {
+      const int bcmUdfGroupId = hw_->getUdfMgr()->getBcmUdfGroupId(group);
+      const auto roceBytes = acl_->getRoceBytes().value();
+      const auto roceMask = acl_->getRoceMask().value();
+      size_t size = roceBytes.size();
+      uint8 data[8], mask[8];
+      std::copy(roceBytes.begin(), roceBytes.end(), data);
+      std::copy(roceMask.begin(), roceMask.end(), mask);
+
+      rv = bcm_field_qualify_udf(
+          hw_->getUnit(),
+          handle_,
+          bcmUdfGroupId,
+          size /*length*/,
+          &data[0],
+          &mask[0]);
+      bcmCheckError(
+          rv,
+          "failed to qualify udf bytes/mask ",
+          group,
+          " bcmUdfGroupId:",
+          bcmUdfGroupId);
+    }
+  }
+
+  if (acl_->getUdfTable()) {
+    const auto udfTable = acl_->getUdfTable().value();
+    for (const auto& udfEntry : udfTable) {
+      const int bcmUdfGroupId =
+          hw_->getUdfMgr()->getBcmUdfGroupId(*udfEntry.udfGroup());
+      const auto roceBytes = *udfEntry.roceBytes();
+      const auto roceMask = *udfEntry.roceMask();
+      size_t size = roceBytes.size();
+      uint8 data[8], mask[8];
+      std::copy(roceBytes.begin(), roceBytes.end(), data);
+      std::copy(roceMask.begin(), roceMask.end(), mask);
+
+      rv = bcm_field_qualify_udf(
+          hw_->getUnit(), handle_, bcmUdfGroupId, size /*length*/, data, mask);
+      bcmCheckError(
+          rv,
+          "failed to qualify udf table ",
+          *udfEntry.udfGroup(),
+          " bcmUdfGroupId:",
+          bcmUdfGroupId);
+    }
+  }
 }
 
 void BcmAclEntry::createAclActions() {
@@ -367,6 +438,28 @@ void BcmAclEntry::createAclActions() {
               true),
           false /* isWarmBoot */);
     }
+
+    if (hw_->getPlatform()->getAsic()->isSupported(HwAsic::Feature::FLOWLET)) {
+      if (matchAction->getFlowletAction()) {
+        XLOG(DBG2) << "Adding flowlet action for handle :" << handle_;
+        applyFlowletAction(matchAction);
+      }
+    }
+  }
+}
+
+void BcmAclEntry::applyFlowletAction(
+    const std::optional<facebook::fboss::MatchAction>& action) {
+  int rv;
+  auto flowletAction = action->getFlowletAction().value();
+  switch (flowletAction) {
+    case cfg::FlowletAction::FORWARD:
+      rv = bcm_field_action_add(
+          hw_->getUnit(), handle_, bcmFieldActionDynamicEcmpEnable, 0, 0);
+      bcmCheckError(rv, "failed to add dynamic ecmp enable action");
+      break;
+    default:
+      throw FbossError("Unrecognized flowlet action ", flowletAction);
   }
 }
 
@@ -413,6 +506,7 @@ void BcmAclEntry::createAclStat() {
         counterName, counterTypes, warmBootItr->second.stat);
     warmBootCache->programmed(warmBootItr);
   } else {
+    XLOG(DBG3) << "Reattaching counter " << counterName;
     auto bcmAclStat =
         aclTable->incRefOrCreateBcmAclStat(counterName, counterTypes, gid_);
     bcmAclStat->attach(handle_);
@@ -485,7 +579,7 @@ BcmAclEntry::BcmAclEntry(
   }
 }
 
-BcmAclEntry::~BcmAclEntry() {
+void BcmAclEntry::deleteAclEntry() {
   int rv;
   auto aclTable = hw_->writableAclTable();
 
@@ -516,6 +610,10 @@ BcmAclEntry::~BcmAclEntry() {
   // Destroy the ACL entry
   rv = bcm_field_entry_destroy(hw_->getUnit(), handle_);
   bcmLogFatal(rv, hw_, "failed to destroy the acl entry");
+}
+
+BcmAclEntry::~BcmAclEntry() {
+  deleteAclEntry();
 }
 
 bool BcmAclEntry::isStateSame(
@@ -827,6 +925,81 @@ bool BcmAclEntry::isStateSame(
         "OuterVlanId");
   }
 
+  if (acl->getUdfGroups() && acl->getRoceOpcode()) {
+    const auto groups = acl->getUdfGroups().value();
+    for (const auto& group : groups) {
+      const int bcmUdfGroupId = hw->getUdfMgr()->getBcmUdfGroupId(group);
+      uint8 swData[] = {acl->getRoceOpcode().value()};
+      uint8 swMask[] = {0xff};
+
+      isSame &= isBcmQualFieldStateSame(
+          bcm_field_qualify_udf_get,
+          hw->getUnit(),
+          handle,
+          bcmUdfGroupId,
+          1 /* max_length */,
+          true,
+          swData,
+          swMask,
+          1 /* size */,
+          aclMsg,
+          "BcmUdfGroupId");
+    }
+  }
+
+  if (acl->getUdfGroups() && acl->getRoceBytes() && acl->getRoceMask()) {
+    const auto groups = acl->getUdfGroups().value();
+    for (const auto& group : groups) {
+      const int bcmUdfGroupId = hw->getUdfMgr()->getBcmUdfGroupId(group);
+      const auto roceBytes = acl->getRoceBytes().value();
+      const auto roceMask = acl->getRoceMask().value();
+      size_t size = roceBytes.size();
+      uint8 swData[8], swMask[8];
+      std::copy(roceBytes.begin(), roceBytes.end(), swData);
+      std::copy(roceMask.begin(), roceMask.end(), swMask);
+
+      isSame &= isBcmQualFieldStateSame(
+          bcm_field_qualify_udf_get,
+          hw->getUnit(),
+          handle,
+          bcmUdfGroupId,
+          size /* max_length */,
+          true,
+          swData,
+          swMask,
+          size,
+          aclMsg,
+          "BcmUdfGroupId");
+    }
+  }
+
+  if (acl->getUdfTable()) {
+    const auto udfTable = acl->getUdfTable().value();
+    for (const auto& udfEntry : udfTable) {
+      const int bcmUdfGroupId =
+          hw->getUdfMgr()->getBcmUdfGroupId(*udfEntry.udfGroup());
+      const auto roceBytes = *udfEntry.roceBytes();
+      const auto roceMask = *udfEntry.roceMask();
+      size_t size = roceBytes.size();
+      uint8 swData[8], swMask[8];
+      std::copy(roceBytes.begin(), roceBytes.end(), swData);
+      std::copy(roceMask.begin(), roceMask.end(), swMask);
+
+      isSame &= isBcmQualFieldStateSame(
+          bcm_field_qualify_udf_get,
+          hw->getUnit(),
+          handle,
+          bcmUdfGroupId,
+          size /* max_length */,
+          true,
+          swData,
+          swMask,
+          size,
+          aclMsg,
+          "BcmUdfGroupId");
+    }
+  }
+
   // check acl stat
   auto aclStatHandle =
       BcmAclStat::getAclStatHandleFromAttachedAcl(hw, gid, handle);
@@ -874,7 +1047,7 @@ void BcmAclEntry::applyMirrorAction(
     const std::string& mirrorName,
     MirrorAction action,
     MirrorDirection direction) {
-  auto* bcmMirror = hw_->getBcmMirrorTable()->getMirrorIf(mirrorName);
+  auto* bcmMirror = hw_->getBcmMirrorTable()->getNodeIf(mirrorName);
   CHECK(bcmMirror != nullptr);
   bcmMirror->applyAclMirrorAction(handle_, action, direction);
 }

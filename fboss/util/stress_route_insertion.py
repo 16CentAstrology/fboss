@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 # Copyright (c) 2004-present, Facebook, Inc. All rights reserved.
 
+# pyre-unsafe
+
 import argparse
 import random
 import time
 
 from fboss.cli.utils import utils
-from fboss.thrift_clients import (
+from fboss.py.fboss.thrift_clients import (
     PlainTextFbossAgentClientDontUseInFb as PlainTextFbossAgentClient,
 )
 from neteng.fboss.ctrl.ttypes import IpPrefix, UnicastRoute
 
 
-class StressRouteInsertion(object):
+class StressRouteInsertion:
     """Measure latency of bulk route thrashing.
 
     Algorithm:
@@ -77,13 +79,13 @@ class StressRouteInsertion(object):
         prefix = random.randint(self.minprefix, self.maxprefix)  # inclusive
         r = ""
         for i in range(0, int(prefix / 4)):
-            r += "{0:x}".format(random.randint(0, 15))
+            r += f"{random.randint(0, 15):x}"
             if ((i + 1) % 4) == 0:
                 r += ":"
         leftover = prefix - (i * 4)
         # this ensures we don't end with a ':' as well
-        r += "{0:x}".format(random.randint(0, 15) & (pow(2, leftover) - 1))
-        return r + "::1/{}".format(prefix)
+        r += f"{random.randint(0, 15) & (pow(2, leftover) - 1):x}"
+        return r + f"::1/{prefix}"
 
     def insert_routes(self, routes):
         uniRoutes = []
@@ -122,21 +124,19 @@ class StressRouteInsertion(object):
         start = time.clock()
         self.insert_routes(self.routes)
         stop = time.clock()
-        print(
-            " ... done : {} seconds - not the real test, but FYI".format(stop - start)
-        )
+        print(f" ... done : {stop - start} seconds - not the real test, but FYI")
 
         target = (1 - (self.percent / 100)) * self.entries
         for loop in range(0, self.loops):
-            print("--- Starting loop {}...".format(loop))
-            print("Deleting {} routes".format(self.entries - target))
+            print(f"--- Starting loop {loop}...")
+            print(f"Deleting {self.entries - target} routes")
             delete_routes = []
             while len(self.routes) > target:
                 route = random.choice(list(self.routes.keys()))
                 delete_routes.append(route)
                 del self.routes[route]
             self.delete_routes(delete_routes)
-            print("Picking {} new routes".format(self.entries - target))
+            print(f"Picking {self.entries - target} new routes")
             new_routes = self.generate_random_routes(n=self.entries - target)
             print("Adding new routes")
             start = time.clock()
@@ -153,7 +153,7 @@ class StressRouteInsertion(object):
             input("\n\n\nTest Done -- press return to cleanup: ")
 
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(description="Port Testing")
     parser.add_argument(
         "--port",
@@ -206,3 +206,7 @@ if __name__ == "__main__":
         test.run_test()
     finally:
         test.clean_up()
+
+
+if __name__ == "__main__":
+    main()

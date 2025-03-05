@@ -48,9 +48,9 @@ class WedgeTomahawkPlatform : public WedgePlatform {
 
  private:
   void setupAsic(
-      cfg::SwitchType switchType,
       std::optional<int64_t> switchId,
-      std::optional<cfg::Range64> systemPortRange) override;
+      const cfg::SwitchInfo& switchInfo,
+      std::optional<HwAsic::FabricNodeRole> fabricNodeRole) override;
   std::unique_ptr<TomahawkAsic> asic_;
 };
 

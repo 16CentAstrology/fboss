@@ -16,7 +16,7 @@ namespace facebook::fboss {
 
 class SaiWedge400CPlatformPort : public SaiTajoPlatformPort {
  public:
-  explicit SaiWedge400CPlatformPort(PortID id, SaiPlatform* platform)
+  SaiWedge400CPlatformPort(PortID id, SaiPlatform* platform)
       : SaiTajoPlatformPort(id, platform) {}
   void linkStatusChanged(bool up, bool adminUp) override;
   void externalState(PortLedExternalState lfs) override;
@@ -29,7 +29,7 @@ class SaiWedge400CPlatformPort : public SaiTajoPlatformPort {
   std::pair<int32_t, int32_t> getFirstLaneAndChip() const;
   FbDomFpga::LedColor getLedState(bool up, bool adminUp) const;
   void setLedStatus(FbDomFpga::LedColor state) const;
-  FbDomFpga::LedColor currentLedState_;
+  FbDomFpga::LedColor currentLedState_{FbDomFpga::LedColor::OFF};
 };
 
 } // namespace facebook::fboss

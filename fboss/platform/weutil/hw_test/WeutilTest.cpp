@@ -20,19 +20,23 @@ namespace facebook::fboss::platform {
 WeutilTest::~WeutilTest() {}
 
 void WeutilTest::SetUp() {
-  weutilInstance = get_plat_weutil();
+  weutilInstance = createWeUtilIntf("chassis", "", 0);
 }
 
 void WeutilTest::TearDown() {}
 
 TEST_F(WeutilTest, getWedgeInfo) {
-  EXPECT_GT(weutilInstance->getInfo().size(), 0);
+  EXPECT_GT(weutilInstance->getContents().size(), 0);
+}
+
+TEST_F(WeutilTest, getEepromPaths) {
+  EXPECT_GT(getEepromPaths().size(), 0);
 }
 
 } // namespace facebook::fboss::platform
 
 int main(int argc, char* argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  facebook::fboss::platform::helpers::init(argc, argv);
+  facebook::fboss::platform::helpers::init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

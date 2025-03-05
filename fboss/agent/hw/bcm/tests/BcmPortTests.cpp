@@ -56,7 +56,11 @@ class BcmPortTest : public BcmTest {
   }
   cfg::SwitchConfig initialConfig() const override {
     return utility::oneL3IntfTwoPortConfig(
-        getHwSwitch(), masterLogicalPortIds()[0], masterLogicalPortIds()[1]);
+        getHwSwitch()->getPlatform()->getPlatformMapping(),
+        getHwSwitch()->getPlatform()->getAsic(),
+        masterLogicalPortIds()[0],
+        masterLogicalPortIds()[1],
+        getHwSwitch()->getPlatform()->supportsAddRemovePort());
   }
 };
 
@@ -131,6 +135,9 @@ TEST_F(BcmPortTest, PortLoopbackMode) {
 
 TEST_F(BcmPortTest, PortLoopbackModeMAC40G) {
   if (!isFlexModeSupported(getPlatform(), FlexPortMode::ONEX40G)) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
@@ -149,7 +156,11 @@ TEST_F(BcmPortTest, PortLoopbackModeMAC40G) {
       auto portCfg = utility::findCfgPort(newCfg, portId);
       portCfg->loopbackMode() = cfg::PortLoopbackMode::MAC;
       utility::updatePortSpeed(
-          *getHwSwitch(), newCfg, portId, cfg::PortSpeed::FORTYG);
+          getHwSwitch()->getPlatform()->getPlatformMapping(),
+          getHwSwitch()->getPlatform()->supportsAddRemovePort(),
+          newCfg,
+          portId,
+          cfg::PortSpeed::FORTYG);
     }
     applyNewConfig(newCfg);
   };
@@ -165,6 +176,9 @@ TEST_F(BcmPortTest, PortLoopbackModeMAC40G) {
 
 TEST_F(BcmPortTest, PortLoopbackModePHY40G) {
   if (!isFlexModeSupported(getPlatform(), FlexPortMode::ONEX40G)) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
@@ -174,7 +188,11 @@ TEST_F(BcmPortTest, PortLoopbackModePHY40G) {
       auto portCfg = utility::findCfgPort(newCfg, portId);
       portCfg->loopbackMode() = cfg::PortLoopbackMode::PHY;
       utility::updatePortSpeed(
-          *getHwSwitch(), newCfg, portId, cfg::PortSpeed::FORTYG);
+          getHwSwitch()->getPlatform()->getPlatformMapping(),
+          getHwSwitch()->getPlatform()->supportsAddRemovePort(),
+          newCfg,
+          portId,
+          cfg::PortSpeed::FORTYG);
     }
     applyNewConfig(newCfg);
   };
@@ -190,6 +208,9 @@ TEST_F(BcmPortTest, PortLoopbackModePHY40G) {
 
 TEST_F(BcmPortTest, PortLoopbackModeMAC100G) {
   if (!isFlexModeSupported(getPlatform(), FlexPortMode::ONEX100G)) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
@@ -199,7 +220,11 @@ TEST_F(BcmPortTest, PortLoopbackModeMAC100G) {
       auto portCfg = utility::findCfgPort(newCfg, portId);
       portCfg->loopbackMode() = cfg::PortLoopbackMode::MAC;
       utility::updatePortSpeed(
-          *getHwSwitch(), newCfg, portId, cfg::PortSpeed::HUNDREDG);
+          getHwSwitch()->getPlatform()->getPlatformMapping(),
+          getHwSwitch()->getPlatform()->supportsAddRemovePort(),
+          newCfg,
+          portId,
+          cfg::PortSpeed::HUNDREDG);
     }
     applyNewConfig(newCfg);
   };
@@ -216,6 +241,9 @@ TEST_F(BcmPortTest, PortLoopbackModeMAC100G) {
 
 TEST_F(BcmPortTest, PortLoopbackModePHY100G) {
   if (!isFlexModeSupported(getPlatform(), FlexPortMode::ONEX100G)) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
 
@@ -225,7 +253,11 @@ TEST_F(BcmPortTest, PortLoopbackModePHY100G) {
       auto portCfg = utility::findCfgPort(newCfg, portId);
       portCfg->loopbackMode() = cfg::PortLoopbackMode::PHY;
       utility::updatePortSpeed(
-          *getHwSwitch(), newCfg, portId, cfg::PortSpeed::HUNDREDG);
+          getHwSwitch()->getPlatform()->getPlatformMapping(),
+          getHwSwitch()->getPlatform()->supportsAddRemovePort(),
+          newCfg,
+          portId,
+          cfg::PortSpeed::HUNDREDG);
     }
     applyNewConfig(newCfg);
   };
@@ -243,6 +275,9 @@ TEST_F(BcmPortTest, PortLoopbackModePHY100G) {
 TEST_F(BcmPortTest, SampleDestination) {
   // sample destination can't be configured if sflow sampling isn't supported
   if (!getPlatform()->getAsic()->isSupported(HwAsic::Feature::SFLOW_SAMPLING)) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto setup = [=]() {
@@ -261,7 +296,7 @@ TEST_F(BcmPortTest, SampleDestination) {
     cfg::SflowTunnel sflowTunnel;
     *sflowTunnel.ip() = "10.0.0.1";
     sflowTunnel.udpSrcPort() = 6545;
-    sflowTunnel.udpDstPort() = 5343;
+    sflowTunnel.udpDstPort() = 6343;
     tunnel.sflowTunnel() = sflowTunnel;
     newCfg.mirrors()->resize(1);
     *newCfg.mirrors()[0].name() = "sflow";
@@ -283,6 +318,9 @@ TEST_F(BcmPortTest, SampleDestination) {
 TEST_F(BcmPortTest, NoSampleDestinationSet) {
   // sample destination can't be configured if sflow sampling isn't supported
   if (!getPlatform()->getAsic()->isSupported(HwAsic::Feature::SFLOW_SAMPLING)) {
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
     return;
   }
   auto setup = [=]() { return applyNewConfig(initialConfig()); };
@@ -353,7 +391,7 @@ TEST_F(BcmPortTest, SampleDestinationMirror) {
     cfg::SflowTunnel sflowTunnel;
     *sflowTunnel.ip() = "10.0.0.1";
     sflowTunnel.udpSrcPort() = 6545;
-    sflowTunnel.udpDstPort() = 5343;
+    sflowTunnel.udpDstPort() = 6343;
     tunnel.sflowTunnel() = sflowTunnel;
     *mirror.name() = "mirror";
     mirror.destination()->tunnel() = tunnel;
@@ -405,39 +443,45 @@ TEST_F(BcmPortTest, AssertL3Enabled) {
   // Enable all master ports
   auto setup = [this]() {
     applyNewConfig(utility::oneL3IntfNPortConfig(
-        getHwSwitch(), masterLogicalPortIds(), cfg::PortLoopbackMode::MAC));
+        getHwSwitch()->getPlatform()->getPlatformMapping(),
+        getHwSwitch()->getPlatform()->getAsic(),
+        masterLogicalPortIds(),
+        getHwSwitch()->getPlatform()->supportsAddRemovePort(),
+        getPlatform()->getAsic()->desiredLoopbackModes()));
   };
   auto verify = [this]() {
     std::array<std::tuple<std::string, bcm_port_control_t>, 2> l3Options = {
         std::make_tuple("bcmPortControlIP4", bcmPortControlIP4),
         std::make_tuple("bcmPortControlIP6", bcmPortControlIP6)};
-    for (const auto& port : std::as_const(*getProgrammedState()->getPorts())) {
-      if (!port.second->isEnabled()) {
-        continue;
-      }
-      for (auto l3Option : l3Options) {
-        int currVal{0};
-        auto rv = bcm_port_control_get(
-            getUnit(),
-            static_cast<int>(port.second->getID()),
-            std::get<1>(l3Option),
-            &currVal);
-        bcmCheckError(
-            rv,
-            folly::sformat(
-                "Failed to get {} for port {} : {}",
-                std::get<0>(l3Option),
-                static_cast<int>(port.second->getID()),
-                bcm_errmsg(rv)));
-        // Any enabled port should enable IP4 and IP6
-        EXPECT_EQ(currVal, 1);
+    for (const auto& portMap :
+         std::as_const(*getProgrammedState()->getPorts())) {
+      for (const auto& port : std::as_const(*portMap.second)) {
+        if (!port.second->isEnabled()) {
+          continue;
+        }
+        for (auto l3Option : l3Options) {
+          int currVal{0};
+          auto rv = bcm_port_control_get(
+              getUnit(),
+              static_cast<int>(port.second->getID()),
+              std::get<1>(l3Option),
+              &currVal);
+          bcmCheckError(
+              rv,
+              folly::sformat(
+                  "Failed to get {} for port {} : {}",
+                  std::get<0>(l3Option),
+                  static_cast<int>(port.second->getID()),
+                  bcm_errmsg(rv)));
+          // Any enabled port should enable IP4 and IP6
+          EXPECT_EQ(currVal, 1);
+        }
       }
     }
   };
   verifyAcrossWarmBoots(setup, verify);
 }
 
-#if (defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_21))
 TEST_F(BcmPortTest, PortFdrStats) {
   // Feature supported in Tomahawk4 and above. This test is marked known bad
   // in platforms with unsupported ASICs.
@@ -458,33 +502,41 @@ TEST_F(BcmPortTest, PortFdrStats) {
   };
   verifyAcrossWarmBoots(setup, verify);
 }
-#endif
 
 TEST_F(BcmPortTest, SetInterPacketGapBits) {
+  if (!getPlatform()->getPlatformMapping()->supportsInterPacketGapBits()) {
+    GTEST_SKIP();
+    return;
+  }
   static auto constexpr expectedInterPacketGapBits = 352;
   // Enable all master ports
   auto setup = [this]() {
-    getPlatform()->setOverridePortInterPacketGapBits(
-        expectedInterPacketGapBits);
     applyNewConfig(utility::oneL3IntfNPortConfig(
-        getHwSwitch(), masterLogicalPortIds(), cfg::PortLoopbackMode::MAC));
+        getHwSwitch()->getPlatform()->getPlatformMapping(),
+        getHwSwitch()->getPlatform()->getAsic(),
+        masterLogicalPortIds(),
+        getHwSwitch()->getPlatform()->supportsAddRemovePort(),
+        getPlatform()->getAsic()->desiredLoopbackModes()));
   };
   auto verify = [this]() {
-    for (const auto& port : std::as_const(*getProgrammedState()->getPorts())) {
-      if (!port.second->isEnabled()) {
-        continue;
-      }
-      // Due to the override port IPG is set, so the profileConfig should have
-      // the override value
-      EXPECT_TRUE(port.second->getProfileConfig().interPacketGapBits());
-      EXPECT_EQ(
-          *port.second->getProfileConfig().interPacketGapBits(),
-          expectedInterPacketGapBits);
+    for (const auto& portMap :
+         std::as_const(*getProgrammedState()->getPorts())) {
+      for (const auto& port : std::as_const(*portMap.second)) {
+        if (!port.second->isEnabled()) {
+          continue;
+        }
+        // platform mapping is used in apply thrift config, and not platform
+        // inter packet gap bits setting is only applicable in Elbert platform
+        EXPECT_TRUE(port.second->getProfileConfig().interPacketGapBits());
+        EXPECT_EQ(
+            *port.second->getProfileConfig().interPacketGapBits(),
+            expectedInterPacketGapBits);
 
-      // Check BcmPort is also programmed to use the override IGP
-      auto bcmPort =
-          getHwSwitch()->getPortTable()->getBcmPort(port.second->getID());
-      EXPECT_EQ(bcmPort->getInterPacketGapBits(), expectedInterPacketGapBits);
+        // Check BcmPort is also programmed to use the override IGP
+        auto bcmPort =
+            getHwSwitch()->getPortTable()->getBcmPort(port.second->getID());
+        EXPECT_EQ(bcmPort->getInterPacketGapBits(), expectedInterPacketGapBits);
+      }
     }
   };
   verifyAcrossWarmBoots(setup, verify);

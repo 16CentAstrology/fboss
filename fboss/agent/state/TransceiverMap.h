@@ -42,6 +42,8 @@ class TransceiverMap
     : public ThriftMapNode<TransceiverMap, TransceiverMapTraits> {
  public:
   using Base = ThriftMapNode<TransceiverMap, TransceiverMapTraits>;
+  using Traits = TransceiverMapTraits;
+  using Base::modify;
   using LegacyTraits = TransceiverMapLegacyTraits;
   TransceiverMap();
   virtual ~TransceiverMap() override;
@@ -54,15 +56,46 @@ class TransceiverMap
     return getNodeIf(static_cast<int16_t>(id));
   }
 
-  void addTransceiver(const std::shared_ptr<TransceiverSpec>& tcvr);
-  void updateTransceiver(const std::shared_ptr<TransceiverSpec>& tcvr);
-  void removeTransceiver(TransceiverID id);
-
-  TransceiverMap* modify(std::shared_ptr<SwitchState>* state);
-
  private:
   // Inherit the constructors required for clone()
   using Base::Base;
   friend class CloneAllocator;
 };
+
+using MultiSwitchTransceiverMapTypeClass = apache::thrift::type_class::
+    map<apache::thrift::type_class::string, TransceiverMapTypeClass>;
+using MultiSwitchTransceiverMapThriftType =
+    std::map<std::string, TransceiverMapThriftType>;
+
+class MultiSwitchTransceiverMap;
+
+using MultiSwitchTransceiverMapTraits = ThriftMultiSwitchMapNodeTraits<
+    MultiSwitchTransceiverMap,
+    MultiSwitchTransceiverMapTypeClass,
+    MultiSwitchTransceiverMapThriftType,
+    TransceiverMap>;
+
+class HwSwitchMatcher;
+
+class MultiSwitchTransceiverMap : public ThriftMultiSwitchMapNode<
+                                      MultiSwitchTransceiverMap,
+                                      MultiSwitchTransceiverMapTraits> {
+ public:
+  using Traits = MultiSwitchTransceiverMapTraits;
+  using BaseT = ThriftMultiSwitchMapNode<
+      MultiSwitchTransceiverMap,
+      MultiSwitchTransceiverMapTraits>;
+  using BaseT::modify;
+
+  MultiSwitchTransceiverMap() {}
+  virtual ~MultiSwitchTransceiverMap() {}
+
+  MultiSwitchTransceiverMap* modify(std::shared_ptr<SwitchState>* state);
+
+ private:
+  // Inherit the constructors required for clone()
+  using BaseT::BaseT;
+  friend class CloneAllocator;
+};
+
 } // namespace facebook::fboss

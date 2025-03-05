@@ -12,88 +12,90 @@
 #include <gflags/gflags.h>
 #include <stdexcept>
 #include <string>
+#include "fboss/lib/if/gen-cpp2/fboss_common_types.h"
 
 DECLARE_bool(use_bsp_helpers);
 
 namespace facebook::fboss {
 
-enum class PlatformMode : char {
-  WEDGE,
-  WEDGE100,
-  GALAXY_LC,
-  GALAXY_FC,
-  FAKE_WEDGE,
-  MINIPACK,
-  YAMP,
-  FAKE_WEDGE40,
-  WEDGE400C,
-  WEDGE400C_SIM,
-  WEDGE400,
-  FUJI,
-  ELBERT,
-  CLOUDRIPPER,
-  DARWIN,
-  LASSEN,
-  SANDIA,
-  MAKALU,
-  KAMET,
-  WEDGE400C_VOQ,
-  WEDGE400C_FABRIC,
-  CLOUDRIPPER_VOQ,
-  CLOUDRIPPER_FABRIC,
-  MONTBLANC,
-};
-
-inline std::string toString(PlatformMode mode) {
+inline std::string toString(PlatformType mode) {
   switch (mode) {
-    case PlatformMode::WEDGE:
+    case PlatformType::PLATFORM_WEDGE:
       return "WEDGE";
-    case PlatformMode::WEDGE100:
+    case PlatformType::PLATFORM_WEDGE100:
       return "WEDGE100";
-    case PlatformMode::GALAXY_LC:
+    case PlatformType::PLATFORM_GALAXY_LC:
       return "GALAXY_LC";
-    case PlatformMode::GALAXY_FC:
+    case PlatformType::PLATFORM_GALAXY_FC:
       return "GALAXY_FC";
-    case PlatformMode::FAKE_WEDGE:
+    case PlatformType::PLATFORM_FAKE_WEDGE:
       return "FAKE_WEDGE";
-    case PlatformMode::MINIPACK:
+    case PlatformType::PLATFORM_MINIPACK:
       return "MINIPACK";
-    case PlatformMode::YAMP:
+    case PlatformType::PLATFORM_YAMP:
       return "YAMP";
-    case PlatformMode::FAKE_WEDGE40:
+    case PlatformType::PLATFORM_FAKE_WEDGE40:
       return "FAKE_WEDGE40";
-    case PlatformMode::WEDGE400C:
+    case PlatformType::PLATFORM_WEDGE400C:
       return "WEDGE400C";
-    case PlatformMode::WEDGE400C_SIM:
+    case PlatformType::PLATFORM_WEDGE400C_SIM:
       return "WEDGE400C_SIM";
-    case PlatformMode::WEDGE400:
+    case PlatformType::PLATFORM_WEDGE400:
       return "WEDGE400";
-    case PlatformMode::FUJI:
+    case PlatformType::PLATFORM_WEDGE400_GRANDTETON:
+      return "WEDGE400_GRANDTETON";
+    case PlatformType::PLATFORM_FUJI:
       return "FUJI";
-    case PlatformMode::ELBERT:
+    case PlatformType::PLATFORM_ELBERT:
       return "ELBERT";
-    case PlatformMode::CLOUDRIPPER:
+    case PlatformType::PLATFORM_CLOUDRIPPER:
       return "CLOUDRIPPER";
-    case PlatformMode::DARWIN:
+    case PlatformType::PLATFORM_DARWIN:
       return "DARWIN";
-    case PlatformMode::LASSEN:
+    case PlatformType::PLATFORM_DARWIN48V:
+      return "DARWIN48V";
+    case PlatformType::PLATFORM_LASSEN_DEPRECATED:
       return "LASSEN";
-    case PlatformMode::SANDIA:
+    case PlatformType::PLATFORM_SANDIA:
       return "SANDIA";
-    case PlatformMode::MAKALU:
-      return "MAKALU";
-    case PlatformMode::KAMET:
-      return "KAMET";
-    case PlatformMode::WEDGE400C_VOQ:
+    case PlatformType::PLATFORM_MERU400BIU:
+      return "MERU400BIU";
+    case PlatformType::PLATFORM_MERU400BIA:
+      return "MERU400BIA";
+    case PlatformType::PLATFORM_MERU400BFU:
+      return "MERU400BFU";
+    case PlatformType::PLATFORM_WEDGE400C_VOQ:
       return "WEDGE400C_VOQ";
-    case PlatformMode::WEDGE400C_FABRIC:
+    case PlatformType::PLATFORM_WEDGE400C_FABRIC:
       return "WEDGE400C_FABRIC";
-    case PlatformMode::CLOUDRIPPER_VOQ:
+    case PlatformType::PLATFORM_WEDGE400C_GRANDTETON:
+      return "WEDGE400C_GRANDTETON";
+    case PlatformType::PLATFORM_CLOUDRIPPER_VOQ:
       return "CLOUDRIPPER_VOQ";
-    case PlatformMode::CLOUDRIPPER_FABRIC:
+    case PlatformType::PLATFORM_CLOUDRIPPER_FABRIC:
       return "CLOUDRIPPER_FABRIC";
-    case PlatformMode::MONTBLANC:
+    case PlatformType::PLATFORM_MONTBLANC:
       return "MONTBLANC";
+    case PlatformType::PLATFORM_MERU800BIA:
+      return "MERU800BIA";
+    case PlatformType::PLATFORM_MERU800BIAB:
+      return "MERU800BIAB";
+    case PlatformType::PLATFORM_MERU800BFA:
+      return "MERU800BFA";
+    case PlatformType::PLATFORM_MERU800BFA_P1:
+      return "MERU800BFA_P1";
+    case PlatformType::PLATFORM_MORGAN800CC:
+      return "MORGAN800CC";
+    case PlatformType::PLATFORM_FAKE_SAI:
+      return "FAKE_SAI";
+    case PlatformType::PLATFORM_JANGA800BIC:
+      return "JANGA800BIC";
+    case PlatformType::PLATFORM_TAHAN800BC:
+      return "TAHAN800BC";
+    case PlatformType::PLATFORM_YANGRA:
+      return "YANGRA";
+    case PlatformType::PLATFORM_MINIPACK3N:
+      return "MINIPACK3N";
   }
   throw std::runtime_error("Unknown mode");
   return "Unknown";

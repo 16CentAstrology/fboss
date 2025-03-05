@@ -163,6 +163,7 @@ DEFINE_extract(std::vector<sai_int8_t>, s8list);
 DEFINE_extract(std::vector<sai_int16_t>, s16list);
 DEFINE_extract(std::vector<sai_int32_t>, s32list);
 DEFINE_extract(std::vector<sai_qos_map_t>, qosmap);
+DEFINE_extract(std::vector<sai_map_t>, maplist);
 DEFINE_extract(std::vector<sai_port_lane_eye_values_t>, porteyevalues);
 DEFINE_extract(std::vector<sai_port_err_status_t>, porterror);
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
@@ -171,13 +172,21 @@ DEFINE_extract(
     portlanelatchstatuslist);
 DEFINE_extract(sai_latch_status_t, latchstatus);
 #endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 13, 0)
+DEFINE_extract(
+    std::vector<sai_port_frequency_offset_ppm_values_t>,
+    portfrequencyoffsetppmlist);
+DEFINE_extract(std::vector<sai_port_snr_values_t>, portsnrlist);
+#endif
 DEFINE_extract(facebook::fboss::AclEntryFieldU8, aclfield);
 DEFINE_extract(facebook::fboss::AclEntryFieldU16, aclfield);
 DEFINE_extract(facebook::fboss::AclEntryFieldU32, aclfield);
 DEFINE_extract(facebook::fboss::AclEntryFieldIpV6, aclfield);
 DEFINE_extract(facebook::fboss::AclEntryFieldIpV4, aclfield);
 DEFINE_extract(facebook::fboss::AclEntryFieldMac, aclfield);
+DEFINE_extract(facebook::fboss::AclEntryFieldU8List, aclfield);
 DEFINE_extract(facebook::fboss::AclEntryFieldSaiObjectIdT, aclfield);
+DEFINE_extract(facebook::fboss::AclEntryActionBool, aclaction);
 DEFINE_extract(facebook::fboss::AclEntryActionU8, aclaction);
 DEFINE_extract(facebook::fboss::AclEntryActionU32, aclaction);
 DEFINE_extract(facebook::fboss::AclEntryActionSaiObjectIdT, aclaction);
@@ -267,6 +276,39 @@ void _fill(const SaiListT& src, std::vector<T>& dst) {
       "pointer in sai list doesn't match vector type");
   dst.resize(src.count);
   std::copy(src.list, src.list + src.count, std::begin(dst));
+}
+
+inline bool compareQosMap(const sai_qos_map_t& lhs, const sai_qos_map_t& rhs) {
+  if (lhs.key.tc != rhs.key.tc) {
+    return lhs.key.tc < rhs.key.tc;
+  }
+  if (lhs.key.dscp != rhs.key.dscp) {
+    return lhs.key.dscp < rhs.key.dscp;
+  }
+  if (lhs.key.prio != rhs.key.prio) {
+    return lhs.key.prio < rhs.key.prio;
+  }
+  if (lhs.key.color != rhs.key.color) {
+    return lhs.key.color < rhs.key.color;
+  }
+  if (lhs.key.mpls_exp != rhs.key.mpls_exp) {
+    return lhs.key.mpls_exp < rhs.key.mpls_exp;
+  }
+  return false;
+}
+
+inline void _fill(std::vector<sai_qos_map_t>& src, sai_qos_map_list_t& dst) {
+  std::sort(src.begin(), src.end(), compareQosMap);
+  dst.count = src.size();
+  dst.list = src.data();
+}
+
+inline void _fill(
+    const sai_qos_map_list_t& src,
+    std::vector<sai_qos_map_t>& dst) {
+  dst.resize(src.count);
+  std::copy(src.list, src.list + src.count, std::begin(dst));
+  std::sort(dst.begin(), dst.end(), compareQosMap);
 }
 
 inline void _fill(
@@ -360,6 +402,37 @@ inline void _fill(
 
 inline void _fill(
     const sai_acl_field_data_t& src,
+    facebook::fboss::AclEntryFieldU8List& dst) {
+  std::vector<sai_uint8_t> data(src.data.u8list.count);
+  std::vector<sai_uint8_t> mask(src.mask.u8list.count);
+  data.resize(src.data.u8list.count);
+  mask.resize(src.mask.u8list.count);
+  std::copy(
+      src.data.u8list.list,
+      src.data.u8list.list + src.data.u8list.count,
+      std::begin(data));
+  std::copy(
+      src.mask.u8list.list,
+      src.mask.u8list.list + src.mask.u8list.count,
+      std::begin(mask));
+  dst.setDataAndMask(std::make_pair(std::move(data), std::move(mask)));
+}
+
+inline void _fill(
+    const facebook::fboss::AclEntryFieldU8List& src,
+    sai_acl_field_data_t& dst) {
+  dst.enable = true;
+  const auto& dataAndMask = src.getDataAndMask();
+  dst.data.u8list.count = dataAndMask.first.size();
+  dst.mask.u8list.count = dataAndMask.second.size();
+  dst.data.u8list.list = const_cast<sai_uint8_t*>(
+      reinterpret_cast<const sai_uint8_t*>(dataAndMask.first.data()));
+  dst.mask.u8list.list = const_cast<sai_uint8_t*>(
+      reinterpret_cast<const sai_uint8_t*>(dataAndMask.second.data()));
+}
+
+inline void _fill(
+    const sai_acl_field_data_t& src,
     facebook::fboss::AclEntryFieldSaiObjectIdT& dst) {
   /*
    * Mask is not needed for sai_object_id_t Acl Entry field.
@@ -383,6 +456,19 @@ inline void _fill(
    */
   dst.enable = true;
   std::tie(dst.data.oid, dst.mask.u32) = src.getDataAndMask();
+}
+
+inline void _fill(
+    const sai_acl_action_data_t& src,
+    facebook::fboss::AclEntryActionBool& dst) {
+  dst.setData(src.parameter.booldata);
+}
+
+inline void _fill(
+    const facebook::fboss::AclEntryActionBool& src,
+    sai_acl_action_data_t& dst) {
+  dst.enable = true;
+  dst.parameter.booldata = src.getData();
 }
 
 inline void _fill(
@@ -457,6 +543,16 @@ inline void _realloc(
   std::vector<sai_object_id_t> dstData(src.parameter.objlist.count);
   dstData.resize(src.parameter.objlist.count);
   dst.setData(dstData);
+}
+
+inline void _realloc(
+    const sai_acl_field_data_t& src,
+    facebook::fboss::AclEntryFieldU8List& dst) {
+  std::vector<sai_uint8_t> dstData(src.data.u8list.count);
+  std::vector<sai_uint8_t> dstMask(src.mask.u8list.count);
+  dstData.resize(src.data.u8list.count);
+  dstMask.resize(src.mask.u8list.count);
+  dst.setDataAndMask(std::make_pair(std::move(dstData), std::move(dstMask)));
 }
 
 template <typename SaiListT, typename T>
@@ -722,7 +818,8 @@ struct SaiExtensionAttributeId {
 
 template <
     typename T,
-    typename SaiExtensionAttributeId = SaiExtensionAttributeId<T>>
+    typename SaiExtensionAttributeId = SaiExtensionAttributeId<T>,
+    typename DefaultGetterT = void>
 class SaiExtensionAttribute {
  public:
   using DataType = std::conditional_t<
@@ -730,9 +827,11 @@ class SaiExtensionAttribute {
       typename WrappedSaiType<T>::value,
       T>;
   using ValueType = T;
-  static constexpr bool HasDefaultGetter = false;
+  static constexpr bool HasDefaultGetter =
+      !std::is_same_v<DefaultGetterT, void>;
   using AttributeId = SaiExtensionAttributeId;
   using ExtractSelectionType = T;
+  using DefaultGetter = DefaultGetterT;
 
   SaiExtensionAttribute() {
     saiAttr_.id = kExtensionAttributeId();
@@ -793,6 +892,17 @@ class SaiExtensionAttribute {
     return v;
   }
 
+  static ValueType defaultValue() {
+    static_assert(HasDefaultGetter, "No default getter provided for attribute");
+    if constexpr (IsSaiTypeWrapper<T>::value) {
+      static ValueType v;
+      _fill(DefaultGetterT{}(), v);
+      return v;
+    } else {
+      return DefaultGetterT{}();
+    }
+  }
+
   void realloc() {
     _realloc(data(), value_);
     _fill(value_, data());
@@ -851,7 +961,10 @@ template <typename T>
 struct IsSaiExtensionAttribute<
     T,
     std::enable_if_t<std::is_base_of_v<
-        SaiExtensionAttribute<typename T::ValueType, typename T::AttributeId>,
+        SaiExtensionAttribute<
+            typename T::ValueType,
+            typename T::AttributeId,
+            typename T::DefaultGetter>,
         T>>> : std::true_type {};
 
 // implement trait that detects SaiAttribute
@@ -897,6 +1010,22 @@ template <typename AttrEnumT, AttrEnumT AttrEnum, typename DataT>
 struct hash<facebook::fboss::SaiAttribute<AttrEnumT, AttrEnum, DataT, void>> {
   size_t operator()(
       const facebook::fboss::SaiAttribute<AttrEnumT, AttrEnum, DataT, void>&
+          attr) const {
+    size_t seed = 0;
+    boost::hash_combine(seed, attr.value());
+    return seed;
+  }
+};
+
+template <
+    typename AttrEnumT,
+    AttrEnumT AttrEnum,
+    typename DataT,
+    typename DefaultT>
+struct hash<
+    facebook::fboss::SaiAttribute<AttrEnumT, AttrEnum, DataT, DefaultT>> {
+  size_t operator()(
+      const facebook::fboss::SaiAttribute<AttrEnumT, AttrEnum, DataT, DefaultT>&
           attr) const {
     size_t seed = 0;
     boost::hash_combine(seed, attr.value());

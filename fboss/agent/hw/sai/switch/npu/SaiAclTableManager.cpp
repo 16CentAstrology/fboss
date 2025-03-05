@@ -15,6 +15,7 @@
 #include "fboss/agent/hw/sai/switch/SaiMirrorManager.h"
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiSwitchManager.h"
+#include "fboss/agent/hw/sai/switch/SaiUdfManager.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/platforms/sai/SaiPlatform.h"
 
@@ -29,6 +30,7 @@ SaiAclTableManager::SaiAclTableManager(
     : saiStore_(saiStore),
       managerTable_(managerTable),
       platform_(platform),
+      aclStats_(HwFb303Stats(platform->getMultiSwitchStatsPrefix())),
       aclEntryMinimumPriority_(
           SaiApiTable::getInstance()->switchApi().getAttribute(
               managerTable_->switchManager().getSwitchSaiId(),
@@ -84,8 +86,12 @@ std::vector<sai_int32_t> SaiAclTableManager::getActionTypeList(
   } else {
     bool isTajo = platform_->getAsic()->getAsicVendor() ==
         HwAsic::AsicVendor::ASIC_VENDOR_TAJO;
-    bool isIndus =
-        platform_->getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_INDUS;
+    bool isJericho2 = platform_->getAsic()->getAsicType() ==
+        cfg::AsicType::ASIC_TYPE_JERICHO2;
+    bool isJericho3 = platform_->getAsic()->getAsicType() ==
+        cfg::AsicType::ASIC_TYPE_JERICHO3;
+    bool isChenab =
+        platform_->getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_CHENAB;
 
     std::vector<sai_int32_t> actionTypeList{
         SAI_ACL_ACTION_TYPE_PACKET_ACTION,
@@ -94,14 +100,27 @@ std::vector<sai_int32_t> SaiAclTableManager::getActionTypeList(
         SAI_ACL_ACTION_TYPE_SET_DSCP,
         SAI_ACL_ACTION_TYPE_MIRROR_INGRESS};
 
-    if (!(isTajo || isIndus)) {
+    if (!(isTajo || isJericho2 || isJericho3 || isChenab)) {
+      // Chenab supports egress mirror action in egress table
       actionTypeList.push_back(SAI_ACL_ACTION_TYPE_MIRROR_EGRESS);
     }
+    if (platform_->getAsic()->isSupported(
+            HwAsic::Feature::SAI_USER_DEFINED_TRAP) &&
+        FLAGS_sai_user_defined_trap) {
+      actionTypeList.push_back(SAI_ACL_ACTION_TYPE_SET_USER_TRAP_ID);
+    }
+#if SAI_API_VERSION >= SAI_VERSION(1, 14, 0)
+    if (platform_->getAsic()->isSupported(HwAsic::Feature::FLOWLET) &&
+        FLAGS_flowletSwitchingEnable) {
+      actionTypeList.push_back(SAI_ACL_ACTION_TYPE_DISABLE_ARS_FORWARDING);
+    }
+#endif
     return actionTypeList;
   }
 }
 
 std::set<cfg::AclTableQualifier> SaiAclTableManager::getQualifierSet(
+    sai_acl_stage_t aclStage,
     const std::shared_ptr<AclTable>& addedAclTable) {
   auto aclQualifiers = addedAclTable->getQualifiers();
   /*
@@ -116,7 +135,7 @@ std::set<cfg::AclTableQualifier> SaiAclTableManager::getQualifierSet(
 
     return qualifiers;
   } else {
-    return getSupportedQualifierSet();
+    return getSupportedQualifierSet(aclStage);
   }
 }
 
@@ -130,10 +149,19 @@ std::
 
   auto actionTypeList = getActionTypeList(addedAclTable);
 
-  auto qualifierSet = getQualifierSet(addedAclTable);
+  auto qualifierSet = getQualifierSet(aclStage, addedAclTable);
   auto qualifierExistsFn = [qualifierSet](cfg::AclTableQualifier qualifier) {
     return qualifierSet.find(qualifier) != qualifierSet.end();
   };
+
+  std::vector<std::optional<sai_object_id_t>> udfGroupIds(
+      SaiAclTableManager::kMaxUdfGroups, std::nullopt);
+  int i = 0;
+  auto udfGroupSaiIds = managerTable_->udfManager().getUdfGroupIds(
+      addedAclTable->getUdfGroups()->toThrift());
+  for (const auto udfGroupSaiId : udfGroupSaiIds) {
+    udfGroupIds[i++] = udfGroupSaiId;
+  }
 
   SaiAclTableTraits::CreateAttributes attributes{
       tableStage,
@@ -145,7 +173,7 @@ std::
       qualifierExistsFn(cfg::AclTableQualifier::DST_IPV4),
       qualifierExistsFn(cfg::AclTableQualifier::L4_SRC_PORT),
       qualifierExistsFn(cfg::AclTableQualifier::L4_DST_PORT),
-      qualifierExistsFn(cfg::AclTableQualifier::IP_PROTOCOL),
+      qualifierExistsFn(cfg::AclTableQualifier::IP_PROTOCOL_NUMBER),
       qualifierExistsFn(cfg::AclTableQualifier::TCP_FLAGS),
       qualifierExistsFn(cfg::AclTableQualifier::SRC_PORT),
       qualifierExistsFn(cfg::AclTableQualifier::OUT_PORT),
@@ -163,7 +191,22 @@ std::
       qualifierExistsFn(cfg::AclTableQualifier::LOOKUP_CLASS_ROUTE),
       qualifierExistsFn(cfg::AclTableQualifier::ETHER_TYPE),
       qualifierExistsFn(cfg::AclTableQualifier::OUTER_VLAN),
-
+#if !defined(TAJO_SDK) || defined(TAJO_SDK_GTE_24_4_90)
+      qualifierExistsFn(cfg::AclTableQualifier::BTH_OPCODE),
+#endif
+#if !defined(TAJO_SDK) && !defined(BRCM_SAI_SDK_XGS)
+      qualifierExistsFn(cfg::AclTableQualifier::IPV6_NEXT_HEADER),
+#endif
+#if (                                                                  \
+    (SAI_API_VERSION >= SAI_VERSION(1, 14, 0) ||                       \
+     (defined(BRCM_SAI_SDK_GTE_11_0) && defined(BRCM_SAI_SDK_XGS))) && \
+    !defined(TAJO_SDK))
+      udfGroupIds[0], // UserDefinedFieldGroupMin0
+      udfGroupIds[1], // UserDefinedFieldGroupMin1
+      udfGroupIds[2], // UserDefinedFieldGroupMin2
+      udfGroupIds[3], // UserDefinedFieldGroupMin3
+      udfGroupIds[4], // UserDefinedFieldGroupMin4
+#endif
   };
 
   SaiAclTableTraits::AdapterHostKey adapterHostKey{addedAclTable->getID()};

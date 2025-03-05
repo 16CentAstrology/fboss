@@ -8,6 +8,8 @@
 #  of patent rights can be found in the PATENTS file in the same directory.
 #
 
+# pyre-unsafe
+
 import collections
 import itertools
 import time
@@ -26,7 +28,6 @@ from thrift.transport.TTransport import TTransportException
 
 class PortDetailsCmd(cmds.FbossCmd):
     def run(self, ports, show_down=True):
-
         with self._create_agent_client() as client:
             try:
                 resp = client.getAllPortInfo()
@@ -65,7 +66,7 @@ class PortDetailsCmd(cmds.FbossCmd):
         for factor, unit in [(0, ""), (3, "K"), (6, "M"), (9, "G")]:
             if value < 1000:
                 bps_per_unit = bps / 10**factor
-                suffix = "{}bps".format(unit)
+                suffix = f"{unit}bps"
                 break
             value /= 1000
 
@@ -104,7 +105,7 @@ class PortDetailsCmd(cmds.FbossCmd):
             ("Description", port_info.description or ""),
             ("Admin State", admin_status),
             ("Link State", oper_status),
-            ("Speed", "{:.0f} {}".format(speed, suffix)),
+            ("Speed", f"{speed:.0f} {suffix}"),
             ("VLANs", vlans),
             ("Forward Error Correction", fec_status),
             ("Pause", pause),
@@ -129,7 +130,7 @@ class PortDetailsCmd(cmds.FbossCmd):
         if hasattr(port_info, "portQueues"):
             print(fmt.format("Unicast queues", len(port_info.portQueues)))
             for queue in port_info.portQueues:
-                name = "({})".format(queue.name) if queue.name != "" else ""
+                name = f"({queue.name})" if queue.name != "" else ""
                 attrs = [queue.mode]
                 for val in (
                     "weight",
@@ -139,23 +140,15 @@ class PortDetailsCmd(cmds.FbossCmd):
                     "bandwidthBurstMaxKbits",
                 ):
                     if hasattr(queue, val) and getattr(queue, val):
-                        attrs.append("{}={}".format(val, getattr(queue, val)))
+                        attrs.append(f"{val}={getattr(queue, val)}")
 
                 if hasattr(queue, "portQueueRate") and queue.portQueueRate:
                     if queue.portQueueRate.field == 1:  # pps
-                        attrs.append(
-                            "minpps={}".format(queue.portQueueRate.value.minimum)
-                        )
-                        attrs.append(
-                            "maxpps={}".format(queue.portQueueRate.value.maximum)
-                        )
+                        attrs.append(f"minpps={queue.portQueueRate.value.minimum}")
+                        attrs.append(f"maxpps={queue.portQueueRate.value.maximum}")
                     elif queue.portQueueRate.field == 2:  # kbps
-                        attrs.append(
-                            "minkbps={}".format(queue.portQueueRate.value.minimum)
-                        )
-                        attrs.append(
-                            "maxkbps={}".format(queue.portQueueRate.value.maximum)
-                        )
+                        attrs.append(f"minkbps={queue.portQueueRate.value.minimum}")
+                        attrs.append(f"maxkbps={queue.portQueueRate.value.maximum}")
 
                 if not (hasattr(queue, "aqms") and queue.aqms):
                     attrs.append("TAIL DROP")
@@ -194,9 +187,9 @@ class PortDetailsCmd(cmds.FbossCmd):
                     ):
                         dscpRange = list(dscpRange)
                         dscpRanges.append(
-                            "[{}]".format(dscpRange[0][1])
+                            f"[{dscpRange[0][1]}]"
                             if len(dscpRange) == 1
-                            else "[{}-{}]".format(dscpRange[0][1], dscpRange[-1][1])
+                            else f"[{dscpRange[0][1]}-{dscpRange[-1][1]}]"
                         )
                     print("{:<41}DSCP={}".format("", ",".join(dscpRanges)))
 
@@ -254,7 +247,9 @@ class PortFlapCmd(cmds.FbossCmd):
                         qsfp_info = qsfp_info_map.get(
                             status.transceiverIdx.transceiverId
                         )
-                        qsfp_present = qsfp_info.present if qsfp_info else False
+                        qsfp_present = (
+                            qsfp_info.tcvrState.present if qsfp_info else False
+                        )
                     if qsfp_present:
                         print("Disabling port %d" % port)
                         client.setPortState(port, False)
@@ -269,7 +264,7 @@ class PortPrbsCmd(cmds.FbossCmd):
     def __init__(self, cli_opts, component, ports):
         self.component = component
         self.ports = ports
-        super(PortPrbsCmd, self).__init__(cli_opts)
+        super().__init__(cli_opts)
 
     def clear_prbs_stats(self):
         # TODO Try to call qsfp_service to handle xphy prbs logic first
@@ -323,7 +318,7 @@ class PortPrbsCmd(cmds.FbossCmd):
                 state.polynominal = polynominal
                 try:
                     for port in self.ports:
-                        print("{} PRBS on port {}".format(enable_str, port))
+                        print(f"{enable_str} PRBS on port {port}")
                         client.setPortPrbs(port, self.component, state)
                     return
                 except Exception:
@@ -331,7 +326,7 @@ class PortPrbsCmd(cmds.FbossCmd):
 
         with self._create_agent_client() as client:
             for port in self.ports:
-                print("{} PRBS on port {}".format(enable_str, port))
+                print(f"{enable_str} PRBS on port {port}")
                 client.setPortPrbs(port, self.component, enable, polynominal)
 
     def _print_prbs_stats(self, port_stats):
@@ -351,15 +346,15 @@ class PortPrbsCmd(cmds.FbossCmd):
             print(
                 field_fmt.format(
                     lane_stats.laneId,
-                    "out-of-lock"
-                    if not lane_stats.locked
-                    else "{:.2e}".format(lane_stats.ber),
-                    "N/A"
-                    if lane_stats.maxBer < 0
-                    else "{:.2e}".format(lane_stats.maxBer),
+                    (
+                        "out-of-lock"
+                        if not lane_stats.locked
+                        else f"{lane_stats.ber:.2e}"
+                    ),
+                    ("N/A" if lane_stats.maxBer < 0 else f"{lane_stats.maxBer:.2e}"),
                     lane_stats.numLossOfLock,
-                    "{:d}s".format(lane_stats.timeSinceLastLocked),
-                    "{:d}s".format(lane_stats.timeSinceLastClear),
+                    f"{lane_stats.timeSinceLastLocked:d}s",
+                    f"{lane_stats.timeSinceLastClear:d}s",
                 )
             )
 
@@ -375,7 +370,7 @@ class PortSetStatusCmd(cmds.FbossCmd):
         with self._create_agent_client() as client:
             for port in ports:
                 status_str = "Enabling" if status else "Disabling"
-                print("{} port {}".format(status_str, port))
+                print(f"{status_str} port {port}")
                 client.setPortState(port, status)
 
 
@@ -390,7 +385,7 @@ class PortSetLedCmd(cmds.FbossCmd):
         with self._create_agent_client() as client:
             for port in ports:
                 values = PortLedExternalState._VALUES_TO_NAMES
-                print("Setting port {} to value: {}".format(port, values.get(value)))
+                print(f"Setting port {port} to value: {values.get(value)}")
                 client.setExternalLedState(port, value)
 
 
@@ -463,7 +458,7 @@ class PortStatsCmd(cmds.FbossCmd):
         ret = ""
         if details and port_id in n2ports:
             for n in n2ports[port_id]:
-                ret += " {}".format(n.systemName)
+                ret += f" {n.systemName}"
         return ret
 
 
@@ -552,7 +547,7 @@ class PortStatusCmd(cmds.FbossCmd):
             transceiver = status.transceiverIdx
             if transceiver and self._qsfp_client:
                 qsfp_info = qsfp_info_map.get(transceiver.transceiverId)
-                qsfp_present = qsfp_info.present if qsfp_info else False
+                qsfp_present = qsfp_info.tcvrState.present if qsfp_info else False
 
             attrs = utils.get_status_strs(status, qsfp_present)
             if internal_port:
@@ -599,12 +594,12 @@ class PortStatusCmd(cmds.FbossCmd):
         if missing_port_status:
             print(
                 utils.make_error_string(
-                    "Could not get status of ports {}".format(missing_port_status)
+                    f"Could not get status of ports {missing_port_status}"
                 )
             )
 
 
-class PortStatusDetailCmd(object):
+class PortStatusDetailCmd:
     """Print detailed/verbose port status"""
 
     def __init__(self, client, ports, qsfp_client, verbose):
@@ -667,14 +662,14 @@ class PortStatusDetailCmd(object):
                 tid = status.transceiverIdx.transceiverId
                 if tid not in self._info_resp.keys():
                     info = transceiver_ttypes.TransceiverInfo()
-                    info.port = port
-                    info.present = False
+                    info.tcvrState.port = port
+                    info.tcvrState.present = False
                     self._info_resp[port] = info
 
     def _print_transceiver_ports(self, ports, info):
         """Print port info if the transceiver doesn't have any"""
 
-        present = info.present if info else None
+        present = info.tcvrState.present if info else None
 
         for port in ports:
             attrs = utils.get_status_strs(self._status_resp[port], present)
@@ -689,13 +684,13 @@ class PortStatusDetailCmd(object):
 
         print(
             "Vendor:  {:<16}  Part Number:  {:<16}".format(
-                info.vendor.name, info.vendor.partNumber
+                info.tcvrState.vendor.name, info.tcvrState.vendor.partNumber
             )
         )
-        print("Serial:  {:<16}  ".format(info.vendor.serialNumber), end="")
+        print(f"Serial:  {info.tcvrState.vendor.serialNumber:<16}  ", end="")
         print(
             "Date Code:  {:<8}  Revision: {:<2}".format(
-                info.vendor.dateCode, info.vendor.rev
+                info.tcvrState.vendor.dateCode, info.tcvrState.vendor.rev
             )
         )
 
@@ -704,35 +699,39 @@ class PortStatusDetailCmd(object):
 
         print(
             "CDR Tx: {}\tCDR Rx: {}".format(
-                transceiver_ttypes.FeatureState._VALUES_TO_NAMES[info.settings.cdrTx],
-                transceiver_ttypes.FeatureState._VALUES_TO_NAMES[info.settings.cdrRx],
+                transceiver_ttypes.FeatureState._VALUES_TO_NAMES[
+                    info.tcvrState.settings.cdrTx
+                ],
+                transceiver_ttypes.FeatureState._VALUES_TO_NAMES[
+                    info.tcvrState.settings.cdrRx
+                ],
             )
         )
         print(
             "Rate select: {}".format(
                 transceiver_ttypes.RateSelectState._VALUES_TO_NAMES[
-                    info.settings.rateSelect
+                    info.tcvrState.settings.rateSelect
                 ]
             )
         )
         print(
             "\tOptimised for: {}".format(
                 transceiver_ttypes.RateSelectSetting._VALUES_TO_NAMES[
-                    info.settings.rateSelectSetting
+                    info.tcvrState.settings.rateSelectSetting
                 ]
             )
         )
         print(
             "Power measurement: {}".format(
                 transceiver_ttypes.FeatureState._VALUES_TO_NAMES[
-                    info.settings.powerMeasurement
+                    info.tcvrState.settings.powerMeasurement
                 ]
             )
         )
         print(
             "Power control: {}".format(
                 transceiver_ttypes.PowerControlState._VALUES_TO_NAMES[
-                    info.settings.powerControl
+                    info.tcvrState.settings.powerControl
                 ]
             )
         )
@@ -746,12 +745,14 @@ class PortStatusDetailCmd(object):
 
         Cable = collections.namedtuple("Cable", "length type unit")
         cable_info_obtained = (
-            Cable(length=info.cable.copper, type="Copper", unit="m"),
-            Cable(length=info.cable.om1, type="OM1", unit="m"),
-            Cable(length=info.cable.om2, type="OM2", unit="m"),
-            Cable(length=info.cable.om3, type="OM3", unit="m"),
-            Cable(length=info.cable.singleMode, type="singleMode", unit="m"),
-            Cable(length=info.cable.singleModeKm, type="singleModeKm", unit="km"),
+            Cable(length=info.tcvrState.cable.copper, type="Copper", unit="m"),
+            Cable(length=info.tcvrState.cable.om1, type="OM1", unit="m"),
+            Cable(length=info.tcvrState.cable.om2, type="OM2", unit="m"),
+            Cable(length=info.tcvrState.cable.om3, type="OM3", unit="m"),
+            Cable(length=info.tcvrState.cable.singleMode, type="singleMode", unit="m"),
+            Cable(
+                length=info.tcvrState.cable.singleModeKm, type="singleModeKm", unit="km"
+            ),
         )
 
         cables_found = []
@@ -969,47 +970,54 @@ class PortStatusDetailCmd(object):
 
         info = self._info_resp.get(tid)
         ch_to_port = self._t_to_p[tid]
-        if not info or info.present is False:
+        if not info or info.tcvrState.present is False:
             self._print_transceiver_ports(ch_to_port.values(), info)
             return
 
-        print("Transceiver:  {:>2}".format(info.port))
-        if info.identifier:
+        print(f"Transceiver:  {info.tcvrState.port:>2}")
+        if info.tcvrState.identifier:
             print(
                 "Optics type: {}".format(
                     transceiver_ttypes.TransceiverModuleIdentifier._VALUES_TO_NAMES[
-                        info.identifier
+                        info.tcvrState.identifier
                     ]
                 )
             )
 
-        if info.vendor:
+        if info.tcvrState.vendor:
             self._print_vendor_details(info)
 
-        if info.cable:
+        if info.tcvrState.cable:
             self._print_cable_details(info)
 
-        if info.settings:
+        if info.tcvrState.settings:
             self._print_settings_details(info)
 
-        if info.sensor or (info.thresholds and self._verbose) or info.channels:
+        if (
+            info.tcvrStats.sensor
+            or (info.tcvrState.thresholds and self._verbose)
+            or info.tcvrStats.channels
+        ):
             print("Monitoring Information:")
 
-        if info.sensor:
+        if info.tcvrStats.sensor:
             print(
                 "  {:<15} {:0.4}   {:<4} {:0.4}".format(
-                    "Temperature", info.sensor.temp.value, "Vcc", info.sensor.vcc.value
+                    "Temperature",
+                    info.tcvrStats.sensor.temp.value,
+                    "Vcc",
+                    info.tcvrStats.sensor.vcc.value,
                 )
             )
 
-        if self._verbose and info.thresholds:
-            self._print_thresholds(info.thresholds)
+        if self._verbose and info.tcvrState.thresholds:
+            self._print_thresholds(info.tcvrState.thresholds)
 
-        if self._verbose and info.sensor:
-            if info.sensor.temp.flags and info.sensor.vcc.flags:
-                self._print_sensor_flags(info.sensor)
+        if self._verbose and info.tcvrStats.sensor:
+            if info.tcvrStats.sensor.temp.flags and info.tcvrStats.sensor.vcc.flags:
+                self._print_sensor_flags(info.tcvrStats.sensor)
 
-        for channel in info.channels:
+        for channel in info.tcvrStats.channels:
             port = ch_to_port.get(channel.channel, None)
             if port:
                 attrs = utils.get_status_strs(self._status_resp[port], None)
@@ -1028,12 +1036,12 @@ class PortStatusDetailCmd(object):
                 # is a bit less ambiguous about what we should do here when we
                 # were only asked to display info for some ports in a given
                 # transceiver.)
-                print("  Channel: {}".format(channel.channel))
+                print(f"  Channel: {channel.channel}")
 
             self._print_port_channel(channel)
 
         # If we didn't print any channel info, print something useful
-        if not info.channels:
+        if not info.tcvrStats.channels:
             self._print_transceiver_ports(ch_to_port.values(), info)
 
     def _print_port_detail(self):

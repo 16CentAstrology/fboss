@@ -86,14 +86,17 @@ class NeighborCacheEntry : private folly::AsyncTimeout {
   typedef NeighborEntryFields<AddressType> EntryFields;
   NeighborCacheEntry(
       EntryFields fields,
-      folly::EventBase* evb,
+      FbossEventBase* evb,
       Cache* cache,
-      NeighborEntryState state)
+      NeighborEntryState state,
+      state::NeighborEntryType type)
       : AsyncTimeout(evb),
         fields_(fields),
         cache_(cache),
         evb_(evb),
-        probesLeft_(cache_->getMaxNeighborProbes()) {
+        probesLeft_(cache_->getMaxNeighborProbes()),
+        type_(type) {
+    CHECK(type == state::NeighborEntryType::DYNAMIC_ENTRY);
     enter(state);
   }
 
@@ -102,7 +105,7 @@ class NeighborCacheEntry : private folly::AsyncTimeout {
       folly::MacAddress mac,
       PortDescriptor port,
       InterfaceID intf,
-      folly::EventBase* evb,
+      FbossEventBase* evb,
       Cache* cache,
       NeighborEntryState state)
       : NeighborCacheEntry(
@@ -115,7 +118,7 @@ class NeighborCacheEntry : private folly::AsyncTimeout {
       AddressType ip,
       InterfaceID intf,
       NeighborState ignored,
-      folly::EventBase* evb,
+      FbossEventBase* evb,
       Cache* cache)
       : NeighborCacheEntry(
             EntryFields(ip, intf, ignored),
@@ -221,6 +224,8 @@ class NeighborCacheEntry : private folly::AsyncTimeout {
     *entry.ttl() = getTtl();
     *entry.classID() =
         getClassID().has_value() ? static_cast<int>(getClassID().value()) : 0;
+    *entry.interfaceID() = getIntfID();
+    *entry.portDescriptor() = getPort().toThrift();
   }
 
  private:
@@ -339,10 +344,8 @@ class NeighborCacheEntry : private folly::AsyncTimeout {
 
   void probeStaleEntryIfHit() {
     DCHECK(state_ == NeighborEntryState::STALE);
-    if (cache_->isHit(getIP())) {
-      state_ = NeighborEntryState::PROBE;
-      probeIfProbesLeft();
-    }
+    state_ = NeighborEntryState::PROBE;
+    probeIfProbesLeft();
   }
 
   void runStateMachine() {
@@ -411,9 +414,10 @@ class NeighborCacheEntry : private folly::AsyncTimeout {
 
   // Additional state kept per cache entry.
   Cache* cache_;
-  folly::EventBase* evb_;
+  FbossEventBase* evb_;
   NeighborEntryState state_{NeighborEntryState::UNINITIALIZED};
   uint32_t probesLeft_{0};
+  state::NeighborEntryType type_{state::NeighborEntryType::DYNAMIC_ENTRY};
   std::chrono::time_point<std::chrono::steady_clock> expireTime_;
 };
 

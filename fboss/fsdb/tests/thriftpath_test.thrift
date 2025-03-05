@@ -2,6 +2,10 @@
 
 namespace cpp2 facebook.fboss.fsdb
 
+cpp_include "folly/container/F14Map.h"
+
+include "thrift/annotation/cpp.thrift"
+
 enum TestEnum {
   FIRST = 1,
   SECOND = 2,
@@ -29,11 +33,20 @@ union UnionSimple {
   3: string str;
 }
 
+struct OtherStruct {
+  1: map<string, i32> m;
+  2: list<i32> l;
+  3: set<i32> s;
+  4: UnionSimple u;
+  5: optional i32 o;
+}
+
 struct TestStruct {
   1: bool tx = false;
   2: bool rx = false;
   3: string name;
   4: TestStructSimple member;
+  @cpp.Type{template = "folly::F14FastMap"}
   5: map<i32, TestStructSimple> structMap = {};
   6: optional string optionalString;
   7: UnionSimple variantMember;
@@ -47,4 +60,6 @@ struct TestStruct {
   15: set<i32> setOfI32;
   16: map<string, TestStructSimple> stringToStruct = {};
   17: ListTypedef listTypedef = [];
+  18: map<string, OtherStruct> mapOfStructs;
+  19: list<OtherStruct> listofStructs;
 } (thriftpath.root)

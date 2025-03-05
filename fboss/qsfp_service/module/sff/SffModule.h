@@ -15,16 +15,18 @@ enum class SffPages : int {
   PAGE0 = 0,
   PAGE3 = 3,
   PAGE7 = 7,
+  PAGE128 = 128,
 };
 
 enum class SffField;
-enum class SffFr1Field;
 
 class SffModule : public QsfpModule {
  public:
   explicit SffModule(
-      TransceiverManager* transceiverManager,
-      std::unique_ptr<TransceiverImpl> qsfpImpl);
+      std::set<std::string> portNames,
+      TransceiverImpl* qsfpImpl,
+      std::shared_ptr<const TransceiverConfig> cfg,
+      std::string tcvrName);
   virtual ~SffModule() override;
 
   /*
@@ -65,21 +67,14 @@ class SffModule : public QsfpModule {
   using LengthAndGauge = std::pair<double, uint8_t>;
 
   /*
-   * Returns the number of lanes on the host side
-   */
-  unsigned int numHostLanes() const override;
-  /*
-   * Returns the number of lanes on the media side
-   */
-  unsigned int numMediaLanes() const override;
-
-  /*
    * This function veifies the Module eeprom register checksum for various
    * pages.
    */
   bool verifyEepromChecksums() override;
 
   bool supportRemediate() override;
+
+  bool tcvrPortStateSupported(TransceiverPortState& portState) const override;
 
  protected:
   // QSFP+ requires a bottom 128 byte page describing important monitoring
@@ -93,7 +88,13 @@ class SffModule : public QsfpModule {
   uint8_t page0_[MAX_QSFP_PAGE_SIZE] = {0};
   uint8_t page3_[MAX_QSFP_PAGE_SIZE] = {0};
 
-  void customizeTransceiverLocked(cfg::PortSpeed speed) override;
+  void customizeTransceiverLocked(TransceiverPortState& portState) override;
+
+  /*
+   * If the current power state is not same as desired one then change it and
+   * return true when module is in ready state
+   */
+  virtual bool ensureTransceiverReadyLocked() override;
 
   /*
    * This function returns a pointer to the value in the static cached
@@ -181,7 +182,7 @@ class SffModule : public QsfpModule {
   /*
    * Gather the vendor info for thrift queries
    */
-  Vendor getVendorInfo() override;
+  virtual Vendor getVendorInfo() override;
   /*
    * Gather the cable info for thrift queries
    */
@@ -212,11 +213,7 @@ class SffModule : public QsfpModule {
   /*
    * Return what power control capability is currently enabled
    */
-  PowerControlState getPowerControlValue() override;
-  /*
-   * Return TransceiverStats
-   */
-  std::optional<TransceiverStats> getTransceiverStats();
+  PowerControlState getPowerControlValue(bool readFromCache) override;
   /*
    * Return SignalFlag which contains Tx/Rx LOS/LOL
    */
@@ -235,7 +232,7 @@ class SffModule : public QsfpModule {
   /*
    * Returns the status in bytes 1 and 2 in the lower page
    */
-  ModuleStatus getModuleStatus() override;
+  virtual ModuleStatus getModuleStatus() override;
   /*
    * Gather host side per lane configuration settings and return false when it
    * fails
@@ -260,7 +257,40 @@ class SffModule : public QsfpModule {
     // no-op
   }
 
-  void clearTransceiverPrbsStats(phy::Side side) override;
+  void clearTransceiverPrbsStats(
+      const std::string& /* portName */,
+      phy::Side side) override;
+
+  std::vector<uint8_t> configuredHostLanes(
+      uint8_t hostStartLane) const override;
+
+  std::vector<uint8_t> configuredMediaLanes(
+      uint8_t hostStartLane) const override;
+
+  MediaInterfaceCode getModuleMediaInterface() const override;
+
+  /*
+   * Set the Transceiver Tx channel endbale/disable
+   */
+  virtual bool setTransceiverTxLocked(
+      const std::string& portName,
+      phy::Side side,
+      std::optional<uint8_t> userChannelMask,
+      bool enable) override;
+
+  virtual bool setTransceiverTxImplLocked(
+      const std::set<uint8_t>& tcvrLanes,
+      phy::Side side,
+      std::optional<uint8_t> userChannelMask,
+      bool enable) override;
+
+  /*
+   * Set the Transceiver loopback system/line side
+   */
+  virtual void setTransceiverLoopbackLocked(
+      const std::string& portName,
+      phy::Side side,
+      bool setLoopback) override;
 
  private:
   // no copy or assignment
@@ -278,25 +308,23 @@ class SffModule : public QsfpModule {
   void readSffField(SffField field, uint8_t* data, bool skipPageChange = false);
   void
   writeSffField(SffField field, uint8_t* data, bool skipPageChange = false);
-  void readSffFr1Field(
-      SffFr1Field field,
-      uint8_t* data,
-      bool skipPageChange = false);
-  void writeSffFr1Field(
-      SffFr1Field field,
-      uint8_t* data,
-      bool skipPageChange = false);
+  void
+  readSffFr1Field(SffField field, uint8_t* data, bool skipPageChange = false);
+  void
+  writeSffFr1Field(SffField field, uint8_t* data, bool skipPageChange = false);
 
   /* readField and writeField are not intended to be used directly in the
    * application code. These just help the readSffField/writeSffField to make
    * the appropriate read/writeTransceiver calls. */
   void readField(
+      SffField field,
       int dataPage,
       int dataOffset,
       int dataLength,
       uint8_t* data,
       bool skipPageChange);
   void writeField(
+      SffField field,
       int dataPage,
       int dataOffset,
       int dataLength,
@@ -339,11 +367,12 @@ class SffModule : public QsfpModule {
    * Provides the option to override the prbs state for certain transceivers
    */
   const std::optional<prbs::InterfacePrbsState> getPortPrbsStateOverrideLocked(
-      Side side);
+      phy::Side side);
   /*
    * 100G-FR1 modules have a proprietary method to get the prbs state
    */
-  const prbs::InterfacePrbsState getFr1PortPrbsStateOverrideLocked(Side side);
+  const prbs::InterfacePrbsState getFr1PortPrbsStateOverrideLocked(
+      phy::Side side);
 
   /*
    * Provides the option to override the implementation of setPortPrbs for
@@ -375,9 +404,10 @@ class SffModule : public QsfpModule {
    * Put logic here that should only be run on ports that have been
    * down for a long time. These are actions that are potentially more
    * disruptive, but have worked in the past to recover a transceiver.
-   * Only return true if there's an actual remediation happened
    */
-  bool remediateFlakyTransceiver() override;
+  void remediateFlakyTransceiver(
+      bool allPortsDown,
+      const std::vector<std::string>& ports) override;
 
   // make sure that tx_disable bits are clear
   virtual void ensureTxEnabled() override;
@@ -399,7 +429,9 @@ class SffModule : public QsfpModule {
   /*
    * Returns the current state of prbs (enabled/polynomial)
    */
-  prbs::InterfacePrbsState getPortPrbsStateLocked(Side side) override;
+  prbs::InterfacePrbsState getPortPrbsStateLocked(
+      std::optional<const std::string> portName,
+      phy::Side side) override;
 
   /*
    * Set the PRBS Generator and Checker on a module for the desired side (Line
@@ -407,6 +439,7 @@ class SffModule : public QsfpModule {
    * This function expects the caller to hold the qsfp module level lock
    */
   bool setPortPrbsLocked(
+      const std::string& /* portName */,
       phy::Side /* side */,
       const prbs::InterfacePrbsState& /* prbs */) override;
 
@@ -414,39 +447,39 @@ class SffModule : public QsfpModule {
    * Allows the option to override the implementation of getting total bit count
    */
   const std::optional<long long> getPrbsTotalBitCountOverrideLocked(
-      Side side,
+      phy::Side side,
       uint8_t lane);
   /*
    * Allows the option to override the implementation of getting total bit error
    * count
    */
   const std::optional<long long> getPrbsBitErrorCountOverrideLocked(
-      Side side,
+      phy::Side side,
       uint8_t lane);
   /*
    * Allows the option to override the implementation of getting prbs lock
    * status
    */
-  const std::optional<int> getPrbsLockStatusOverrideLocked(Side side);
+  const std::optional<int> getPrbsLockStatusOverrideLocked(phy::Side side);
   /*
    * 100G-FR1 modules have a proprietary method to read prbs lock status
    */
-  const std::optional<int> getFr1PrbsLockStatusOverrideLocked(Side side);
+  const std::optional<int> getFr1PrbsLockStatusOverrideLocked(phy::Side side);
   /*
    * Returns the total bit count
    * This function expects the caller to hold the qsfp module level lock
    */
-  long long getPrbsTotalBitCountLocked(Side side, uint8_t lane);
+  long long getPrbsTotalBitCountLocked(phy::Side side, uint8_t lane);
   /*
    * Returns the total PRBS bit error count
    * This function expects the caller to hold the qsfp module level lock
    */
-  long long getPrbsBitErrorCountLocked(Side side, uint8_t lane);
+  long long getPrbsBitErrorCountLocked(phy::Side side, uint8_t lane);
   /*
    * Returns the prbs lock status of lanes on the given side
    * This function expects the caller to hold the qsfp module level lock
    */
-  int getPrbsLockStatusLocked(Side side);
+  int getPrbsLockStatusLocked(phy::Side side);
 
   /*
    * Get the PRBS stats for a module
@@ -473,6 +506,10 @@ class SffModule : public QsfpModule {
    */
   folly::Synchronized<PrbsBitCount> systemPrbsSnapshot_;
   folly::Synchronized<PrbsBitCount> linePrbsSnapshot_;
+
+  const std::shared_ptr<const TransceiverConfig> tcvrConfig_;
+
+  cfg::PortSpeed currentConfiguredSpeed_{cfg::PortSpeed::DEFAULT};
 };
 
 } // namespace fboss

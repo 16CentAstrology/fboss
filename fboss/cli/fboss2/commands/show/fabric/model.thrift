@@ -10,4 +10,8 @@ struct FabricEntry {
   3: i64 remoteSwitchId;
   4: string remotePortName;
   5: i32 remotePortId;
+  6: i32 expectedRemotePortId;
+  7: i64 expectedRemoteSwitchId;
+  8: string expectedRemotePortName;
+  9: string expectedRemoteSwitchName;
 }

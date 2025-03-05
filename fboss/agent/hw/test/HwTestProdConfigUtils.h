@@ -9,6 +9,8 @@
  */
 
 #pragma once
+#include "fboss/agent/hw/switch_asics/HwAsic.h"
+#include "fboss/agent/platforms/common/PlatformMapping.h"
 #include "fboss/agent/types.h"
 
 namespace facebook::fboss {
@@ -23,8 +25,7 @@ namespace utility {
  */
 void addProdFeaturesToConfig(
     cfg::SwitchConfig& config,
-    const HwSwitch* hwSwitch,
-    const bool mmuLossless = false,
-    const std::vector<PortID>& ports = {});
+    const HwAsic* hwAsic,
+    bool isSai);
 } // namespace utility
 } // namespace facebook::fboss
